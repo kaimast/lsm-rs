@@ -6,7 +6,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 const FS_PREFIX: &str = "data";
 
-pub trait Value: Serialize+DeserializeOwned {}
+pub trait Value = Serialize+DeserializeOwned+Clone;
 
 #[ derive(Default) ]
 struct BatchRegistry {
@@ -34,9 +34,17 @@ impl<V: Value> ValueLog<V> {
         Self{ next_id, pending_values, registry }
     }
 
-    pub fn add_value(&self, val: V) {
+    pub fn add_value(&self, val: V) -> usize {
         let mut values = self.pending_values.lock().unwrap();
         values.push(val);
+
+        //Return position of new value
+        values.len()-1
+    }
+
+    pub fn get_pending(&self, pos: usize) -> V {
+        let values = self.pending_values.lock().unwrap();
+        values.get(pos).expect("out of pending values bounds").clone()
     }
 }
 
