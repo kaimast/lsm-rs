@@ -1,12 +1,12 @@
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 use std::collections::HashSet;
 
 use serde::{Serialize, de::DeserializeOwned};
 
 const FS_PREFIX: &str = "data";
 
-pub trait Value = Serialize+DeserializeOwned+Clone;
+pub trait Value = Serialize+DeserializeOwned+Clone+Send+Sync;
 
 #[ derive(Default) ]
 struct BatchRegistry {
@@ -14,7 +14,7 @@ struct BatchRegistry {
 }
 
 pub struct ValueLog<V: Value> {
-    next_id: usize,
+    next_id: atomic::AtomicUsize,
     pending_values: Mutex<Vec<V>>,
     registry: Arc<BatchRegistry>
 }
@@ -27,7 +27,7 @@ pub struct ValueBatch<V: Value> {
 
 impl<V: Value> ValueLog<V> {
     pub fn new() -> Self {
-        let next_id = 1;
+        let next_id = atomic::AtomicUsize::new(1);
         let pending_values = Mutex::new( Vec::new() );
         let registry = Arc::new( BatchRegistry::default() );
 
@@ -44,6 +44,18 @@ impl<V: Value> ValueLog<V> {
         let val_len = data.len();
 
         (pos, val_len)
+    }
+
+    pub fn make_batch(&self, values: Vec<V>) -> Arc<ValueBatch<V>> {
+        let identifier = self.next_id.fetch_add(1, atomic::Ordering::SeqCst);
+        let registry = self.registry.clone();
+
+        let batch = Arc::new( ValueBatch{ identifier, values, registry } );
+
+        let mut registry = self.registry.batches.lock().unwrap();
+        registry.insert(identifier);
+
+        batch
     }
 
     pub fn get_pending(&self, pos: usize) -> V {

@@ -9,5 +9,8 @@ bincode = { version="1" }
 serde = { version="1" }
 log = { version="0.4" }
 
+[dev-dependencies]
+env_logger = { version="0.7" }
+
 [lib]
 path = "src/lib.rs"

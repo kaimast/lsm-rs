@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::values::{Value, ValueBatch};
 
-pub trait Key = Ord+Serialize+DeserializeOwned;
+pub trait Key = Ord+Serialize+DeserializeOwned+Send+Sync;
 
 pub struct Entry<K: Key, V: Value> {
     key: K,

@@ -1,5 +1,7 @@
 #![ feature(trait_alias) ]
 
+use std::thread;
+
 mod values;
 use values::{Value, ValueLog};
 
@@ -12,7 +14,7 @@ use tasks::TaskManager;
 mod memtable;
 use memtable::Memtable;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 
 pub enum StartMode {
     CreateOrOpen,
@@ -33,28 +35,63 @@ impl Default for Params {
 }
 
 pub struct Datastore<K: Key, V: Value> {
+    inner: Arc<DbLogic<K, V>>,
+    tasks: Arc<TaskManager<K, V>>
+}
+
+pub struct DbLogic<K: Key, V: Value> {
     memtable: Memtable<K>,
     imm_memtables: Mutex<Vec<Memtable<K>>>,
     value_log: ValueLog<V>,
-    params: Arc<Params>
+    params: Arc<Params>,
+    running: atomic::AtomicBool
 }
 
 
-impl<K: Key, V: Value> Datastore<K, V> {
+impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
     pub fn new(mode: StartMode) -> Self {
         let params = Params::default();
-
         Self::new_with_params(mode, params)
     }
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Self {
+        let inner = Arc::new( DbLogic::new(mode, params) );
+        let tasks = Arc::new( TaskManager::new(inner.clone()) );
+        let tasks_cpy = tasks.clone();
+
+        thread::spawn(move ||{
+            TaskManager::work_loop(tasks_cpy);
+        });
+
+        Self{ inner, tasks }
+    }
+
+    pub fn get(&self, key: &K) -> Option<V> {
+        self.inner.get(key)
+    }
+
+    pub fn put(&self, key: K, value: V) {
+        self.inner.put(key, value);
+    }
+}
+
+impl<K: Key, V: Value> Drop for Datastore<K, V> {
+    fn drop(&mut self) {
+        self.inner.stop();
+    }
+}
+
+impl<K: Key, V: Value> DbLogic<K, V> {
+    pub fn new(mode: StartMode, params: Params) -> Self {
         let memtable = Memtable::new();
         let imm_memtables = Mutex::new( Vec::new() );
         let value_log = ValueLog::new();
         let params = Arc::new(params);
+        let running = atomic::AtomicBool::new(true);
 
-        Self{ memtable, value_log, imm_memtables, params }
+        Self{ memtable, value_log, imm_memtables, params, running }
     }
+
 
     pub fn get(&self, key: &K) -> Option<V> {
         if let Some(pos) = self.memtable.get(key) {
@@ -70,6 +107,10 @@ impl<K: Key, V: Value> Datastore<K, V> {
         self.memtable.put(key, value_pos, value_len);
     }
 
+    pub fn is_running(&self) -> bool {
+        self.running.load(atomic::Ordering::SeqCst)
+    }
+
     pub fn needs_compaction(&self) -> bool {
         {
             let imm_mems = self.imm_memtables.lock().unwrap();
@@ -83,6 +124,10 @@ impl<K: Key, V: Value> Datastore<K, V> {
 
         false
     }
+
+    pub fn stop(&self) {
+        self.running.store(false, atomic::Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -91,8 +136,13 @@ mod tests {
 
     const SM: StartMode = StartMode::CreateOrOverride;
 
+    fn test_init() {
+         let _ = env_logger::builder().is_test(true).try_init();
+    }
+
     #[test]
     fn get_put() {
+        test_init();
         let ds = Datastore::<String, String>::new(SM);
         
         let key1 = String::from("Foo");
