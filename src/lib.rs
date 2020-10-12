@@ -6,51 +6,54 @@ use values::{Value, ValueLog};
 mod sstable;
 use sstable::Key;
 
-use std::sync::Mutex;
+mod tasks;
+use tasks::TaskManager;
 
-struct PendingEntry<K: Key> {
-    key: K,
-    value_pos: usize
+mod memtable;
+use memtable::Memtable;
+
+use std::sync::{Arc, Mutex};
+
+pub enum StartMode {
+    CreateOrOpen,
+    Open,
+    CreateOrOverride
 }
 
-struct Memtable<K: Key> {
-    entries: Mutex<Vec<PendingEntry<K>>>
+pub struct Params {
+    max_memtable_size: usize
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            max_memtable_size: 8*1024*1024
+        }
+    }
 }
 
 pub struct Datastore<K: Key, V: Value> {
     memtable: Memtable<K>,
-    value_log: ValueLog<V>
+    imm_memtables: Mutex<Vec<Memtable<K>>>,
+    value_log: ValueLog<V>,
+    params: Arc<Params>
 }
 
-impl<K: Key> Memtable<K> {
-    pub fn new() -> Self {
-        let entries = Mutex::new( Vec::new() );
-        Self{entries}
-    }
-
-    pub fn get(&self, key: &K) -> Option<usize> {
-        let entries = self.entries.lock().unwrap();
-        for e in entries.iter() {
-            if &e.key == key {
-                return Some(e.value_pos);
-            }
-        }
-
-        None
-    }
-
-    pub fn put(&self, key: K, value_pos: usize) {
-        let mut entries = self.entries.lock().unwrap();
-        entries.push(PendingEntry{ key, value_pos });
-    }
-}
 
 impl<K: Key, V: Value> Datastore<K, V> {
-    pub fn new() -> Self {
-        let memtable = Memtable::new();
-        let value_log = ValueLog::new();
+    pub fn new(mode: StartMode) -> Self {
+        let params = Params::default();
 
-        Self{ memtable, value_log }
+        Self::new_with_params(mode, params)
+    }
+
+    pub fn new_with_params(mode: StartMode, params: Params) -> Self {
+        let memtable = Memtable::new();
+        let imm_memtables = Mutex::new( Vec::new() );
+        let value_log = ValueLog::new();
+        let params = Arc::new(params);
+
+        Self{ memtable, value_log, imm_memtables, params }
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
@@ -62,18 +65,35 @@ impl<K: Key, V: Value> Datastore<K, V> {
     }
 
     pub fn put(&self, key: K, value: V) {
-        let value_pos =  self.value_log.add_value(value);
-        self.memtable.put(key, value_pos);
+        let (value_pos, value_len) = self.value_log.add_value(value);
+
+        self.memtable.put(key, value_pos, value_len);
+    }
+
+    pub fn needs_compaction(&self) -> bool {
+        {
+            let imm_mems = self.imm_memtables.lock().unwrap();
+
+            if imm_mems.len() > 0 {
+                return true;
+            }
+        }
+
+        //TODO check levels
+
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Datastore;
+    use super::*;
+
+    const SM: StartMode = StartMode::CreateOrOverride;
 
     #[test]
     fn get_put() {
-        let ds = Datastore::<String, String>::new();
+        let ds = Datastore::<String, String>::new(SM);
         
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");

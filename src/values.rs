@@ -34,12 +34,16 @@ impl<V: Value> ValueLog<V> {
         Self{ next_id, pending_values, registry }
     }
 
-    pub fn add_value(&self, val: V) -> usize {
+    pub fn add_value(&self, val: V) -> (usize, usize) {
         let mut values = self.pending_values.lock().unwrap();
+
+        let data = bincode::serialize(&val).expect("Failed to serialize value");
         values.push(val);
 
-        //Return position of new value
-        values.len()-1
+        let pos = values.len()-1;
+        let val_len = data.len();
+
+        (pos, val_len)
     }
 
     pub fn get_pending(&self, pos: usize) -> V {
