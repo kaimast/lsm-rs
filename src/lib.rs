@@ -1,6 +1,10 @@
 #![ feature(trait_alias) ]
 
 use std::thread;
+use std::sync::{Arc, Mutex, RwLock, atomic};
+use std::collections::VecDeque;
+
+mod entry;
 
 mod values;
 use values::{Value, ValueLog};
@@ -13,8 +17,6 @@ use tasks::TaskManager;
 
 mod memtable;
 use memtable::Memtable;
-
-use std::sync::{Arc, Mutex, atomic};
 
 pub enum StartMode {
     CreateOrOpen,
@@ -40,13 +42,12 @@ pub struct Datastore<K: Key, V: Value> {
 }
 
 pub struct DbLogic<K: Key, V: Value> {
-    memtable: Memtable<K>,
-    imm_memtables: Mutex<Vec<Memtable<K>>>,
+    memtable: RwLock<Memtable<K>>,
+    imm_memtables: Mutex<VecDeque<Memtable<K>>>,
     value_log: ValueLog<V>,
     params: Arc<Params>,
     running: atomic::AtomicBool
 }
-
 
 impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
     pub fn new(mode: StartMode) -> Self {
@@ -71,7 +72,11 @@ impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
     }
 
     pub fn put(&self, key: K, value: V) {
-        self.inner.put(key, value);
+        let needs_compaction = self.inner.put(key, value);
+
+        if needs_compaction {
+            self.tasks.wake_up();
+        }
     }
 }
 
@@ -82,9 +87,9 @@ impl<K: Key, V: Value> Drop for Datastore<K, V> {
 }
 
 impl<K: Key, V: Value> DbLogic<K, V> {
-    pub fn new(mode: StartMode, params: Params) -> Self {
-        let memtable = Memtable::new();
-        let imm_memtables = Mutex::new( Vec::new() );
+    pub fn new(_sm: StartMode, params: Params) -> Self {
+        let memtable = RwLock::new( Memtable::new() );
+        let imm_memtables = Mutex::new( VecDeque::new() );
         let value_log = ValueLog::new();
         let params = Arc::new(params);
         let running = atomic::AtomicBool::new(true);
@@ -94,28 +99,54 @@ impl<K: Key, V: Value> DbLogic<K, V> {
 
 
     pub fn get(&self, key: &K) -> Option<V> {
-        if let Some(pos) = self.memtable.get(key) {
-            Some(self.value_log.get_pending(pos))
+        let memtable = self.memtable.read().unwrap();
+
+        if let Some(val_ref) = memtable.get(key) {
+            Some(self.value_log.get_pending(&val_ref))
         } else {
             None
         }
     }
 
-    pub fn put(&self, key: K, value: V) {
+    pub fn put(&self, key: K, value: V) -> bool {
+        let mut memtable = self.memtable.write().unwrap();
         let (value_pos, value_len) = self.value_log.add_value(value);
 
-        self.memtable.put(key, value_pos, value_len);
+        memtable.put(key, value_pos, value_len);
+
+        if let Some(imm) = memtable.maybe_seal(&self.params) {
+            let mut imm_mems = self.imm_memtables.lock().unwrap();
+            imm_mems.push_back(imm);
+
+            true
+        } else {
+            false
+        }
     }
 
     pub fn is_running(&self) -> bool {
         self.running.load(atomic::Ordering::SeqCst)
     }
 
+    pub fn do_compaction(&self) -> bool {
+        let imm_mems = self.imm_memtables.lock().unwrap();
+
+        if imm_mems.len() > 0 {
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn needs_compaction(&self) -> bool {
         {
-            let imm_mems = self.imm_memtables.lock().unwrap();
+            let mut imm_mems = self.imm_memtables.lock().unwrap();
 
-            if imm_mems.len() > 0 {
+            if let Some(mut mem) = imm_mems.pop_front() {
+                let mut entries = mem.take();
+                entries.sort();
+
+
                 return true;
             }
         }
