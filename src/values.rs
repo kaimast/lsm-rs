@@ -1,6 +1,5 @@
-use std::fs;
-use std::sync::{Arc, RwLock};
-use std::collections::HashSet;
+use std::sync::RwLock;
+use std::collections::HashMap;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -13,28 +12,35 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 
 pub trait Value = Serialize+DeserializeOwned+Clone+Send+Sync;
 
-#[ derive(Default) ]
-struct BatchRegistry {
-    batches: RwLock<HashSet<ValueBatchId>>
-}
-
 pub struct ValueLog<V: Value> {
     pending_values: RwLock<(ValueBatchId, Vec<V>)>,
-    registry: Arc<BatchRegistry>
+    cache: RwLock<HashMap<ValueBatchId, ValueBatch<V>>>
 }
 
 pub struct ValueBatch<V: Value> {
-    registry: Arc<BatchRegistry>,
-    identifier: usize,
     values: Vec<V>
 }
 
 impl<V: Value> ValueLog<V> {
     pub fn new() -> Self {
         let pending_values = RwLock::new( (1, Vec::new()) );
-        let registry = Arc::new( BatchRegistry::default() );
+        let cache =  RwLock::new( HashMap::default() );
 
-        Self{ pending_values, registry }
+        Self{ pending_values, cache }
+    }
+
+    pub fn flush_pending(&self) {
+        let (id, values) = {
+            let mut lock = self.pending_values.write().unwrap();
+            let (next_id, pending_vals) = &mut *lock;
+            let id = *next_id;
+            *next_id += 1;
+
+            (id, std::mem::take(pending_vals))
+        };
+
+        let mut cache = self.cache.write().unwrap();
+        cache.insert(id, ValueBatch{ values });
     }
 
     pub fn add_value(&self, val: V) -> (ValueId, usize) {
@@ -50,6 +56,12 @@ impl<V: Value> ValueLog<V> {
         let id = (*next_id, pos);
 
         (id, val_len)
+    }
+
+    pub fn get(&self, value_ref: &ValueId) -> V {
+        let cache = self.cache.read().unwrap();
+        let batch = cache.get(&value_ref.0).unwrap();
+        batch.get_value(value_ref.1).clone()
     }
 
     /*
@@ -74,20 +86,7 @@ impl<V: Value> ValueLog<V> {
 }
 
 impl<V: Value> ValueBatch<V> {
-    #[inline]
-    pub fn get_id(&self) -> usize {
-        self.identifier
-    }
-
-    pub fn get_value(&self, pos: usize) -> &V {
-        self.values.get(pos).expect("out of batch bounds")
-    }
-}
-
-
-impl<V: Value> Drop for ValueBatch<V> {
-    fn drop(&mut self) {
-        log::trace!("Dropping ValueBatch");
-        fs::remove_file(format!("{}/{}", FS_PREFIX, self.identifier)).unwrap();
+    pub fn get_value(&self, pos: ValueOffset) -> &V {
+        self.values.get(pos as usize).expect("out of batch bounds")
     }
 }

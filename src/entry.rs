@@ -1,5 +1,5 @@
 use crate::values::ValueId;
-use crate::sstable::Key;
+use crate::sorted_table::Key;
 
 pub struct Entry<K: Key> {
     pub key: K,

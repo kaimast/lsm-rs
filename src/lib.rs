@@ -9,8 +9,8 @@ mod entry;
 mod values;
 use values::{Value, ValueLog};
 
-mod sstable;
-use sstable::Key;
+mod sorted_table;
+use sorted_table::{SortedTable, Key};
 
 mod tasks;
 use tasks::TaskManager;
@@ -25,13 +25,15 @@ pub enum StartMode {
 }
 
 pub struct Params {
-    max_memtable_size: usize
+    max_memtable_size: usize,
+    num_levels: usize
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
-            max_memtable_size: 8*1024*1024
+            max_memtable_size: 8*1024*1024,
+            num_levels: 5
         }
     }
 }
@@ -41,11 +43,16 @@ pub struct Datastore<K: Key, V: Value> {
     tasks: Arc<TaskManager<K, V>>
 }
 
+struct Level<K: Key> {
+    tables: RwLock<Vec<SortedTable<K>>>
+}
+
 pub struct DbLogic<K: Key, V: Value> {
     memtable: RwLock<Memtable<K>>,
     imm_memtables: Mutex<VecDeque<Memtable<K>>>,
     value_log: ValueLog<V>,
     params: Arc<Params>,
+    levels: Vec<Level<K>>,
     running: atomic::AtomicBool
 }
 
@@ -94,7 +101,16 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         let params = Arc::new(params);
         let running = atomic::AtomicBool::new(true);
 
-        Self{ memtable, value_log, imm_memtables, params, running }
+        if params.num_levels == 0 {
+            panic!("Need at least one level!");
+        }
+
+        let mut levels = Vec::new();
+        for _ in 0..params.num_levels {
+            levels.push(Level{ tables: RwLock::new(Vec::new()) });
+        }
+
+        Self{ memtable, value_log, imm_memtables, params, running, levels }
     }
 
 
@@ -102,10 +118,20 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         let memtable = self.memtable.read().unwrap();
 
         if let Some(val_ref) = memtable.get(key) {
-            Some(self.value_log.get_pending(&val_ref))
-        } else {
-            None
+            return Some(self.value_log.get_pending(&val_ref));
         }
+
+        for level in self.levels.iter() {
+            let tables = level.tables.read().unwrap();
+
+            for table in tables.iter() {
+                if let Some(val_ref) = table.get(key) {
+                    return Some(self.value_log.get(&val_ref));
+                }
+            }
+        }
+
+        None
     }
 
     pub fn put(&self, key: K, value: V) -> bool {
@@ -142,16 +168,26 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         {
             let mut imm_mems = self.imm_memtables.lock().unwrap();
 
-            if let Some(mut mem) = imm_mems.pop_front() {
-                let mut entries = mem.take();
-                entries.sort();
+            if let Some(mem) = imm_mems.pop_front() {
+                self.value_log.flush_pending();
 
+                let mut entries = mem.take();
+
+                let l0 = self.levels.get(0).unwrap();
+                let mut tables = l0.tables.write().unwrap();
+                tables.push( SortedTable::new(entries) );
 
                 return true;
             }
         }
 
-        //TODO check levels
+        {
+            for level in self.levels.iter() {
+                let tables = level.tables.read().unwrap();
+
+                //TODO
+            }
+        }
 
         false
     }

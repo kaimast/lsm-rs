@@ -1,10 +1,14 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-use crate::sstable::Key;
+use crate::sorted_table::Key;
 use crate::values::Value;
 
 use crate::DbLogic;
+
+pub trait Task {
+    fn wake_up(&self);
+}
 
 pub struct TaskManager<K: Key, V: Value> {
     datastore: Arc<DbLogic<K, V>>,

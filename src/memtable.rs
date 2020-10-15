@@ -1,4 +1,4 @@
-use crate::sstable::Key;
+use crate::sorted_table::Key;
 use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::Params;
