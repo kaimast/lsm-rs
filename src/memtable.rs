@@ -52,7 +52,7 @@ impl<K: Key> Memtable<K> {
         Some(Memtable{ entries, size, next_seq_number })
     }
 
-    pub fn take(mut self) -> Vec<Entry<K>> {
+    pub fn take(self) -> Vec<Entry<K>> {
         self.entries
     }
 }

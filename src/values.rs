@@ -3,8 +3,6 @@ use std::collections::HashMap;
 
 use serde::{Serialize, de::DeserializeOwned};
 
-const FS_PREFIX: &str = "data";
-
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
 

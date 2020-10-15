@@ -1,7 +1,11 @@
 use crate::values::ValueId;
 use crate::sorted_table::Key;
 
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
 pub struct Entry<K: Key> {
+    #[serde(deserialize_with = "K::deserialize")]
     pub key: K,
     pub value_ref: ValueId,
     pub seq_number: u64
@@ -30,5 +34,3 @@ impl<K: Key> Ord for Entry<K> {
         self.partial_cmp(&other).unwrap()
     }
 }
-
-

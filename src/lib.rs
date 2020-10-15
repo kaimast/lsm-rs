@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, RwLock, atomic};
 use std::collections::VecDeque;
 
 mod entry;
+use entry::Entry;
 
 mod values;
 use values::{Value, ValueLog};
@@ -26,14 +27,16 @@ pub enum StartMode {
 
 pub struct Params {
     max_memtable_size: usize,
-    num_levels: usize
+    num_levels: usize,
+    data_prefix: String
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
             max_memtable_size: 8*1024*1024,
-            num_levels: 5
+            num_levels: 5,
+            data_prefix: String::from("./data/")
         }
     }
 }
@@ -47,12 +50,27 @@ struct Level<K: Key> {
     tables: RwLock<Vec<SortedTable<K>>>
 }
 
+impl<K: Key> Level<K> {
+    pub fn create_table(&self, id: usize, data_prefix: &str, entries: Vec<Entry<K>>) {
+        let tdata = bincode::serialize(&entries).unwrap();
+
+        let table = SortedTable::new(entries);
+        let path = format!("{}{}.table", data_prefix,id);
+
+        std::fs::write(path, tdata).expect("Failed to write table to disk");
+
+        let mut tables = self.tables.write().unwrap();
+        tables.push(table);
+    }
+}
+
 pub struct DbLogic<K: Key, V: Value> {
     memtable: RwLock<Memtable<K>>,
     imm_memtables: Mutex<VecDeque<Memtable<K>>>,
     value_log: ValueLog<V>,
     params: Arc<Params>,
     levels: Vec<Level<K>>,
+    next_table_id: atomic::AtomicUsize,
     running: atomic::AtomicBool
 }
 
@@ -99,6 +117,7 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         let imm_memtables = Mutex::new( VecDeque::new() );
         let value_log = ValueLog::new();
         let params = Arc::new(params);
+        let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
 
         if params.num_levels == 0 {
@@ -110,9 +129,8 @@ impl<K: Key, V: Value> DbLogic<K, V> {
             levels.push(Level{ tables: RwLock::new(Vec::new()) });
         }
 
-        Self{ memtable, value_log, imm_memtables, params, running, levels }
+        Self{ memtable, value_log, imm_memtables, params, running, levels, next_table_id }
     }
-
 
     pub fn get(&self, key: &K) -> Option<V> {
         let memtable = self.memtable.read().unwrap();
@@ -124,7 +142,9 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         for level in self.levels.iter() {
             let tables = level.tables.read().unwrap();
 
-            for table in tables.iter() {
+            // Iterate from back to front (newest to oldest)
+            // as L0 may have overlapping
+            for table in tables.iter().rev() {
                 if let Some(val_ref) = table.get(key) {
                     return Some(self.value_log.get(&val_ref));
                 }
@@ -171,19 +191,17 @@ impl<K: Key, V: Value> DbLogic<K, V> {
             if let Some(mem) = imm_mems.pop_front() {
                 self.value_log.flush_pending();
 
-                let mut entries = mem.take();
+                let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
                 let l0 = self.levels.get(0).unwrap();
-                let mut tables = l0.tables.write().unwrap();
-                tables.push( SortedTable::new(entries) );
-
+                l0.create_table(table_id, &self.params.data_prefix, mem.take());
                 return true;
             }
         }
 
         {
             for level in self.levels.iter() {
-                let tables = level.tables.read().unwrap();
+                let _tables = level.tables.read().unwrap();
 
                 //TODO
             }
