@@ -4,7 +4,7 @@ use crate::values::ValueId;
 use crate::Params;
 
 pub struct Memtable<K: Key> {
-    entries: Vec<Entry<K>>,
+    entries: Vec<(K, Entry)>,
     size: usize,
 
     //TODO move this somewhere else
@@ -21,9 +21,9 @@ impl<K: Key> Memtable<K> {
     }
 
     pub fn get(&self, key: &K) -> Option<ValueId> {
-        for e in self.entries.iter() {
-            if &e.key == key {
-                return Some(e.value_ref);
+        for (ekey, entry) in self.entries.iter() {
+            if ekey == key {
+                return Some(entry.value_ref);
             }
         }
 
@@ -32,9 +32,9 @@ impl<K: Key> Memtable<K> {
 
     pub fn put(&mut self, key: K, value_ref: ValueId, value_len: usize) {
         self.size += value_len;
-        self.entries.push(Entry{
-            key, value_ref, seq_number: self.next_seq_number
-        });
+        self.entries.push((key, Entry{
+            value_ref, seq_number: self.next_seq_number
+        }));
 
         self.next_seq_number += 1;
     }
@@ -52,7 +52,7 @@ impl<K: Key> Memtable<K> {
         Some(Memtable{ entries, size, next_seq_number })
     }
 
-    pub fn take(self) -> Vec<Entry<K>> {
+    pub fn take(self) -> Vec<(K, Entry)> {
         self.entries
     }
 }

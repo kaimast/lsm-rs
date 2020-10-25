@@ -13,7 +13,7 @@ impl<K: Key> Level<K> {
         Self{ tables: RwLock::new(Vec::new()) }
     }
 
-    pub fn create_table(&self, id: usize, data_prefix: &str, entries: Vec<Entry<K>>) {
+    pub fn create_table(&self, id: usize, data_prefix: &str, entries: Vec<(K, Entry)>) {
         let tdata = bincode::serialize(&entries).unwrap();
 
         let table = SortedTable::new(entries);

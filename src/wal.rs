@@ -12,4 +12,8 @@ impl WriteAheadLog {
     pub fn store<K: Key, V: Value>(&mut self, _key: &K, _value: &V) {
         //FIXME
     }
+
+    pub fn clear(&mut self) {
+
+    }
 }
