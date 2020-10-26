@@ -1,8 +1,14 @@
+// For the Key and Value traits
 #![ feature(trait_alias) ]
+
+// For writing to the log
+#![ feature(write_all_vectored) ]
+#![ feature(array_methods) ]
 
 use std::thread;
 use std::sync::{Arc, Mutex, RwLock, atomic};
 use std::collections::VecDeque;
+use std::path::Path;
 
 mod entry;
 
@@ -21,10 +27,11 @@ use memtable::Memtable;
 mod level;
 use level::Level;
 
-mod operation;
-
 mod wal;
 use wal::WriteAheadLog;
+
+mod manifest;
+use manifest::Manifest;
 
 pub enum StartMode {
     CreateOrOpen,
@@ -33,6 +40,7 @@ pub enum StartMode {
 }
 
 pub struct Params {
+    db_path: &'static Path,
     max_memtable_size: usize,
     num_levels: usize,
     data_prefix: String
@@ -41,6 +49,7 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
+            db_path: Path::new("./storage.lsm"),
             max_memtable_size: 8*1024*1024,
             num_levels: 5,
             data_prefix: String::from("./data/")
@@ -102,14 +111,48 @@ impl<K: Key, V: Value> Drop for Datastore<K, V> {
 }
 
 impl<K: Key, V: Value> DbLogic<K, V> {
-    pub fn new(_sm: StartMode, params: Params) -> Self {
+    pub fn new(start_mode: StartMode, params: Params) -> Self {
+        let create;
+
+        if params.db_path.components().next().is_none() {
+            panic!("DB path must not be empty!");
+        }
+
+        if params.db_path.exists() && params.db_path.is_file() {
+            panic!("DB path must be a folder!");
+        }
+
+        match start_mode {
+            StartMode::CreateOrOpen => {
+                create = !params.db_path.exists();
+            },
+            StartMode::Open => {
+                if !params.db_path.exists() {
+                    panic!("DB does not exist");
+                }
+                create = false;
+            },
+            StartMode::CreateOrOverride => {
+                if params.db_path.exists() {
+                    log::info!("Remove old data at {}", params.db_path.to_str().unwrap());
+                    std::fs::remove_dir_all(&params.db_path).unwrap();
+                }
+
+                create = true;
+            }
+        }
+
+        if create {
+            std::fs::create_dir(&params.db_path).expect("Failed to create DB folder");
+        }
+
         let memtable = RwLock::new( Memtable::new() );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let value_log = ValueLog::new();
         let params = Arc::new(params);
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
-        let wal = Mutex::new(WriteAheadLog::new());
+        let wal = Mutex::new(WriteAheadLog::new(params.clone()));
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -141,7 +184,10 @@ impl<K: Key, V: Value> DbLogic<K, V> {
 
     pub fn put(&self, key: K, value: V) -> bool {
         let mut memtable = self.memtable.write().unwrap();
-        self.wal.lock().unwrap().store(&key, &value);
+        let mut wal = self.wal.lock().unwrap();
+        wal.store(&key, &value);
+        wal.sync(); //TODO add a flag for this
+        drop(wal);
 
         let (value_pos, value_len) = self.value_log.add_value(value);
         memtable.put(key, value_pos, value_len);
