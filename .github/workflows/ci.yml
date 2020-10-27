@@ -14,12 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - name: Install minimal stable with clippy and rustc
+    - name: Install rustc and clippy nightly
       uses: actions-rs/toolchain@v1
       with:
          profile: minimal
          toolchain: nightly
-         components: rustc, clippy
+         override: true
+         components: cargo, rustc, clippy
     - name: Linting
       run: cargo clippy -- -D warnings
     - name: Basic tests
