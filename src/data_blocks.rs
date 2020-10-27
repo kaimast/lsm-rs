@@ -1,13 +1,19 @@
 use std::sync::{atomic, Arc, Mutex};
-use std::collections::HashMap;
+use std::path::Path;
 
 use serde::{Serialize, Deserialize};
 
+use lru::LruCache;
+
+use crate::Params;
 use crate::entry::Entry;
 use crate::sorted_table::Key;
 use crate::values::ValueId;
 
 pub type DataBlockId = u64;
+
+const NUM_SHARDS: usize = 16;
+const SHARD_SIZE: usize = 100;
 
 #[ derive(Serialize, Deserialize) ]
 pub struct PrefixedKey {
@@ -21,37 +27,68 @@ impl PrefixedKey {
     }
 }
 
+type BlockShard = LruCache<DataBlockId, Arc<DataBlock>>;
+
 pub struct DataBlocks {
-    //TODO use a lockfree datastructure here
-    block_cache: Mutex<HashMap<DataBlockId, Arc<DataBlock>>>,
+    params: Arc<Params>,
+    block_caches: Vec<Mutex<BlockShard>>,
     next_block_id: atomic::AtomicU64
 }
 
 impl DataBlocks {
-    pub fn new() -> Self {
-        Self{
-            next_block_id: atomic::AtomicU64::new(1),
-            block_cache: Mutex::new( HashMap::new() )
+    pub fn new(params: Arc<Params>) -> Self {
+        let mut block_caches = Vec::new();
+        for _ in 0..NUM_SHARDS {
+            block_caches.push(Mutex::new(BlockShard::new(SHARD_SIZE)));
         }
+
+        let next_block_id = atomic::AtomicU64::new(1);
+
+        Self{ params, next_block_id, block_caches }
+    }
+
+    #[inline]
+    fn to_shard(block_id: DataBlockId) -> usize {
+        (block_id as usize) % NUM_SHARDS
+    }
+
+    #[inline]
+    fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
+        let fname = format!("data{:08}.lld", block_id);
+        self.params.db_path.join(Path::new(&fname))
     }
 
     pub fn make_block(&self, entries: Vec<(PrefixedKey, Entry)>) -> DataBlockId {
         let id = self.next_block_id.fetch_add(1, atomic::Ordering::SeqCst);
         let block = Arc::new( DataBlock::new(entries) );
+        let shard_id = Self::to_shard(id);
 
-        let mut cache = self.block_cache.lock().unwrap();
-        cache.insert(id, block);
+        // Store on disk before grabbing the lock
+        let block_data = bincode::serialize(&*block).unwrap();
+        let fpath = self.get_file_path(&id);
+        std::fs::write(fpath, block_data).expect("Failed to store data block on disk");
 
-        //TODO store on disk
+        let mut cache = self.block_caches[shard_id].lock().unwrap();
+        cache.put(id, block);
 
         id
     }
 
     pub fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
-        //TODO load from disk
+        let shard_id = Self::to_shard(*id);
 
-        let cache = self.block_cache.lock().unwrap();
-        cache.get(id).unwrap().clone()
+        let mut cache = self.block_caches[shard_id].lock().unwrap();
+        if let Some(block) = cache.get(id) {
+            block.clone()
+        } else {
+            // Not in the cache? Load from disk!
+            let fpath = self.get_file_path(&id);
+            let data = std::fs::read(fpath).expect("Cannot read data block from disk");
+            let block: Arc<DataBlock> = Arc::new( bincode::deserialize(&data).unwrap() );
+
+            cache.put(*id, block.clone());
+            block
+        }
     }
 }
 

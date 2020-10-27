@@ -96,6 +96,7 @@ impl<K: 'static+Key> Datastore<K> {
         Self{ inner, tasks }
     }
 
+    /// Will deserialize V from the raw data (avoids an additional copy)
     pub fn get<V: serde::de::DeserializeOwned>(&self, key: &K) -> Option<V> {
         self.inner.get::<V>(key)
     }
@@ -163,7 +164,7 @@ impl<K: Key> DbLogic<K> {
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
         let wal = Mutex::new(WriteAheadLog::new(params.clone()));
-        let data_blocks = Arc::new( DataBlocks::new() );
+        let data_blocks = Arc::new( DataBlocks::new(params.clone()) );
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
