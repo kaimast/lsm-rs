@@ -48,7 +48,7 @@ impl DataBlocks {
     }
 
     #[inline]
-    fn to_shard(block_id: DataBlockId) -> usize {
+    fn block_to_shard_id(block_id: DataBlockId) -> usize {
         (block_id as usize) % NUM_SHARDS
     }
 
@@ -61,7 +61,7 @@ impl DataBlocks {
     pub fn make_block(&self, entries: Vec<(PrefixedKey, Entry)>) -> DataBlockId {
         let id = self.next_block_id.fetch_add(1, atomic::Ordering::SeqCst);
         let block = Arc::new( DataBlock::new(entries) );
-        let shard_id = Self::to_shard(id);
+        let shard_id = Self::block_to_shard_id(id);
 
         // Store on disk before grabbing the lock
         let block_data = bincode::serialize(&*block).unwrap();
@@ -75,7 +75,7 @@ impl DataBlocks {
     }
 
     pub fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
-        let shard_id = Self::to_shard(*id);
+        let shard_id = Self::block_to_shard_id(*id);
 
         let mut cache = self.block_caches[shard_id].lock().unwrap();
         if let Some(block) = cache.get(id) {

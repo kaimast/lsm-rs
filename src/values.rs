@@ -7,6 +7,7 @@ pub type ValueBatchId = u64;
 pub type ValueId = (ValueBatchId, ValueOffset);
 
 pub type Value = Vec<u8>;
+pub type ValueRef = [u8];
 
 pub struct ValueLog {
     pending_values: RwLock<(ValueBatchId, Vec<Value>)>,

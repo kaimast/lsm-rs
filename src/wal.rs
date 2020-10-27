@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::sorted_table::Key;
-use crate::values::Value;
+use crate::values::ValueRef;
 use crate::Params;
 
 use std::path::Path;
@@ -22,7 +22,7 @@ impl WriteAheadLog{
         Self{ params, log_file }
     }
 
-    pub fn store<K: Key>(&mut self, key: &K, vdata: &Value) {
+    pub fn store<K: Key>(&mut self, key: &K, vdata: &ValueRef) {
         let kdata = bincode::serialize(key).unwrap();
 
         let klen = (kdata.len() as u64).to_le_bytes();
@@ -32,7 +32,7 @@ impl WriteAheadLog{
             IoSlice::new(klen.as_slice()),
             IoSlice::new(vlen.as_slice()),
             IoSlice::new(kdata.as_slice()),
-            IoSlice::new(vdata.as_slice())
+            IoSlice::new(vdata)
         ];
 
         // Try doing one write syscall if possible

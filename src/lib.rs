@@ -125,7 +125,7 @@ impl<K: Key> DbLogic<K> {
             panic!("DB path must not be empty!");
         }
 
-        if params.db_path.exists() && params.db_path.is_file() {
+        if params.db_path.exists() && !params.db_path.is_dir() {
             panic!("DB path must be a folder!");
         }
 
@@ -141,8 +141,8 @@ impl<K: Key> DbLogic<K> {
             },
             StartMode::CreateOrOverride => {
                 if params.db_path.exists() {
-                    log::info!("Remove old data at {}", params.db_path.to_str().unwrap());
-                    std::fs::remove_dir_all(&params.db_path).unwrap();
+                    log::info!("Removing old data at \"{}\"", params.db_path.to_str().unwrap());
+                    std::fs::remove_dir_all(&params.db_path).expect("Failed to remove existing database");
                 }
 
                 create = true;
@@ -150,7 +150,10 @@ impl<K: Key> DbLogic<K> {
         }
 
         if create {
-            std::fs::create_dir(&params.db_path).expect("Failed to create DB folder");
+            match std::fs::create_dir(&params.db_path) {
+                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
+                Err(e) => panic!("Failed to create DB folder: {}", e)
+            }
         }
 
         let params = Arc::new(params);
@@ -223,12 +226,14 @@ impl<K: Key> DbLogic<K> {
 
     pub fn do_compaction(&self) -> bool {
         let imm_mems = self.imm_memtables.lock().unwrap();
-
-        if imm_mems.len() > 0 {
-            true
-        } else {
-            false
+        
+        if imm_mems.is_empty() {
+            return false;
         }
+
+        //TODO! 
+
+        true
     }
 
     pub fn needs_compaction(&self) -> bool {
@@ -288,5 +293,23 @@ mod tests {
 
         assert_eq!(ds.get::<String>(&key1), Some(value.clone()));
         assert_eq!(ds.get::<String>(&key2), None);
+    }
+
+    #[test]
+    fn get_put_many() {
+        const COUNT: usize = 10_000;
+
+        test_init();
+        let ds = Datastore::<String>::new(SM);
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            ds.put(key, &pos);
+        }
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            assert_eq!(ds.get::<usize>(&key), Some(pos));
+        }
     }
 }
