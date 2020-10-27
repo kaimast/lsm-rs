@@ -1,22 +1,27 @@
 use crate::sorted_table::{SortedTable, Key};
 use crate::entry::Entry;
 use crate::values::ValueId;
+use crate::data_blocks::DataBlocks;
 
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 pub struct Level<K: Key> {
+    data_blocks: Arc<DataBlocks>,
     tables: RwLock<Vec<SortedTable<K>>>
 }
 
 impl<K: Key> Level<K> {
-    pub fn new() -> Self {
-        Self{ tables: RwLock::new(Vec::new()) }
+    pub fn new(data_blocks: Arc<DataBlocks>) -> Self {
+        Self {
+            data_blocks,
+            tables: RwLock::new(Vec::new())
+        }
     }
 
     pub fn create_table(&self, id: usize, data_prefix: &str, entries: Vec<(K, Entry)>) {
         let tdata = bincode::serialize(&entries).unwrap();
 
-        let table = SortedTable::new(entries);
+        let table = SortedTable::new(entries, self.data_blocks.clone());
         let path = format!("{}{}.table", data_prefix,id);
 
         std::fs::write(path, tdata).expect("Failed to write table to disk");

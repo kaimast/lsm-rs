@@ -1,24 +1,25 @@
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use std::sync::Arc;
+
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::entry::Entry;
 use crate::values::ValueId;
+use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlocks};
 
 pub trait Key = Ord+Serialize+DeserializeOwned+Send+Sync+Clone;
 
-#[ derive(Serialize, Deserialize) ]
-struct PrefixedKey {
-    prefix_len: usize,
-    suffix: Vec<u8>
-}
+const BLOCK_SIZE: usize = 32*1024;
 
 pub struct SortedTable<K: Key> {
     min: K,
     max: K,
-    entries: Vec<(PrefixedKey, Entry)>
+    //TODO add index,
+    block_ids: Vec<DataBlockId>,
+    data_blocks: Arc<DataBlocks>
 }
 
 impl<K: Key> SortedTable<K> {
-    pub fn new(mut entries: Vec<(K, Entry)>) -> Self {
+    pub fn new(mut entries: Vec<(K, Entry)>, data_blocks: Arc<DataBlocks>) -> Self {
         if entries.is_empty() {
             panic!("Cannot create empty table");
         }
@@ -35,8 +36,11 @@ impl<K: Key> SortedTable<K> {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
+        let mut block_ids = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_kdata = vec![];
+        let mut block_size = 0;
+
         for (key, entry) in entries.drain(..) {
             let kdata = bincode::serialize(&key).expect("Failed to serialize key");
             let mut prefix_len = 0;
@@ -47,12 +51,28 @@ impl<K: Key> SortedTable<K> {
             }
 
             let suffix = kdata[prefix_len..].to_vec();
+            block_size += std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>();
 
-            prefixed_entries.push((PrefixedKey{prefix_len, suffix}, entry));
+            let pkey = PrefixedKey::new(prefix_len, suffix);
+            prefixed_entries.push((pkey, entry));
+
             last_kdata = kdata;
+
+            if block_size >= BLOCK_SIZE {
+                let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries));
+                block_ids.push(id);
+
+                block_size = 0;
+                last_kdata.clear();
+            }
         }
 
-        Self{ entries: prefixed_entries, min, max }
+        if block_size > 0 {
+            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries));
+            block_ids.push(id);
+        }
+
+        Self{ block_ids, data_blocks, min, max }
     }
 
     #[inline]
@@ -70,17 +90,12 @@ impl<K: Key> SortedTable<K> {
             return None;
         }
 
-        let mut last_kdata = vec![];
+        for block_id in self.block_ids.iter() {
+            let block = self.data_blocks.get_block(&block_id);
 
-        for (pkey, entry) in self.entries.iter() {
-            let kdata = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
-            let this_key: K = bincode::deserialize(&kdata).expect("Failed to deserialize key");
-
-            if &this_key == key {
-                return Some(entry.value_ref);
+            if let Some(vid) = block.get(key) {
+                return Some(vid);
             }
-
-            last_kdata = kdata;
         }
 
         None

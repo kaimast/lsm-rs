@@ -1,25 +1,23 @@
 use std::sync::RwLock;
 use std::collections::HashMap;
 
-use serde::{Serialize, de::DeserializeOwned};
-
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
 
 pub type ValueId = (ValueBatchId, ValueOffset);
 
-pub trait Value = Serialize+DeserializeOwned+Clone+Send+Sync;
+pub type Value = Vec<u8>;
 
-pub struct ValueLog<V: Value> {
-    pending_values: RwLock<(ValueBatchId, Vec<V>)>,
-    cache: RwLock<HashMap<ValueBatchId, ValueBatch<V>>>
+pub struct ValueLog {
+    pending_values: RwLock<(ValueBatchId, Vec<Value>)>,
+    cache: RwLock<HashMap<ValueBatchId, ValueBatch>>
 }
 
-pub struct ValueBatch<V: Value> {
-    values: Vec<V>
+pub struct ValueBatch {
+    values: Vec<Value>
 }
 
-impl<V: Value> ValueLog<V> {
+impl ValueLog {
     pub fn new() -> Self {
         let pending_values = RwLock::new( (1, Vec::new()) );
         let cache =  RwLock::new( HashMap::default() );
@@ -41,7 +39,7 @@ impl<V: Value> ValueLog<V> {
         cache.insert(id, ValueBatch{ values });
     }
 
-    pub fn add_value(&self, val: V) -> (ValueId, usize) {
+    pub fn add_value(&self, val: Value) -> (ValueId, usize) {
         let mut lock = self.pending_values.write().unwrap();
         let (next_id, values) = &mut *lock;
 
@@ -56,10 +54,12 @@ impl<V: Value> ValueLog<V> {
         (id, val_len)
     }
 
-    pub fn get(&self, value_ref: &ValueId) -> V {
+    pub fn get<V: serde::de::DeserializeOwned>(&self, value_ref: &ValueId) -> V {
         let cache = self.cache.read().unwrap();
         let batch = cache.get(&value_ref.0).unwrap();
-        batch.get_value(value_ref.1).clone()
+        let val = batch.get_value(value_ref.1);
+
+        bincode::deserialize(val).expect("Failed to serialize value")
     }
 
     /*
@@ -75,16 +75,17 @@ impl<V: Value> ValueLog<V> {
         batch
     }*/
 
-    pub fn get_pending(&self, id: &ValueId) -> V {
+    pub fn get_pending<V: serde::de::DeserializeOwned>(&self, id: &ValueId) -> V {
         let lock = self.pending_values.read().unwrap();
         let (_, values) = &*lock;
 
-        values.get(id.1 as usize).expect("out of pending values bounds").clone()
+        let vdata = values.get(id.1 as usize).expect("out of pending values bounds");
+        bincode::deserialize(vdata).expect("Failed to deserialize value")
     }
 }
 
-impl<V: Value> ValueBatch<V> {
-    pub fn get_value(&self, pos: ValueOffset) -> &V {
+impl ValueBatch {
+    pub fn get_value(&self, pos: ValueOffset) -> &Value {
         self.values.get(pos as usize).expect("out of batch bounds")
     }
 }

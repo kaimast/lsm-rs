@@ -12,6 +12,9 @@ use std::path::Path;
 
 mod entry;
 
+mod data_blocks;
+use data_blocks::{DataBlocks};
+
 mod values;
 use values::{Value, ValueLog};
 
@@ -57,23 +60,25 @@ impl Default for Params {
     }
 }
 
-pub struct Datastore<K: Key, V: Value> {
-    inner: Arc<DbLogic<K, V>>,
-    tasks: Arc<TaskManager<K, V>>
+pub struct Datastore<K: Key> {
+    inner: Arc<DbLogic<K>>,
+    tasks: Arc<TaskManager<K>>
 }
 
-pub struct DbLogic<K: Key, V: Value> {
+pub struct DbLogic<K: Key> {
+    #[allow(dead_code)]
+    manifest: Arc<Manifest>,
+    params: Arc<Params>,
     memtable: RwLock<Memtable<K>>,
     imm_memtables: Mutex<VecDeque<Memtable<K>>>,
-    value_log: ValueLog<V>,
+    value_log: ValueLog,
     wal: Mutex<WriteAheadLog>,
-    params: Arc<Params>,
     levels: Vec<Level<K>>,
     next_table_id: atomic::AtomicUsize,
     running: atomic::AtomicBool
 }
 
-impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
+impl<K: 'static+Key> Datastore<K> {
     pub fn new(mode: StartMode) -> Self {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -91,12 +96,13 @@ impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
         Self{ inner, tasks }
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
-        self.inner.get(key)
+    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &K) -> Option<V> {
+        self.inner.get::<V>(key)
     }
 
-    pub fn put(&self, key: K, value: V) {
-        let needs_compaction = self.inner.put(key, value);
+    pub fn put<V: serde::Serialize>(&self, key: K, value: &V) {
+        let vdata = bincode::serialize(&value).expect("Failed to serialize value");
+        let needs_compaction = self.inner.put(key, vdata);
 
         if needs_compaction {
             self.tasks.wake_up();
@@ -104,13 +110,13 @@ impl<K: 'static+Key, V: 'static+Value> Datastore<K, V> {
     }
 }
 
-impl<K: Key, V: Value> Drop for Datastore<K, V> {
+impl<K: Key> Drop for Datastore<K> {
     fn drop(&mut self) {
         self.inner.stop();
     }
 }
 
-impl<K: Key, V: Value> DbLogic<K, V> {
+impl<K: Key> DbLogic<K> {
     pub fn new(start_mode: StartMode, params: Params) -> Self {
         let create;
 
@@ -146,13 +152,18 @@ impl<K: Key, V: Value> DbLogic<K, V> {
             std::fs::create_dir(&params.db_path).expect("Failed to create DB folder");
         }
 
+        let params = Arc::new(params);
+
+        let manifest = Arc::new(Manifest::new(params.clone()));
+        manifest.store();
+
         let memtable = RwLock::new( Memtable::new() );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let value_log = ValueLog::new();
-        let params = Arc::new(params);
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
         let wal = Mutex::new(WriteAheadLog::new(params.clone()));
+        let data_blocks = Arc::new( DataBlocks::new() );
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -160,13 +171,16 @@ impl<K: Key, V: Value> DbLogic<K, V> {
 
         let mut levels = Vec::new();
         for _ in 0..params.num_levels {
-            levels.push(Level::new());
+            levels.push(Level::new(data_blocks.clone()));
         }
 
-        Self{ memtable, value_log, wal, imm_memtables, params, running, levels, next_table_id }
+        Self {
+            manifest, memtable, value_log, wal, imm_memtables,
+            params, running, levels, next_table_id
+        }
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
+    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &K) -> Option<V> {
         let memtable = self.memtable.read().unwrap();
 
         if let Some(val_ref) = memtable.get(key) {
@@ -182,7 +196,7 @@ impl<K: Key, V: Value> DbLogic<K, V> {
         None
     }
 
-    pub fn put(&self, key: K, value: V) -> bool {
+    pub fn put(&self, key: K, value: Value) -> bool {
         let mut memtable = self.memtable.write().unwrap();
         let mut wal = self.wal.lock().unwrap();
         wal.store(&key, &value);
@@ -260,17 +274,18 @@ mod tests {
     #[test]
     fn get_put() {
         test_init();
-        let ds = Datastore::<String, String>::new(SM);
+        let ds = Datastore::<String>::new(SM);
         
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
         let value = String::from("Bar");
 
-        assert_eq!(ds.get(&key1), None);
+        assert_eq!(ds.get::<String>(&key1), None);
+        assert_eq!(ds.get::<String>(&key2), None);
 
-        ds.put(key1.clone(), value.clone());
+        ds.put(key1.clone(), &value);
 
-        assert_eq!(ds.get(&key1), Some(value.clone()));
-        assert_eq!(ds.get(&key2), None);
+        assert_eq!(ds.get::<String>(&key1), Some(value.clone()));
+        assert_eq!(ds.get::<String>(&key2), None);
     }
 }

@@ -22,9 +22,8 @@ impl WriteAheadLog{
         Self{ params, log_file }
     }
 
-    pub fn store<K: Key, V: Value>(&mut self, key: &K, value: &V) {
+    pub fn store<K: Key>(&mut self, key: &K, vdata: &Value) {
         let kdata = bincode::serialize(key).unwrap();
-        let vdata = bincode::serialize(value).unwrap();
 
         let klen = (kdata.len() as u64).to_le_bytes();
         let vlen = (vdata.len() as u64).to_le_bytes();
@@ -36,6 +35,7 @@ impl WriteAheadLog{
             IoSlice::new(vdata.as_slice())
         ];
 
+        // Try doing one write syscall if possible
         self.log_file.write_all_vectored(&mut write_vector[..]).expect("Failed to write to log file");
     }
 
@@ -44,6 +44,7 @@ impl WriteAheadLog{
     }
 
     /// Once the memtable has been flushed we can remove all log entries
+    #[ allow(dead_code)]
     pub fn clear(&mut self) {
         todo!();
     }
