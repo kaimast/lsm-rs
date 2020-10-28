@@ -45,17 +45,15 @@ pub enum StartMode {
 pub struct Params {
     db_path: &'static Path,
     max_memtable_size: usize,
-    num_levels: usize,
-    data_prefix: String
+    num_levels: usize
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
             db_path: Path::new("./storage.lsm"),
-            max_memtable_size: 8*1024*1024,
+            max_memtable_size: 64*1024,
             num_levels: 5,
-            data_prefix: String::from("./data/")
         }
     }
 }
@@ -225,18 +223,6 @@ impl<K: Key> DbLogic<K> {
     }
 
     pub fn do_compaction(&self) -> bool {
-        let imm_mems = self.imm_memtables.lock().unwrap();
-        
-        if imm_mems.is_empty() {
-            return false;
-        }
-
-        //TODO! 
-
-        true
-    }
-
-    pub fn needs_compaction(&self) -> bool {
         {
             let mut imm_mems = self.imm_memtables.lock().unwrap();
 
@@ -246,7 +232,23 @@ impl<K: Key> DbLogic<K> {
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
                 let l0 = self.levels.get(0).unwrap();
-                l0.create_table(table_id, &self.params.data_prefix, mem.take());
+                l0.create_table(table_id, mem.take());
+
+                log::debug!("Created new L0 table");
+                return true;
+            }
+        }
+
+        //TODO level-to-level compaction
+
+        true
+    }
+
+    pub fn needs_compaction(&self) -> bool {
+        {
+            let imm_mems = self.imm_memtables.lock().unwrap();
+
+            if !imm_mems.is_empty() {
                 return true;
             }
         }

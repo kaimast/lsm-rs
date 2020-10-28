@@ -18,14 +18,10 @@ impl<K: Key> Level<K> {
         }
     }
 
-    pub fn create_table(&self, id: usize, data_prefix: &str, entries: Vec<(K, Entry)>) {
-        let tdata = bincode::serialize(&entries).unwrap();
-
+    pub fn create_table(&self, _id: usize, entries: Vec<(K, Entry)>) {
         let table = SortedTable::new(entries, self.data_blocks.clone());
-        let path = format!("{}{}.table", data_prefix,id);
 
-        std::fs::write(path, tdata).expect("Failed to write table to disk");
-
+        //TODO update manifest
         let mut tables = self.tables.write().unwrap();
         tables.push(table);
     }
