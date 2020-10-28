@@ -62,7 +62,7 @@ pub struct WriteOptions {
 }
 
 impl WriteOptions {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self{ sync: true }
     }
 }
@@ -80,9 +80,9 @@ pub enum StartMode {
 }
 
 pub struct Params {
-    db_path: &'static Path,
-    max_memtable_size: usize,
-    num_levels: usize
+    pub db_path: &'static Path,
+    pub max_memtable_size: usize,
+    pub num_levels: usize
 }
 
 impl Default for Params {
