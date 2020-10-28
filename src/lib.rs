@@ -8,7 +8,7 @@
 use std::thread;
 use std::sync::{Arc, Mutex, RwLock, atomic};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod entry;
 
@@ -80,7 +80,7 @@ pub enum StartMode {
 }
 
 pub struct Params {
-    pub db_path: &'static Path,
+    pub db_path: PathBuf,
     pub max_memtable_size: usize,
     pub num_levels: usize
 }
@@ -88,7 +88,7 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
-            db_path: Path::new("./storage.lsm"),
+            db_path: Path::new("./storage.lsm").to_path_buf(),
             max_memtable_size: 64*1024,
             num_levels: 5,
         }
