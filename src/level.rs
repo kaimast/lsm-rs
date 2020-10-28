@@ -3,38 +3,42 @@ use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::data_blocks::DataBlocks;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const MAX_L0_FILES: usize = 8;
 
+pub type TableVec<K> = Vec<Arc<SortedTable<K>>>;
+
 pub struct Level<K: Key> {
     index: usize,
+    next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
-    tables: RwLock<Vec<SortedTable<K>>>
+    tables: RwLock<TableVec<K>>
 }
 
 impl<K: Key> Level<K> {
     pub fn new(index: usize, data_blocks: Arc<DataBlocks>) -> Self {
         Self {
             index,
+            next_compaction: Mutex::new(0),
             data_blocks,
             tables: RwLock::new(Vec::new())
         }
     }
 
-    pub fn create_table(&self, _id: usize, entries: Vec<(K, Entry)>) {
+    pub fn create_l0_table(&self, _id: usize, entries: Vec<(K, Entry)>) {
         let table = SortedTable::new(entries, self.data_blocks.clone());
 
         //TODO update manifest
         let mut tables = self.tables.write().unwrap();
-        tables.push(table);
+        tables.push(Arc::new(table));
     }
 
     pub fn get(&self, key: &K) -> Option<ValueId> {
         let tables = self.tables.read().unwrap();
 
         // Iterate from back to front (newest to oldest)
-        // as L0 may have overlapping
+        // as L0 may have overlapping entries
         for table in tables.iter().rev() {
             if let Some(val_ref) = table.get(key) {
                 return Some(val_ref);
@@ -84,5 +88,41 @@ impl<K: Key> Level<K> {
         } else {
             self.get_total_size() > self.max_size()
         }
+    }
+
+    pub fn start_compaction(&self) -> (usize, Arc<SortedTable<K>>) {
+        let mut next_compaction = self.next_compaction.lock().unwrap();
+        let tables = self.tables.read().unwrap();
+
+        if tables.is_empty() {
+            panic!("Cannot start compaction; level {} is empty", self.index);
+        }
+
+        if *next_compaction >= tables.len() {
+            *next_compaction = 0;
+        }
+
+        let offset = *next_compaction;
+        let table = tables[offset].clone();
+        *next_compaction += 1;
+
+        (offset, table)
+    }
+
+    pub fn get_overlaps(&self, parent_table: &SortedTable<K>) -> Vec<(usize, Arc<SortedTable<K>>)> {
+        let mut overlaps = Vec::new();
+        let tables = self.tables.read().unwrap();
+
+        for (pos, table) in tables.iter().enumerate() {
+            if table.overlaps(parent_table) {
+                overlaps.push((pos, table.clone()));
+            }
+        }
+
+        overlaps
+    }
+
+    pub fn get_tables(&self) -> std::sync::RwLockWriteGuard<'_, TableVec<K>> {
+        self.tables.write().unwrap()
     }
 }

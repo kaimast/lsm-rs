@@ -71,7 +71,7 @@ impl DataBlocks {
         let mut file = std::fs::File::create(fpath).unwrap();
         file.write_all(block_data.as_slice()).expect("Failed to store data block on disk");
         file.sync_all().unwrap();
-        log::debug!("Created new data block on disk");
+        log::trace!("Created new data block on disk");
 
         let mut cache = self.block_caches[shard_id].lock().unwrap();
         cache.put(id, block);
@@ -86,7 +86,7 @@ impl DataBlocks {
         if let Some(block) = cache.get(id) {
             block.clone()
         } else {
-            log::debug!("Loading key block from disk");
+            log::trace!("Loading key block from disk");
             let fpath = self.get_file_path(&id);
             let data = std::fs::read(fpath).expect("Cannot read data block from disk");
             let block: Arc<DataBlock> = Arc::new( bincode::deserialize(&data).unwrap() );
@@ -107,6 +107,13 @@ impl DataBlock {
         Self{ entries }
     }
 
+    pub fn get_offset(&self, offset: usize, previous_key: &Vec<u8>) -> (Vec<u8>, Entry) {
+        let (pkey, entry) = &self.entries[offset];
+        let kdata = [&previous_key[..pkey.prefix_len], &pkey.suffix[..]].concat();
+
+        (kdata, entry.clone())
+    }
+
     pub fn get<K: Key>(&self, key: &K) -> Option<ValueId> {
         let mut last_kdata = vec![];
 
@@ -122,5 +129,10 @@ impl DataBlock {
         }
 
         None
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }

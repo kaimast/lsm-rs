@@ -76,7 +76,7 @@ impl ValueLog {
         let mut file = std::fs::File::create(fpath).unwrap();
         file.write_all(block_data.as_slice()).expect("Failed to store value batch on disk");
         file.sync_all().unwrap();
-        log::debug!("Created new value batch on disk");
+        log::trace!("Created new value batch on disk");
 
         let shard_id = Self::batch_to_shard_id(id);
         let mut cache = self.batch_caches[shard_id].lock().unwrap();
@@ -108,7 +108,7 @@ impl ValueLog {
             if let Some(batch) = cache.get(id) {
                 batch.clone()
             } else {
-                log::debug!("Loading value batch from disk");
+                log::trace!("Loading value batch from disk");
                 let fpath = self.get_file_path(&id);
                 let data = std::fs::read(fpath).expect("Cannot value batch block from disk");
                 let batch: Arc<ValueBatch> = Arc::new( bincode::deserialize(&data).unwrap() );

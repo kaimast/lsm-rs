@@ -19,6 +19,61 @@ pub struct SortedTable<K: Key> {
     data_blocks: Arc<DataBlocks>
 }
 
+pub struct TableIterator<'a, K: Key> {
+    block_pos: usize,
+    block_offset: usize,
+    key: Vec<u8>,
+    entry: Entry,
+    table: &'a SortedTable<K>
+}
+
+impl<'a, K: Key> TableIterator<'a, K> {
+    fn new(table: &'a SortedTable<K>) -> Self {
+        let last_key = vec![];
+        let block_id = table.block_ids[0];
+        let first_block = table.data_blocks.get_block(&block_id);
+        let (key, entry) = first_block.get_offset(0, &last_key);
+
+        // Are we already at the end of the first block?
+        let (block_pos, block_offset) = if first_block.len() == 1 {
+            (1, 0)
+        } else {
+            (0, 1)
+        };
+
+        Self{ key, entry, block_pos, block_offset, table }
+    }
+
+    pub fn at_end(&self) -> bool {
+        self.block_pos >= self.table.block_ids.len()
+    }
+
+    pub fn get_key(&self) -> K {
+        bincode::deserialize(&self.key).unwrap()
+    }
+
+    pub fn get_entry(&self) -> Entry {
+        self.entry.clone()
+    }
+
+    pub fn step(&mut self) {
+        let block_id = self.table.block_ids[self.block_pos];
+        let block = self.table.data_blocks.get_block(&block_id);
+
+        let (key, entry) = block.get_offset(self.block_offset, &self.key);
+        self.key = key;
+        self.entry = entry;
+
+        self.block_offset += 1;
+
+        // At the end of the block?
+        if self.block_offset >= block.len() {
+            self.block_pos += 1;
+            self.block_offset = 0;
+        }
+    }
+}
+
 impl<K: Key> SortedTable<K> {
     pub fn new(mut entries: Vec<(K, Entry)>, data_blocks: Arc<DataBlocks>) -> Self {
         if entries.is_empty() {
@@ -37,6 +92,11 @@ impl<K: Key> SortedTable<K> {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
+        Self::new_from_sorted(entries, min, max, data_blocks)
+    }
+
+    /// Create a table from an already sorted set of entries
+    pub fn new_from_sorted(mut entries: Vec<(K, Entry)>, min: K, max: K, data_blocks: Arc<DataBlocks>) -> Self {
         let mut block_ids = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_kdata = vec![];
@@ -79,7 +139,13 @@ impl<K: Key> SortedTable<K> {
         Self{ size, block_ids, data_blocks, min, max }
     }
 
+    #[inline]
+    pub fn iter(&self) -> TableIterator<K> {
+        TableIterator::new(&self)
+    }
+
     // Get the size of this table (in bytes)
+    #[inline]
     pub fn get_size(&self) -> usize {
         self.size
     }
@@ -108,5 +174,10 @@ impl<K: Key> SortedTable<K> {
         }
 
         None
+    }
+
+    #[inline]
+    pub fn overlaps(&self, other: &SortedTable<K>) -> bool {
+        self.get_max() >= other.get_min() && self.get_min() <= other.get_max()
     }
 }

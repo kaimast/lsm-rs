@@ -21,7 +21,8 @@ impl<K: Key> Memtable<K> {
     }
 
     pub fn get(&self, key: &K) -> Option<ValueId> {
-        for (ekey, entry) in self.entries.iter() {
+        // Iter from back to front, to get the most recent updates
+        for (ekey, entry) in self.entries.iter().rev() {
             if ekey == key {
                 return Some(entry.value_ref);
             }

@@ -19,7 +19,7 @@ mod values;
 use values::{Value, ValueLog};
 
 mod sorted_table;
-use sorted_table::Key;
+use sorted_table::{SortedTable, Key};
 
 mod tasks;
 use tasks::TaskManager;
@@ -110,7 +110,8 @@ pub struct DbLogic<K: Key> {
     wal: Mutex<WriteAheadLog>,
     levels: Vec<Level<K>>,
     next_table_id: atomic::AtomicUsize,
-    running: atomic::AtomicBool
+    running: atomic::AtomicBool,
+    data_blocks: Arc<DataBlocks>
 }
 
 impl<K: 'static+Key> Datastore<K> {
@@ -230,7 +231,7 @@ impl<K: Key> DbLogic<K> {
 
         Self {
             manifest, memtable, value_log, wal, imm_memtables,
-            params, running, levels, next_table_id
+            params, running, levels, next_table_id, data_blocks
         }
     }
 
@@ -239,6 +240,15 @@ impl<K: Key> DbLogic<K> {
 
         if let Some(val_ref) = memtable.get(key) {
             return Some(self.value_log.get_pending(&val_ref));
+        }
+
+        {
+            let imm_mems = self.imm_memtables.lock().unwrap();
+            for imm in imm_mems.iter() {
+                if let Some(val_ref) = imm.get(key) {
+                    return Some(self.value_log.get_pending(&val_ref));
+                }
+            }
         }
 
         for level in self.levels.iter() {
@@ -293,7 +303,7 @@ impl<K: Key> DbLogic<K> {
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
                 let l0 = self.levels.get(0).unwrap();
-                l0.create_table(table_id, mem.take());
+                l0.create_l0_table(table_id, mem.take());
 
                 log::debug!("Created new L0 table");
                 return true;
@@ -301,11 +311,109 @@ impl<K: Key> DbLogic<K> {
         }
 
         // level-to-level compaction
-        for (pos, level) in self.levels.iter().enumerate() {
+        for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
-            if pos < self.params.num_levels-1 && level.needs_compaction() {
-                log::debug!("Compacting level {}", pos);
-                //TODO
+            if level_pos < self.params.num_levels-1 && level.needs_compaction() {
+                let (offset, table) = level.start_compaction();
+                let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
+
+                log::debug!("Compacting one table in level {} with {} table(s) in level {}", level_pos, overlaps.len(), level_pos+1);
+
+                //Merge
+                let mut entries = Vec::new();
+                let mut min = table.get_min();
+                let mut max = table.get_max();
+
+                for (_, table) in overlaps.iter() {
+                    min = std::cmp::min(min, table.get_min());
+                    max = std::cmp::max(max, table.get_max());
+                }
+
+                let min = min.clone();
+                let max = max.clone();
+
+                let mut parent_iter = table.iter();
+                let mut child_iters = Vec::new();
+                let mut pos = min.clone();
+
+                for (_, child) in overlaps.iter() {
+                    child_iters.push(child.iter());
+                }
+
+                while pos <= max {
+                    let mut entry = None;
+                    let mut next_pos = None;
+
+                    let parent_key = parent_iter.get_key();
+
+                    if parent_key == pos {
+                        entry = Some(parent_iter.get_entry());
+
+                        if !parent_iter.at_end() {
+                            parent_iter.step();
+                            next_pos = Some(parent_iter.get_key());
+                        }
+                    }
+
+                    for child_iter in child_iters.iter_mut() {
+                        let child_key = child_iter.get_key();
+
+                        if child_key == pos {
+                            let child_entry = child_iter.get_entry();
+
+                            if !child_iter.at_end() {
+                                child_iter.step();
+
+                                let next_key = child_iter.get_key();
+                                if let Some(npos) = next_pos {
+                                    next_pos = Some(std::cmp::min(npos, next_key));
+                                } else {
+                                    next_pos = Some(next_key);
+                                }
+                            }
+
+                            if let Some(e) = &entry {
+                                if e.seq_number < child_entry.seq_number {
+                                    entry = Some(child_entry);
+                                }
+                            } else {
+                                entry = Some(child_entry);
+                            }
+                        }
+                    }
+
+                    let entry = entry.unwrap();
+                    entries.push((pos, entry));
+
+                    // At end?
+                    if let Some(npos) = next_pos {
+                        pos = npos;
+                    } else {
+                        break;
+                    }
+                }
+
+                let new_table = SortedTable::new_from_sorted(entries, min, max, self.data_blocks.clone());
+
+                // Install new tables atomically
+                let mut parent_tables = level.get_tables();
+                let mut child_tables = self.levels[level_pos+1].get_tables();
+
+                // iterate backwards to ensure 
+                for (offset, _) in overlaps.iter().rev() {
+                    child_tables.remove(*offset);
+                }
+
+                let mut new_pos = 0;
+                for (pos, other_table) in child_tables.iter().enumerate() {
+                    if other_table.get_min() > new_table.get_min() {
+                        new_pos = pos;
+                        break;
+                    }
+                }
+
+                child_tables.insert(new_pos, Arc::new(new_table));
+                parent_tables.remove(offset);
             }
         }
 
@@ -354,6 +462,7 @@ mod tests {
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
         let value = String::from("Bar");
+        let value2 = String::from("Baz");
 
         assert_eq!(ds.get::<String>(&key1), None);
         assert_eq!(ds.get::<String>(&key2), None);
@@ -362,11 +471,14 @@ mod tests {
 
         assert_eq!(ds.get::<String>(&key1), Some(value.clone()));
         assert_eq!(ds.get::<String>(&key2), None);
+
+        ds.put(key1.clone(), &value2);
+        assert_eq!(ds.get::<String>(&key1), Some(value2.clone()));
     }
 
     #[test]
     fn get_put_many() {
-        const COUNT: usize = 10_000;
+        const COUNT: usize = 1_000_000;
 
         test_init();
         let ds = Datastore::<String>::new(SM);
@@ -385,6 +497,34 @@ mod tests {
             assert_eq!(ds.get::<usize>(&key), Some(pos));
         }
     }
+
+    #[test]
+    fn override_many() {
+        const COUNT: usize = 1_000_000;
+
+        test_init();
+        let ds = Datastore::<String>::new(SM);
+
+        // Write without fsync to speed up tests
+        let mut options = WriteOptions::default();
+        options.sync = false;
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            ds.put_opts(key, &pos, &options);
+        }
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            ds.put_opts(key, &(pos+100), &options);
+        }
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            assert_eq!(ds.get::<usize>(&key), Some(pos+100));
+        }
+    }
+
 
     #[test]
     fn batched_write() {
