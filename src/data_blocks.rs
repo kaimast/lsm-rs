@@ -1,5 +1,6 @@
 use std::sync::{atomic, Arc, Mutex};
 use std::path::Path;
+use std::io::Write;
 
 use serde::{Serialize, Deserialize};
 
@@ -66,7 +67,11 @@ impl DataBlocks {
         // Store on disk before grabbing the lock
         let block_data = bincode::serialize(&*block).unwrap();
         let fpath = self.get_file_path(&id);
-        std::fs::write(fpath, block_data).expect("Failed to store data block on disk");
+
+        let mut file = std::fs::File::create(fpath).unwrap();
+        file.write_all(block_data.as_slice()).expect("Failed to store data block on disk");
+        file.sync_all().unwrap();
+        log::debug!("Created new data block on disk");
 
         let mut cache = self.block_caches[shard_id].lock().unwrap();
         cache.put(id, block);
@@ -81,7 +86,7 @@ impl DataBlocks {
         if let Some(block) = cache.get(id) {
             block.clone()
         } else {
-            // Not in the cache? Load from disk!
+            log::debug!("Loading key block from disk");
             let fpath = self.get_file_path(&id);
             let data = std::fs::read(fpath).expect("Cannot read data block from disk");
             let block: Arc<DataBlock> = Arc::new( bincode::deserialize(&data).unwrap() );
