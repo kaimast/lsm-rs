@@ -36,19 +36,40 @@ use wal::WriteAheadLog;
 mod manifest;
 use manifest::Manifest;
 
+pub struct WriteBatch<K: Key> {
+    writes: Vec<(K, Value)>
+}
+
+impl<K: Key> WriteBatch<K> {
+    pub fn new() -> Self {
+        Self{ writes: Vec::new() }
+    }
+
+    pub fn put<V: serde::Serialize>(&mut self, key: K, value: &V) {
+        let vdata = bincode::serialize(value).expect("Failed to serialize value");
+        self.writes.push((key, vdata));
+    }
+}
+
+impl<K: Key> Default for WriteBatch<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct WriteOptions {
     pub sync: bool
 }
 
 impl WriteOptions {
-    const fn default_helper() -> Self {
+    const fn new() -> Self {
         Self{ sync: true }
     }
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
-        Self::default_helper()
+        Self::new()
     }
 }
 
@@ -116,13 +137,23 @@ impl<K: 'static+Key> Datastore<K> {
     }
 
     pub fn put<V: serde::Serialize>(&self, key: K, value: &V) {
-        const OPTS: WriteOptions = WriteOptions::default_helper();
+        const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS);
     }
 
     pub fn put_opts<V: serde::Serialize>(&self, key: K, value: &V, opts: &WriteOptions) {
-        let vdata = bincode::serialize(&value).expect("Failed to serialize value");
-        let needs_compaction = self.inner.put_opts(key, vdata, opts);
+        let mut batch = WriteBatch::new();
+        batch.put(key, value);
+        self.write_opts(batch, opts);
+    }
+
+    pub fn write(&self, write_batch: WriteBatch<K>) {
+        const OPTS: WriteOptions = WriteOptions::new();
+        self.write_opts(write_batch, &OPTS);
+    }
+
+    pub fn write_opts(&self, write_batch: WriteBatch<K>, opts: &WriteOptions) {
+        let needs_compaction = self.inner.write_opts(write_batch, opts);
 
         if needs_compaction {
             self.tasks.wake_up();
@@ -219,18 +250,22 @@ impl<K: Key> DbLogic<K> {
         None
     }
 
-    pub fn put_opts(&self, key: K, value: Value, opt: &WriteOptions) -> bool {
+    pub fn write_opts(&self, mut write_batch: WriteBatch<K>, opt: &WriteOptions) -> bool {
         let mut memtable = self.memtable.write().unwrap();
         let mut wal = self.wal.lock().unwrap();
-        wal.store(&key, &value);
 
+        for (key, value) in write_batch.writes.iter() {
+            wal.store(key, value);
+        }
         if opt.sync {
             wal.sync();
         }
         drop(wal);
 
-        let (value_pos, value_len) = self.value_log.add_value(value);
-        memtable.put(key, value_pos, value_len);
+        for (key, value) in write_batch.writes.drain(..) {
+            let (value_pos, value_len) = self.value_log.add_value(value);
+            memtable.put(key, value_pos, value_len);
+        }
 
         if let Some(imm) = memtable.maybe_seal(&self.params) {
             let mut imm_mems = self.imm_memtables.lock().unwrap();
@@ -342,4 +377,26 @@ mod tests {
             assert_eq!(ds.get::<usize>(&key), Some(pos));
         }
     }
+
+    #[test]
+    fn batched_write() {
+        const COUNT: usize = 1000;
+
+        test_init();
+        let ds = Datastore::<String>::new(SM);
+        let mut batch = WriteBatch::new();
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            batch.put(key, &pos);
+        }
+
+        ds.write(batch);
+
+        for pos in 0..COUNT {
+            let key = format!("key{}", pos);
+            assert_eq!(ds.get::<usize>(&key), Some(pos));
+        }
+    }
+
 }
