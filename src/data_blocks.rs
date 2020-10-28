@@ -54,7 +54,7 @@ impl DataBlocks {
 
     #[inline]
     fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
-        let fname = format!("data{:08}.lld", block_id);
+        let fname = format!("keys{:08}.lld", block_id);
         self.params.db_path.join(Path::new(&fname))
     }
 

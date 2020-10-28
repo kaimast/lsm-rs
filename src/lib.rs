@@ -36,6 +36,22 @@ use wal::WriteAheadLog;
 mod manifest;
 use manifest::Manifest;
 
+pub struct WriteOptions {
+    pub sync: bool
+}
+
+impl WriteOptions {
+    const fn default_helper() -> Self {
+        Self{ sync: true }
+    }
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        Self::default_helper()
+    }
+}
+
 pub enum StartMode {
     CreateOrOpen,
     Open,
@@ -100,8 +116,13 @@ impl<K: 'static+Key> Datastore<K> {
     }
 
     pub fn put<V: serde::Serialize>(&self, key: K, value: &V) {
+        const OPTS: WriteOptions = WriteOptions::default_helper();
+        self.put_opts(key, value, &OPTS);
+    }
+
+    pub fn put_opts<V: serde::Serialize>(&self, key: K, value: &V, opts: &WriteOptions) {
         let vdata = bincode::serialize(&value).expect("Failed to serialize value");
-        let needs_compaction = self.inner.put(key, vdata);
+        let needs_compaction = self.inner.put_opts(key, vdata, opts);
 
         if needs_compaction {
             self.tasks.wake_up();
@@ -161,7 +182,7 @@ impl<K: Key> DbLogic<K> {
 
         let memtable = RwLock::new( Memtable::new() );
         let imm_memtables = Mutex::new( VecDeque::new() );
-        let value_log = ValueLog::new();
+        let value_log = ValueLog::new(params.clone());
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
         let wal = Mutex::new(WriteAheadLog::new(params.clone()));
@@ -198,11 +219,14 @@ impl<K: Key> DbLogic<K> {
         None
     }
 
-    pub fn put(&self, key: K, value: Value) -> bool {
+    pub fn put_opts(&self, key: K, value: Value, opt: &WriteOptions) -> bool {
         let mut memtable = self.memtable.write().unwrap();
         let mut wal = self.wal.lock().unwrap();
         wal.store(&key, &value);
-        wal.sync(); //TODO add a flag for this
+
+        if opt.sync {
+            wal.sync();
+        }
         drop(wal);
 
         let (value_pos, value_len) = self.value_log.add_value(value);
@@ -304,9 +328,13 @@ mod tests {
         test_init();
         let ds = Datastore::<String>::new(SM);
 
+        // Write without fsync to speed up tests
+        let mut options = WriteOptions::default();
+        options.sync = false;
+
         for pos in 0..COUNT {
             let key = format!("key{}", pos);
-            ds.put(key, &pos);
+            ds.put_opts(key, &pos, &options);
         }
 
         for pos in 0..COUNT {

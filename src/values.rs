@@ -1,5 +1,11 @@
-use std::sync::RwLock;
-use std::collections::HashMap;
+use std::sync::{Arc, RwLock, Mutex};
+use std::path::Path;
+
+use serde::{Serialize, Deserialize};
+
+use lru::LruCache;
+
+use crate::Params;
 
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
@@ -9,35 +15,67 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 pub type Value = Vec<u8>;
 pub type ValueRef = [u8];
 
+const NUM_SHARDS: usize = 16;
+const SHARD_SIZE: usize = 100;
+
+type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
+
 pub struct ValueLog {
+    params: Arc<Params>,
     pending_values: RwLock<(ValueBatchId, Vec<Value>)>,
-    cache: RwLock<HashMap<ValueBatchId, ValueBatch>>
+    batch_caches: Vec<Mutex<BatchShard>>
 }
 
+#[ derive(Serialize, Deserialize) ]
 pub struct ValueBatch {
     values: Vec<Value>
 }
 
 impl ValueLog {
-    pub fn new() -> Self {
-        let pending_values = RwLock::new( (1, Vec::new()) );
-        let cache =  RwLock::new( HashMap::default() );
+    pub fn new(params: Arc<Params>) -> Self {
+        let pending_values = RwLock::new((1,Vec::new()));
+        let mut batch_caches = Vec::new();
 
-        Self{ pending_values, cache }
+        for _ in 0..NUM_SHARDS {
+            let cache = Mutex::new( BatchShard::new(SHARD_SIZE) );
+            batch_caches.push(cache);
+        }
+
+        Self{ pending_values, batch_caches, params }
+    }
+
+    #[inline]
+    fn batch_to_shard_id(batch_id: ValueBatchId) -> usize {
+        (batch_id as usize) % NUM_SHARDS
+    }
+
+    #[inline]
+    fn get_file_path(&self, batch_id: &ValueBatchId) -> std::path::PathBuf {
+        let fname = format!("values{:08}.lld", batch_id);
+        self.params.db_path.join(Path::new(&fname))
     }
 
     pub fn flush_pending(&self) {
         let (id, values) = {
             let mut lock = self.pending_values.write().unwrap();
-            let (next_id, pending_vals) = &mut *lock;
+            let (next_id, values) = &mut *lock;
+
             let id = *next_id;
             *next_id += 1;
 
-            (id, std::mem::take(pending_vals))
+            (id, std::mem::take(values))
         };
 
-        let mut cache = self.cache.write().unwrap();
-        cache.insert(id, ValueBatch{ values });
+        let batch = ValueBatch{ values };
+
+        // Store on disk before grabbing the lock
+        let block_data = bincode::serialize(&batch).unwrap();
+        let fpath = self.get_file_path(&id);
+        std::fs::write(fpath, block_data).expect("Failed to store value batch on disk");
+
+        let shard_id = Self::batch_to_shard_id(id);
+        let mut cache = self.batch_caches[shard_id].lock().unwrap();
+        cache.put(id, Arc::new(batch));
     }
 
     pub fn add_value(&self, val: Value) -> (ValueId, usize) {
@@ -56,25 +94,28 @@ impl ValueLog {
     }
 
     pub fn get<V: serde::de::DeserializeOwned>(&self, value_ref: &ValueId) -> V {
-        let cache = self.cache.read().unwrap();
-        let batch = cache.get(&value_ref.0).unwrap();
-        let val = batch.get_value(value_ref.1);
+        let (id, offset) = value_ref;
+        let shard_id = Self::batch_to_shard_id(*id);
 
+        let batch = {
+            let mut cache = self.batch_caches[shard_id].lock().unwrap();
+
+            if let Some(batch) = cache.get(id) {
+                batch.clone()
+            } else {
+                // Not in the cache? Load from disk!
+                let fpath = self.get_file_path(&id);
+                let data = std::fs::read(fpath).expect("Cannot value batch block from disk");
+                let batch: Arc<ValueBatch> = Arc::new( bincode::deserialize(&data).unwrap() );
+
+                cache.put(*id, batch.clone());
+                batch
+            }
+        };
+
+        let val = batch.get_value(*offset);
         bincode::deserialize(val).expect("Failed to serialize value")
     }
-
-    /*
-    pub fn make_batch(&self, values: Vec<V>) -> Arc<ValueBatch<V>> {
-        let identifier = self.next_id.fetch_add(1, atomic::Ordering::SeqCst);
-        let registry = self.registry.clone();
-
-        let batch = Arc::new( ValueBatch{ identifier, values, registry } );
-
-        let mut registry = self.registry.batches.lock().unwrap();
-        registry.insert(identifier);
-
-        batch
-    }*/
 
     pub fn get_pending<V: serde::de::DeserializeOwned>(&self, id: &ValueId) -> V {
         let lock = self.pending_values.read().unwrap();
