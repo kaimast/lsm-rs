@@ -13,6 +13,7 @@ const BLOCK_SIZE: usize = 32*1024;
 pub struct SortedTable<K: Key> {
     min: K,
     max: K,
+    size: usize,
     //TODO add index,
     block_ids: Vec<DataBlockId>,
     data_blocks: Arc<DataBlocks>
@@ -40,6 +41,7 @@ impl<K: Key> SortedTable<K> {
         let mut prefixed_entries = Vec::new();
         let mut last_kdata = vec![];
         let mut block_size = 0;
+        let mut size = 0;
 
         for (key, entry) in entries.drain(..) {
             let kdata = bincode::serialize(&key).expect("Failed to serialize key");
@@ -51,7 +53,9 @@ impl<K: Key> SortedTable<K> {
             }
 
             let suffix = kdata[prefix_len..].to_vec();
-            block_size += std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>();
+            let this_size = std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>();
+            block_size += this_size;
+            size += this_size;
 
             let pkey = PrefixedKey::new(prefix_len, suffix);
             prefixed_entries.push((pkey, entry));
@@ -72,7 +76,12 @@ impl<K: Key> SortedTable<K> {
             block_ids.push(id);
         }
 
-        Self{ block_ids, data_blocks, min, max }
+        Self{ size, block_ids, data_blocks, min, max }
+    }
+
+    // Get the size of this table (in bytes)
+    pub fn get_size(&self) -> usize {
+        self.size
     }
 
     #[inline]

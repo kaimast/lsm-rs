@@ -5,14 +5,18 @@ use crate::data_blocks::DataBlocks;
 
 use std::sync::{Arc, RwLock};
 
+const MAX_L0_FILES: usize = 8;
+
 pub struct Level<K: Key> {
+    index: usize,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<Vec<SortedTable<K>>>
 }
 
 impl<K: Key> Level<K> {
-    pub fn new(data_blocks: Arc<DataBlocks>) -> Self {
+    pub fn new(index: usize, data_blocks: Arc<DataBlocks>) -> Self {
         Self {
+            index,
             data_blocks,
             tables: RwLock::new(Vec::new())
         }
@@ -40,11 +44,45 @@ impl<K: Key> Level<K> {
         None
     }
 
+    #[inline]
+    pub fn get_total_size(&self) -> usize {
+        let tables = self.tables.read().unwrap();
+        let mut total_size = 0;
+
+        for t in tables.iter() {
+            total_size += t.get_size();
+        }
+
+        total_size
+    }
+
+    #[inline]
+    pub fn max_size(&self) -> usize {
+        // Note: the result for level zero is not really used since we set
+        // the level-0 compaction threshold based on number of files.
+
+        // Result for both level-0 and level-1
+        let mut result: usize = 10 * 1048576;
+        let mut level = self.index;
+        while level > 1 {
+            result *= 10;
+            level -= 1;
+        }
+
+        result
+    }
+
+    #[inline]
+    pub fn num_tables(&self) -> usize {
+        let tables = self.tables.read().unwrap();
+        tables.len()
+    }
+
     pub fn needs_compaction(&self) -> bool {
-        let _tables = self.tables.read().unwrap();
-
-        //TODO
-
-        false
+        if self.index == 0 {
+            self.num_tables() > MAX_L0_FILES
+        } else {
+            self.get_total_size() > self.max_size()
+        }
     }
 }

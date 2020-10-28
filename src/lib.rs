@@ -224,8 +224,8 @@ impl<K: Key> DbLogic<K> {
         }
 
         let mut levels = Vec::new();
-        for _ in 0..params.num_levels {
-            levels.push(Level::new(data_blocks.clone()));
+        for index in 0..params.num_levels {
+            levels.push(Level::new(index, data_blocks.clone()));
         }
 
         Self {
@@ -281,6 +281,8 @@ impl<K: Key> DbLogic<K> {
         self.running.load(atomic::Ordering::SeqCst)
     }
 
+    /// Do compaction if necessary
+    /// Returns true if any work was done
     pub fn do_compaction(&self) -> bool {
         {
             let mut imm_mems = self.imm_memtables.lock().unwrap();
@@ -298,9 +300,16 @@ impl<K: Key> DbLogic<K> {
             }
         }
 
-        //TODO level-to-level compaction
+        // level-to-level compaction
+        for (pos, level) in self.levels.iter().enumerate() {
+            // Last level cannot be compacted
+            if pos < self.params.num_levels-1 && level.needs_compaction() {
+                log::debug!("Compacting level {}", pos);
+                //TODO
+            }
+        }
 
-        true
+        false
     }
 
     pub fn needs_compaction(&self) -> bool {
@@ -312,11 +321,10 @@ impl<K: Key> DbLogic<K> {
             }
         }
 
-        {
-            for level in self.levels.iter() {
-                if level.needs_compaction() {
-                    return true;
-                }
+        for (pos, level) in self.levels.iter().enumerate() {
+            // Last level cannot be compacted
+            if pos < self.params.num_levels-1 && level.needs_compaction() {
+                return true;
             }
         }
 
