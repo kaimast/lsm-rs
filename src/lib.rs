@@ -5,7 +5,7 @@
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 
-use std::sync::{Arc, Mutex, RwLock, atomic};
+use std::sync::{Arc, Condvar, Mutex, RwLock, atomic};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -108,6 +108,7 @@ pub struct DbLogic<K: Key> {
     params: Arc<Params>,
     memtable: RwLock<Memtable<K>>,
     imm_memtables: Mutex<VecDeque<Memtable<K>>>,
+    imm_cond: Condvar,
     value_log: ValueLog,
     wal: Mutex<WriteAheadLog>,
     levels: Vec<Level<K>>,
@@ -225,6 +226,7 @@ impl<K: Key> DbLogic<K> {
 
         let memtable = RwLock::new( Memtable::new() );
         let imm_memtables = Mutex::new( VecDeque::new() );
+        let imm_cond = Condvar::new();
         let value_log = ValueLog::new(params.clone());
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
@@ -241,7 +243,7 @@ impl<K: Key> DbLogic<K> {
         }
 
         Self {
-            manifest, memtable, value_log, wal, imm_memtables,
+            manifest, memtable, value_log, wal, imm_memtables, imm_cond,
             params, running, levels, next_table_id, data_blocks
         }
     }
@@ -290,6 +292,14 @@ impl<K: Key> DbLogic<K> {
 
         if let Some(imm) = memtable.maybe_seal(&self.params) {
             let mut imm_mems = self.imm_memtables.lock().unwrap();
+
+            // Currently only one immutable memtable is supported
+            #[ cfg(feature="compaction") ]
+            while !imm_mems.is_empty() {
+                imm_mems = self.imm_cond.wait(imm_mems).unwrap();
+            }
+
+            self.value_log.next_pending();
             imm_mems.push_back(imm);
 
             true
@@ -317,6 +327,7 @@ impl<K: Key> DbLogic<K> {
                 l0.create_l0_table(table_id, mem.take());
 
                 log::debug!("Created new L0 table");
+                self.imm_cond.notify_all();
                 return true;
             }
         }
@@ -325,123 +336,163 @@ impl<K: Key> DbLogic<K> {
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels-1 && level.needs_compaction() {
-                let (offset, table) = level.start_compaction();
-                let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
-
-                log::debug!("Compacting one table in level {} with {} table(s) in level {}", level_pos, overlaps.len(), level_pos+1);
-
-                //Merge
-                let mut entries = Vec::new();
-                let mut min = table.get_min();
-                let mut max = table.get_max();
-
-                for (_, table) in overlaps.iter() {
-                    min = std::cmp::min(min, table.get_min());
-                    max = std::cmp::max(max, table.get_max());
-                }
-
-                let min = min.clone();
-                let max = max.clone();
-
-                let mut parent_iter = table.iter();
-                let mut child_iters = Vec::new();
-                let mut pos = min.clone();
-
-                for (_, child) in overlaps.iter() {
-                    child_iters.push(child.iter());
-                }
-
-                let mut child_iters_iter = child_iters.iter_mut();
-                let mut child_iter = child_iters_iter.next();
-
-                while pos <= max {
-                    let mut entry = None;
-                    let mut next_pos = None;
-
-                    let parent_key = parent_iter.get_key();
-
-                    if parent_key == pos {
-                        entry = Some(parent_iter.get_entry());
-
-                        if !parent_iter.at_end() {
-                            parent_iter.step();
-                            next_pos = Some(parent_iter.get_key());
-                        }
-                    }
-
-                    // Tables in the next level are guaranteed to not overlap
-                    // So we only need to look at one table at a time
-                    if let Some(iter) = &mut child_iter {
-                        let child_key = iter.get_key();
-
-                        if child_key == pos {
-                            let child_entry = iter.get_entry();
-
-                            if iter.at_end() {
-                                child_iter = child_iters_iter.next();
-                            } else {
-                                iter.step();
-                            }
-
-                            if let Some(next_iter) = &mut child_iter {
-                                if !next_iter.at_end() {
-                                    let next_key = next_iter.get_key();
-                                    if let Some(npos) = next_pos {
-                                        next_pos = Some(std::cmp::min(npos, next_key));
-                                    } else {
-                                        next_pos = Some(next_key);
-                                    }
-                                }
-                            }
-
-                            if let Some(e) = &entry {
-                                if e.seq_number < child_entry.seq_number {
-                                    entry = Some(child_entry);
-                                }
-                            } else {
-                                entry = Some(child_entry);
-                            }
-                        }
-                    }
-                    
-                    let entry = entry.unwrap();
-                    entries.push((pos, entry));
-
-                    // At end?
-                    if let Some(npos) = next_pos {
-                        pos = npos;
-                    } else {
-                        break;
-                    }
-                }
-
-                let new_table = SortedTable::new_from_sorted(entries, min, max, self.data_blocks.clone());
-
-                // Install new tables atomically
-                let mut parent_tables = level.get_tables();
-                let mut child_tables = self.levels[level_pos+1].get_tables();
-
-                // iterate backwards to ensure 
-                for (offset, _) in overlaps.iter().rev() {
-                    child_tables.remove(*offset);
-                }
-
-                let mut new_pos = 0;
-                for (pos, other_table) in child_tables.iter().enumerate() {
-                    if other_table.get_min() > new_table.get_min() {
-                        new_pos = pos;
-                        break;
-                    }
-                }
-
-                child_tables.insert(new_pos, Arc::new(new_table));
-                parent_tables.remove(offset);
-
+                self.compact(level_pos, level);
                 return true;
             }
         }
 
         false
+    }
+
+    fn compact(&self, level_pos: usize, level: &Level<K>) {
+        let (offset, table) = level.start_compaction();
+        let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
+
+        // Fast path
+        if overlaps.is_empty() {
+            let mut parent_tables = level.get_tables();
+            let mut child_tables = self.levels[level_pos+1].get_tables();
+
+            log::debug!("Moving table from level {} to level {}", level_pos, level_pos+1);
+
+            let mut new_pos = 0;
+            for (pos, other_table) in child_tables.iter().enumerate() {
+                if other_table.get_min() > table.get_min() {
+                    new_pos = pos;
+                    break;
+                }
+            }
+
+            parent_tables.remove(offset);
+            child_tables.insert(new_pos, table);
+            return
+        }
+
+        log::debug!("Compacting one table in level {} with {} table(s) in level {}", level_pos, overlaps.len(), level_pos+1);
+
+        //Merge
+        let mut entries = Vec::new();
+        let mut min = table.get_min();
+        let mut max = table.get_max();
+
+        for (_, table) in overlaps.iter() {
+            min = std::cmp::min(min, table.get_min());
+            max = std::cmp::max(max, table.get_max());
+        }
+
+        assert!(min < max);
+
+        let min = min.clone();
+        let max = max.clone();
+
+        let mut parent_iter = table.iter();
+        let mut child_iters = Vec::new();
+        let mut pos = min.clone();
+
+        for (_, child) in overlaps.iter() {
+            child_iters.push(child.iter());
+        }
+
+        let mut child_iters_iter = child_iters.iter_mut();
+        let mut child_iter = child_iters_iter.next();
+
+        let mut next_parent_key = Some(parent_iter.get_key());
+
+        //TODO None means there are no overlapping tables at the lower level
+        // add a fast path for this case
+        let mut next_child_key = if let Some(child) = child_iter.as_ref() {
+            Some(child.get_key())
+        } else { 
+            None
+        };
+
+        loop {
+            let mut entry = None;
+
+            if let Some(key) = &next_parent_key {
+                if key == &pos {
+                    entry = Some(parent_iter.get_entry());
+
+                    if parent_iter.at_end() {
+                        next_parent_key = None;
+                    } else {
+                        parent_iter.step();
+                        next_parent_key = Some(parent_iter.get_key());
+                    }
+                }
+            }
+
+            // Tables in the next level are guaranteed to not overlap
+            // So we only need to look at one table at a time
+            if let Some(iter) = &mut child_iter {
+                if let Some(key) = &next_child_key {
+                    if key == &pos {
+                        let child_entry = iter.get_entry();
+
+                        if let Some(e) = &entry {
+                            if e.seq_number < child_entry.seq_number {
+                                entry = Some(child_entry);
+                            }
+                        } else {
+                            entry = Some(child_entry);
+                        }
+
+                        if iter.at_end() {
+                            child_iter = child_iters_iter.next();
+                        } else {
+                            iter.step();
+                        }
+
+                        if let Some(next_iter) = &mut child_iter {
+                            next_child_key = Some(next_iter.get_key());
+                        } else {
+                            next_child_key = None;
+                        }
+                    }
+                }
+            }
+
+            let at_end = pos == max;
+
+            entries.push((pos, entry.unwrap()));
+
+            if at_end {
+                //Done
+                break;
+            } else {
+                if next_child_key.is_some() && next_parent_key.is_some() {
+                    pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).clone();
+                } else if next_child_key.is_some() {
+                    pos = next_child_key.as_ref().unwrap().clone()
+                } else if next_parent_key.is_some() {
+                    pos = next_parent_key.as_ref().unwrap().clone()
+                } else {
+                    panic!("Invalid state");
+                }
+            }
+        }
+
+        let new_table = SortedTable::new_from_sorted(entries, min, max, self.data_blocks.clone());
+
+        // Install new tables atomically
+        let mut parent_tables = level.get_tables();
+        let mut child_tables = self.levels[level_pos+1].get_tables();
+
+        // iterate backwards to ensure 
+        for (offset, _) in overlaps.iter().rev() {
+            child_tables.remove(*offset);
+        }
+
+        let mut new_pos = 0;
+        for (pos, other_table) in child_tables.iter().enumerate() {
+            if other_table.get_min() > new_table.get_min() {
+                new_pos = pos;
+                break;
+            }
+        }
+
+        child_tables.insert(new_pos, Arc::new(new_table));
+        parent_tables.remove(offset);
     }
 
     pub fn needs_compaction(&self) -> bool {
@@ -502,50 +553,51 @@ mod tests {
 
     #[test]
     fn get_put_many() {
-        const COUNT: usize = 1_000_00;
+        const COUNT: usize = 100_000;
 
         test_init();
-        let ds = Datastore::<String>::new(SM);
+        let ds = Datastore::<usize>::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
         options.sync = false;
 
         for pos in 0..COUNT {
-            let key = format!("key{}", pos);
-            ds.put_opts(key, &pos, &options);
+            let key = pos;
+            let value = format!("some_string_{}", pos);
+            ds.put_opts(key, &value, &options);
         }
 
         for pos in 0..COUNT {
-            let key = format!("key{}", pos);
-            assert_eq!(ds.get::<usize>(&key), Some(pos));
+            assert_eq!(ds.get::<String>(&pos), Some(format!("some_string_{}", pos)));
         }
     }
 
     #[test]
     fn override_many() {
-        const COUNT: usize = 1_000_00;
+        const COUNT: usize = 100_000;
 
         test_init();
-        let ds = Datastore::<String>::new(SM);
+        let ds = Datastore::<usize>::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
         options.sync = false;
 
         for pos in 0..COUNT {
-            let key = format!("key{}", pos);
-            ds.put_opts(key, &pos, &options);
+            let key = pos;
+            let value = format!("some_string_{}", pos);
+            ds.put_opts(key, &value, &options);
         }
 
         for pos in 0..COUNT {
-            let key = format!("key{}", pos);
-            ds.put_opts(key, &(pos+100), &options);
+            let key = pos;
+            let value = format!("some_other_string_{}", pos);
+            ds.put_opts(key, &value, &options);
         }
 
         for pos in 0..COUNT {
-            let key = format!("key{}", pos);
-            assert_eq!(ds.get::<usize>(&key), Some(pos+100));
+            assert_eq!(ds.get::<String>(&pos), Some(format!("some_other_string_{}", pos)));
         }
     }
 

@@ -117,7 +117,6 @@ impl DataBlock {
     pub fn get<K: Key>(&self, key: &K) -> Option<ValueId> {
         let mut last_kdata = vec![];
 
-        //FIXME do binary search here
         for (pkey, entry) in self.entries.iter() {
             let kdata = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
             let this_key: K = bincode::deserialize(&kdata).expect("Failed to deserialize key");

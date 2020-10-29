@@ -6,7 +6,7 @@ use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlocks};
 
-pub trait Key = Ord+Serialize+DeserializeOwned+Send+Sync+Clone;
+pub trait Key = Ord+Serialize+DeserializeOwned+Send+Sync+Clone+std::fmt::Debug;
 
 const BLOCK_SIZE: usize = 32*1024;
 
@@ -14,7 +14,7 @@ pub struct SortedTable<K: Key> {
     min: K,
     max: K,
     size: usize,
-    //TODO add index,
+    block_index: Vec<K>,
     block_ids: Vec<DataBlockId>,
     data_blocks: Arc<DataBlocks>
 }
@@ -92,18 +92,25 @@ impl<K: Key> SortedTable<K> {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
+        assert!(min < max);
+
         Self::new_from_sorted(entries, min, max, data_blocks)
     }
 
     /// Create a table from an already sorted set of entries
     pub fn new_from_sorted(mut entries: Vec<(K, Entry)>, min: K, max: K, data_blocks: Arc<DataBlocks>) -> Self {
         let mut block_ids = Vec::new();
+        let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_kdata = vec![];
         let mut block_size = 0;
         let mut size = 0;
 
         for (key, entry) in entries.drain(..) {
+            if block_size == 0 {
+                block_index.push(key.clone());
+            }
+
             let kdata = bincode::serialize(&key).expect("Failed to serialize key");
             let mut prefix_len = 0;
 
@@ -136,7 +143,7 @@ impl<K: Key> SortedTable<K> {
             block_ids.push(id);
         }
 
-        Self{ size, block_ids, data_blocks, min, max }
+        Self{ block_index, size, block_ids, data_blocks, min, max }
     }
 
     #[inline]
@@ -165,12 +172,16 @@ impl<K: Key> SortedTable<K> {
             return None;
         }
 
-        for block_id in self.block_ids.iter() {
-            let block = self.data_blocks.get_block(&block_id);
+        let block_offset = match self.block_index.binary_search(key) {
+            Ok(pos) => pos,
+            Err(pos) => pos-1
+        };
 
-            if let Some(vid) = block.get(key) {
-                return Some(vid);
-            }
+        let block_id = self.block_ids[block_offset];
+        let block = self.data_blocks.get_block(&block_id);
+
+        if let Some(vid) = block.get(key) {
+            return Some(vid);
         }
 
         None

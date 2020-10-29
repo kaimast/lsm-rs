@@ -68,7 +68,8 @@ impl<K: Key> Level<K> {
         // the level-0 compaction threshold based on number of files.
 
         // Result for both level-0 and level-1
-        let mut result: usize = 10 * 1048576;
+        // This doesn't include the size of the values (for now)
+        let mut result: usize = 1 * 1048576;
         let mut level = self.index;
         while level > 1 {
             result *= 10;

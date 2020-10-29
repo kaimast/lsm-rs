@@ -24,6 +24,7 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 pub struct ValueLog {
     params: Arc<Params>,
     pending_values: RwLock<(ValueBatchId, Vec<Value>)>,
+    imm_values: Mutex<Option<(ValueBatchId, Vec<Value>)>>,
     batch_caches: Vec<Mutex<BatchShard>>
 }
 
@@ -36,13 +37,14 @@ impl ValueLog {
     pub fn new(params: Arc<Params>) -> Self {
         let pending_values = RwLock::new((1,Vec::new()));
         let mut batch_caches = Vec::new();
+        let imm_values = Mutex::new(None);
 
         for _ in 0..NUM_SHARDS {
             let cache = Mutex::new( BatchShard::new(SHARD_SIZE) );
             batch_caches.push(cache);
         }
 
-        Self{ pending_values, batch_caches, params }
+        Self{ pending_values, batch_caches, params, imm_values }
     }
 
     #[inline]
@@ -56,18 +58,25 @@ impl ValueLog {
         self.params.db_path.join(Path::new(&fname))
     }
 
+    pub fn next_pending(&self) {
+        let mut lock = self.pending_values.write().unwrap();
+        let mut imm_values = self.imm_values.lock().unwrap();
+
+        assert!(imm_values.is_none());
+
+        let (next_id, values) = &mut *lock;
+
+        let id = *next_id;
+        *next_id += 1;
+
+        *imm_values = Some((id, std::mem::take(values)));
+    }
+
     pub fn flush_pending(&self) {
-        let (id, values) = {
-            let mut lock = self.pending_values.write().unwrap();
-            let (next_id, values) = &mut *lock;
+       let mut imm_values = self.imm_values.lock().unwrap();
+       let (id, values) = imm_values.take().unwrap();
 
-            let id = *next_id;
-            *next_id += 1;
-
-            (id, std::mem::take(values))
-        };
-
-        let batch = ValueBatch{ values };
+       let batch = ValueBatch{ values };
 
         // Store on disk before grabbing the lock
         let block_data = bincode::serialize(&batch).unwrap();
