@@ -11,7 +11,7 @@ pub type TableVec = Vec<Arc<SortedTable>>;
 
 pub struct Level {
     index: usize,
-    #[ allow(clippy::mutex_atomix) ]
+    #[ allow(clippy::mutex_atomic) ]
     next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>
@@ -19,9 +19,9 @@ pub struct Level {
 
 impl Level {
     pub fn new(index: usize, data_blocks: Arc<DataBlocks>) -> Self {
+        #[ allow(clippy::mutex_atomic) ]
         Self {
             index,
-            #[ allow(clippy::mutex_atomix) ]
             next_compaction: Mutex::new(0),
             data_blocks,
             tables: RwLock::new(Vec::new())
@@ -69,7 +69,7 @@ impl Level {
 
         // Result for both level-0 and level-1
         // This doesn't include the size of the values (for now)
-        let mut result: usize = 1 * 1048576;
+        let mut result: usize = 1048576;
         let mut level = self.index;
         while level > 1 {
             result *= 10;
@@ -94,6 +94,7 @@ impl Level {
     }
 
     pub fn start_compaction(&self) -> (usize, Arc<SortedTable>) {
+        #[ allow(clippy::mutex_atomic) ]
         let mut next_compaction = self.next_compaction.lock().unwrap();
         let tables = self.tables.read().unwrap();
 

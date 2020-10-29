@@ -107,7 +107,7 @@ impl DataBlock {
         Self{ entries }
     }
 
-    pub fn get_offset(&self, offset: usize, previous_key: &Key) -> (Key, Entry) {
+    pub fn get_offset(&self, offset: usize, previous_key: &[u8]) -> (Key, Entry) {
         let (pkey, entry) = &self.entries[offset];
         let kdata = [&previous_key[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
@@ -120,7 +120,7 @@ impl DataBlock {
         for (pkey, entry) in self.entries.iter() {
             let this_key = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
-            if &this_key == key {
+            if this_key == key {
                 return Some(entry.value_ref);
             }
 

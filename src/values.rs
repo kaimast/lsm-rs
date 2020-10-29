@@ -18,7 +18,7 @@ pub type Value = Vec<u8>;
 pub trait ToBytes {
     fn encode(&self) -> Vec<u8>;
     fn encode_ref(&self) -> Option<&[u8]>;
-    fn decode(v: &Vec<u8>) -> Self;
+    fn decode(v: &[u8]) -> Self;
 }
 
 impl ToBytes for String {
@@ -32,8 +32,8 @@ impl ToBytes for String {
         Some(self.as_bytes())
     }
 
-    fn decode(v: &Vec<u8>) -> Self {
-        Self::from_utf8(v.clone()).unwrap()
+    fn decode(v: &[u8]) -> Self {
+        Self::from_utf8(v.to_vec()).unwrap()
     }
 }
 
@@ -46,9 +46,9 @@ impl ToBytes for u64 {
         None
     }
 
-    fn decode(v: &Value) -> Self {
+    fn decode(v: &[u8]) -> Self {
         let mut data = [0; 8];
-        data.clone_from_slice(v.as_slice());
+        data.clone_from_slice(v);
         Self::from_le_bytes(data)
     }
 
