@@ -7,8 +7,8 @@ use serde::{Serialize, Deserialize};
 use lru::LruCache;
 
 use crate::Params;
-use crate::entry::Entry;
 use crate::sorted_table::Key;
+use crate::entry::Entry;
 use crate::values::ValueId;
 
 pub type DataBlockId = u64;
@@ -107,25 +107,24 @@ impl DataBlock {
         Self{ entries }
     }
 
-    pub fn get_offset(&self, offset: usize, previous_key: &[u8]) -> (Vec<u8>, Entry) {
+    pub fn get_offset(&self, offset: usize, previous_key: &Key) -> (Key, Entry) {
         let (pkey, entry) = &self.entries[offset];
         let kdata = [&previous_key[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
         (kdata, entry.clone())
     }
 
-    pub fn get<K: Key>(&self, key: &K) -> Option<ValueId> {
+    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
         let mut last_kdata = vec![];
 
         for (pkey, entry) in self.entries.iter() {
-            let kdata = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
-            let this_key: K = bincode::deserialize(&kdata).expect("Failed to deserialize key");
+            let this_key = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
             if &this_key == key {
                 return Some(entry.value_ref);
             }
 
-            last_kdata = kdata;
+            last_kdata = this_key;
         }
 
         None

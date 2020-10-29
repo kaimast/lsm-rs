@@ -7,17 +7,17 @@ use std::sync::{Arc, Mutex, RwLock};
 
 const MAX_L0_FILES: usize = 8;
 
-pub type TableVec<K> = Vec<Arc<SortedTable<K>>>;
+pub type TableVec = Vec<Arc<SortedTable>>;
 
-pub struct Level<K: Key> {
+pub struct Level {
     index: usize,
     #[ allow(clippy::mutex_atomix) ]
     next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
-    tables: RwLock<TableVec<K>>
+    tables: RwLock<TableVec>
 }
 
-impl<K: Key> Level<K> {
+impl Level {
     pub fn new(index: usize, data_blocks: Arc<DataBlocks>) -> Self {
         Self {
             index,
@@ -28,7 +28,7 @@ impl<K: Key> Level<K> {
         }
     }
 
-    pub fn create_l0_table(&self, _id: usize, entries: Vec<(K, Entry)>) {
+    pub fn create_l0_table(&self, _id: usize, entries: Vec<(Key, Entry)>) {
         let table = SortedTable::new(entries, self.data_blocks.clone());
 
         //TODO update manifest
@@ -36,7 +36,7 @@ impl<K: Key> Level<K> {
         tables.push(Arc::new(table));
     }
 
-    pub fn get(&self, key: &K) -> Option<ValueId> {
+    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
         let tables = self.tables.read().unwrap();
 
         // Iterate from back to front (newest to oldest)
@@ -93,7 +93,7 @@ impl<K: Key> Level<K> {
         }
     }
 
-    pub fn start_compaction(&self) -> (usize, Arc<SortedTable<K>>) {
+    pub fn start_compaction(&self) -> (usize, Arc<SortedTable>) {
         let mut next_compaction = self.next_compaction.lock().unwrap();
         let tables = self.tables.read().unwrap();
 
@@ -112,7 +112,7 @@ impl<K: Key> Level<K> {
         (offset, table)
     }
 
-    pub fn get_overlaps(&self, parent_table: &SortedTable<K>) -> Vec<(usize, Arc<SortedTable<K>>)> {
+    pub fn get_overlaps(&self, parent_table: &SortedTable) -> Vec<(usize, Arc<SortedTable>)> {
         let mut overlaps = Vec::new();
         let tables = self.tables.read().unwrap();
 
@@ -125,7 +125,7 @@ impl<K: Key> Level<K> {
         overlaps
     }
 
-    pub fn get_tables(&self) -> std::sync::RwLockWriteGuard<'_, TableVec<K>> {
+    pub fn get_tables(&self) -> std::sync::RwLockWriteGuard<'_, TableVec> {
         self.tables.write().unwrap()
     }
 }

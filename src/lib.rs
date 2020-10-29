@@ -1,6 +1,3 @@
-// For the Key and Value traits
-#![ feature(trait_alias) ]
-
 // For writing to the log
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
@@ -15,7 +12,7 @@ mod data_blocks;
 use data_blocks::{DataBlocks};
 
 mod values;
-use values::{Value, ValueLog};
+use values::{Value, ToBytes, ValueLog};
 
 mod sorted_table;
 use sorted_table::{SortedTable, Key};
@@ -37,22 +34,21 @@ use wal::WriteAheadLog;
 mod manifest;
 use manifest::Manifest;
 
-pub struct WriteBatch<K: Key> {
-    writes: Vec<(K, Value)>
+pub struct WriteBatch {
+    writes: Vec<(Key, Value)>
 }
 
-impl<K: Key> WriteBatch<K> {
+impl WriteBatch {
     pub fn new() -> Self {
         Self{ writes: Vec::new() }
     }
 
-    pub fn put<V: serde::Serialize>(&mut self, key: K, value: &V) {
-        let vdata = bincode::serialize(value).expect("Failed to serialize value");
-        self.writes.push((key, vdata));
+    pub fn put<K: ToBytes, V: ToBytes>(&mut self, key: &K, value: &V) {
+        self.writes.push((key.encode(), value.encode()));
     }
 }
 
-impl<K: Key> Default for WriteBatch<K> {
+impl Default for WriteBatch {
     fn default() -> Self {
         Self::new()
     }
@@ -96,28 +92,28 @@ impl Default for Params {
     }
 }
 
-pub struct Datastore<K: Key> {
-    inner: Arc<DbLogic<K>>,
+pub struct Datastore {
+    inner: Arc<DbLogic>,
     #[ cfg(feature="compaction") ]
-    tasks: Arc<TaskManager<K>>
+    tasks: Arc<TaskManager>
 }
 
-pub struct DbLogic<K: Key> {
+pub struct DbLogic {
     #[allow(dead_code)]
     manifest: Arc<Manifest>,
     params: Arc<Params>,
-    memtable: RwLock<Memtable<K>>,
-    imm_memtables: Mutex<VecDeque<Memtable<K>>>,
+    memtable: RwLock<Memtable>,
+    imm_memtables: Mutex<VecDeque<Memtable>>,
     imm_cond: Condvar,
     value_log: ValueLog,
     wal: Mutex<WriteAheadLog>,
-    levels: Vec<Level<K>>,
+    levels: Vec<Level>,
     next_table_id: atomic::AtomicUsize,
     running: atomic::AtomicBool,
     data_blocks: Arc<DataBlocks>
 }
 
-impl<K: 'static+Key> Datastore<K> {
+impl Datastore {
     pub fn new(mode: StartMode) -> Self {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -144,27 +140,32 @@ impl<K: 'static+Key> Datastore<K> {
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)
-    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &K) -> Option<V> {
-        self.inner.get::<V>(key)
+    pub fn get<K: ToBytes, V: ToBytes>(&self, key: &K)-> Option<V> {
+        if let Some(inner_key) = key.encode_ref() {
+            self.inner.get(inner_key)
+        } else {
+            let inner_key = key.encode();
+            self.inner.get(inner_key.as_slice())
+        }
     }
 
-    pub fn put<V: serde::Serialize>(&self, key: K, value: &V) {
+    pub fn put<K: ToBytes, V: ToBytes>(&self, key: &K, value: &V) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS);
     }
 
-    pub fn put_opts<V: serde::Serialize>(&self, key: K, value: &V, opts: &WriteOptions) {
+    pub fn put_opts<K: ToBytes, V: ToBytes>(&self, key: &K, value: &V, opts: &WriteOptions) {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts);
     }
 
-    pub fn write(&self, write_batch: WriteBatch<K>) {
+    pub fn write(&self, write_batch: WriteBatch) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS);
     }
 
-    pub fn write_opts(&self, write_batch: WriteBatch<K>, opts: &WriteOptions) {
+    pub fn write_opts(&self, write_batch: WriteBatch, opts: &WriteOptions) {
         let needs_compaction = self.inner.write_opts(write_batch, opts);
 
         if needs_compaction {
@@ -174,13 +175,13 @@ impl<K: 'static+Key> Datastore<K> {
     }
 }
 
-impl<K: Key> Drop for Datastore<K> {
+impl Drop for Datastore {
     fn drop(&mut self) {
         self.inner.stop();
     }
 }
 
-impl<K: Key> DbLogic<K> {
+impl DbLogic {
     pub fn new(start_mode: StartMode, params: Params) -> Self {
         let create;
 
@@ -248,7 +249,7 @@ impl<K: Key> DbLogic<K> {
         }
     }
 
-    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &K) -> Option<V> {
+    pub fn get<V: ToBytes>(&self, key: &[u8]) -> Option<V> {
         let memtable = self.memtable.read().unwrap();
 
         if let Some(val_ref) = memtable.get(key) {
@@ -258,7 +259,8 @@ impl<K: Key> DbLogic<K> {
         {
             let imm_mems = self.imm_memtables.lock().unwrap();
             for imm in imm_mems.iter().rev() {
-                if let Some(val_ref) = imm.get(key) {
+                if let Some(val_ref) = imm.get(&key) {
+                    //FIXME
                     return Some(self.value_log.get_pending(&val_ref));
                 }
             }
@@ -266,14 +268,15 @@ impl<K: Key> DbLogic<K> {
 
         for level in self.levels.iter() {
             if let Some(val_ref) = level.get(key) {
-               return Some(self.value_log.get(&val_ref));
+                let value = self.value_log.get(&val_ref);
+                return Some(value);
             }
         }
 
         None
     }
 
-    pub fn write_opts(&self, mut write_batch: WriteBatch<K>, opt: &WriteOptions) -> bool {
+    pub fn write_opts(&self, mut write_batch: WriteBatch, opt: &WriteOptions) -> bool {
         let mut memtable = self.memtable.write().unwrap();
         let mut wal = self.wal.lock().unwrap();
 
@@ -344,7 +347,7 @@ impl<K: Key> DbLogic<K> {
         false
     }
 
-    fn compact(&self, level_pos: usize, level: &Level<K>) {
+    fn compact(&self, level_pos: usize, level: &Level) {
         let (offset, table) = level.start_compaction();
         let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
 
@@ -382,12 +385,12 @@ impl<K: Key> DbLogic<K> {
 
         assert!(min < max);
 
-        let min = min.clone();
-        let max = max.clone();
+        let min = min.to_vec();
+        let max = max.to_vec();
 
         let mut parent_iter = table.iter();
         let mut child_iters = Vec::new();
-        let mut pos = min.clone();
+        let mut pos = min.to_vec();
 
         for (_, child) in overlaps.iter() {
             child_iters.push(child.iter());
@@ -401,15 +404,15 @@ impl<K: Key> DbLogic<K> {
         //TODO None means there are no overlapping tables at the lower level
         // add a fast path for this case
         let mut next_child_key = if let Some(child) = child_iter.as_ref() {
-            Some(child.get_key())
-        } else { 
+            Some(child.get_key().clone())
+        } else {
             None
         };
 
         loop {
             let mut entry = None;
 
-            if let Some(key) = &next_parent_key {
+            if let Some(key) = next_parent_key {
                 if key == &pos {
                     entry = Some(parent_iter.get_entry());
 
@@ -444,7 +447,7 @@ impl<K: Key> DbLogic<K> {
                         }
 
                         if let Some(next_iter) = &mut child_iter {
-                            next_child_key = Some(next_iter.get_key());
+                            next_child_key = Some(next_iter.get_key().clone());
                         } else {
                             next_child_key = None;
                         }
@@ -461,11 +464,11 @@ impl<K: Key> DbLogic<K> {
                 break;
             } else {
                 if next_child_key.is_some() && next_parent_key.is_some() {
-                    pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).clone();
+                    pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).to_vec();
                 } else if next_child_key.is_some() {
-                    pos = next_child_key.as_ref().unwrap().clone()
+                    pos = next_child_key.as_ref().unwrap().clone();
                 } else if next_parent_key.is_some() {
-                    pos = next_parent_key.as_ref().unwrap().clone()
+                    pos = (*next_parent_key.as_ref().unwrap()).clone();
                 } else {
                     panic!("Invalid state");
                 }
@@ -532,31 +535,31 @@ mod tests {
     #[test]
     fn get_put() {
         test_init();
-        let ds = Datastore::<String>::new(SM);
+        let ds = Datastore::new(SM);
         
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
         let value = String::from("Bar");
         let value2 = String::from("Baz");
 
-        assert_eq!(ds.get::<String>(&key1), None);
-        assert_eq!(ds.get::<String>(&key2), None);
+        assert_eq!(ds.get::<String, String>(&key1), None);
+        assert_eq!(ds.get::<String, String>(&key2), None);
 
-        ds.put(key1.clone(), &value);
+        ds.put(&key1, &value);
 
-        assert_eq!(ds.get::<String>(&key1), Some(value.clone()));
-        assert_eq!(ds.get::<String>(&key2), None);
+        assert_eq!(ds.get(&key1), Some(value.clone()));
+        assert_eq!(ds.get::<String, String>(&key2), None);
 
-        ds.put(key1.clone(), &value2);
-        assert_eq!(ds.get::<String>(&key1), Some(value2.clone()));
+        ds.put(&key1, &value2);
+        assert_eq!(ds.get(&key1), Some(value2.clone()));
     }
 
     #[test]
     fn get_put_many() {
-        const COUNT: usize = 100_000;
+        const COUNT: u64 = 100_000;
 
         test_init();
-        let ds = Datastore::<usize>::new(SM);
+        let ds = Datastore::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -565,20 +568,20 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(key, &value, &options);
+            ds.put_opts(&key, &value, &options);
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get::<String>(&pos), Some(format!("some_string_{}", pos)));
+            assert_eq!(ds.get(&pos), Some(format!("some_string_{}", pos)));
         }
     }
 
     #[test]
     fn override_many() {
-        const COUNT: usize = 100_000;
+        const COUNT: u64 = 100_000;
 
         test_init();
-        let ds = Datastore::<usize>::new(SM);
+        let ds = Datastore::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -587,39 +590,39 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(key, &value, &options);
+            ds.put_opts(&key, &value, &options);
         }
 
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_other_string_{}", pos);
-            ds.put_opts(key, &value, &options);
+            ds.put_opts(&key, &value, &options);
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get::<String>(&pos), Some(format!("some_other_string_{}", pos)));
+            assert_eq!(ds.get(&pos), Some(format!("some_other_string_{}", pos)));
         }
     }
 
 
     #[test]
     fn batched_write() {
-        const COUNT: usize = 1000;
+        const COUNT: u64 = 1000;
 
         test_init();
-        let ds = Datastore::<String>::new(SM);
+        let ds = Datastore::new(SM);
         let mut batch = WriteBatch::new();
 
         for pos in 0..COUNT {
             let key = format!("key{}", pos);
-            batch.put(key, &pos);
+            batch.put(&key, &pos);
         }
 
         ds.write(batch);
 
         for pos in 0..COUNT {
             let key = format!("key{}", pos);
-            assert_eq!(ds.get::<usize>(&key), Some(pos));
+            assert_eq!(ds.get(&key), Some(pos));
         }
     }
 

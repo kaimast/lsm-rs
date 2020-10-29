@@ -1,34 +1,33 @@
 use std::sync::Arc;
 
-use serde::{Serialize, de::DeserializeOwned};
-
 use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlocks};
 
-pub trait Key = Ord+Serialize+DeserializeOwned+Send+Sync+Clone+std::fmt::Debug;
+pub type Key = Vec<u8>;
 
 const BLOCK_SIZE: usize = 32*1024;
 
-pub struct SortedTable<K: Key> {
-    min: K,
-    max: K,
+pub struct SortedTable {
+    min: Key,
+    max: Key,
     size: usize,
-    block_index: Vec<K>,
+    block_index: Vec<Key>,
     block_ids: Vec<DataBlockId>,
     data_blocks: Arc<DataBlocks>
 }
 
-pub struct TableIterator<'a, K: Key> {
+pub struct TableIterator<'a> {
     block_pos: usize,
     block_offset: usize,
-    key: Vec<u8>,
+    key: Key,
     entry: Entry,
-    table: &'a SortedTable<K>
+    table: &'a SortedTable
 }
 
-impl<'a, K: Key> TableIterator<'a, K> {
-    fn new(table: &'a SortedTable<K>) -> Self {
+
+impl<'a> TableIterator<'a> {
+    fn new(table: &'a SortedTable) -> Self {
         let last_key = vec![];
         let block_id = table.block_ids[0];
         let first_block = table.data_blocks.get_block(&block_id);
@@ -48,8 +47,8 @@ impl<'a, K: Key> TableIterator<'a, K> {
         self.block_pos >= self.table.block_ids.len()
     }
 
-    pub fn get_key(&self) -> K {
-        bincode::deserialize(&self.key).unwrap()
+    pub fn get_key(&self) -> &Key {
+        &self.key
     }
 
     pub fn get_entry(&self) -> Entry {
@@ -74,8 +73,8 @@ impl<'a, K: Key> TableIterator<'a, K> {
     }
 }
 
-impl<K: Key> SortedTable<K> {
-    pub fn new(mut entries: Vec<(K, Entry)>, data_blocks: Arc<DataBlocks>) -> Self {
+impl SortedTable {
+    pub fn new(mut entries: Vec<(Key, Entry)>, data_blocks: Arc<DataBlocks>) -> Self {
         if entries.is_empty() {
             panic!("Cannot create empty table");
         }
@@ -98,11 +97,11 @@ impl<K: Key> SortedTable<K> {
     }
 
     /// Create a table from an already sorted set of entries
-    pub fn new_from_sorted(mut entries: Vec<(K, Entry)>, min: K, max: K, data_blocks: Arc<DataBlocks>) -> Self {
+    pub fn new_from_sorted(mut entries: Vec<(Key, Entry)>, min: Key, max: Key, data_blocks: Arc<DataBlocks>) -> Self {
         let mut block_ids = Vec::new();
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
-        let mut last_kdata = vec![];
+        let mut last_key= vec![];
         let mut block_size = 0;
         let mut size = 0;
 
@@ -111,15 +110,14 @@ impl<K: Key> SortedTable<K> {
                 block_index.push(key.clone());
             }
 
-            let kdata = bincode::serialize(&key).expect("Failed to serialize key");
             let mut prefix_len = 0;
 
-            while prefix_len < kdata.len() && prefix_len < last_kdata.len()
-                && kdata[prefix_len] == last_kdata[prefix_len] {
+            while prefix_len < key.len() && prefix_len < last_key.len()
+                && key[prefix_len] == last_key[prefix_len] {
                 prefix_len += 1;
             }
 
-            let suffix = kdata[prefix_len..].to_vec();
+            let suffix = key[prefix_len..].to_vec();
             let this_size = std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>();
             block_size += this_size;
             size += this_size;
@@ -127,14 +125,14 @@ impl<K: Key> SortedTable<K> {
             let pkey = PrefixedKey::new(prefix_len, suffix);
             prefixed_entries.push((pkey, entry));
 
-            last_kdata = kdata;
+            last_key = key;
 
             if block_size >= BLOCK_SIZE {
                 let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries));
                 block_ids.push(id);
 
                 block_size = 0;
-                last_kdata.clear();
+                last_key.clear();
             }
         }
 
@@ -147,7 +145,7 @@ impl<K: Key> SortedTable<K> {
     }
 
     #[inline]
-    pub fn iter(&self) -> TableIterator<K> {
+    pub fn iter(&self) -> TableIterator {
         TableIterator::new(&self)
     }
 
@@ -158,21 +156,22 @@ impl<K: Key> SortedTable<K> {
     }
 
     #[inline]
-    pub fn get_min(&self) -> &K {
+    pub fn get_min(&self) -> &Key {
         &self.min
     }
 
     #[inline]
-    pub fn get_max(&self) -> &K {
+    pub fn get_max(&self) -> &Key {
         &self.max
     }
 
-    pub fn get(&self, key: &K) -> Option<ValueId> {
-        if key < self.get_min() || key > self.get_max() {
+    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
+        if key < self.get_min().as_slice() || key > self.get_max().as_slice() {
             return None;
         }
 
-        let block_offset = match self.block_index.binary_search(key) {
+        //FIXME don't copy the key here
+        let block_offset = match self.block_index.binary_search(&key.to_vec()) {
             Ok(pos) => pos,
             Err(pos) => pos-1
         };
@@ -188,7 +187,7 @@ impl<K: Key> SortedTable<K> {
     }
 
     #[inline]
-    pub fn overlaps(&self, other: &SortedTable<K>) -> bool {
+    pub fn overlaps(&self, other: &SortedTable) -> bool {
         self.get_max() >= other.get_min() && self.get_min() <= other.get_max()
     }
 }
