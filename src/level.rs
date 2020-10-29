@@ -11,6 +11,7 @@ pub type TableVec<K> = Vec<Arc<SortedTable<K>>>;
 
 pub struct Level<K: Key> {
     index: usize,
+    #[ allow(clippy::mutex_atomix) ]
     next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec<K>>
@@ -20,6 +21,7 @@ impl<K: Key> Level<K> {
     pub fn new(index: usize, data_blocks: Arc<DataBlocks>) -> Self {
         Self {
             index,
+            #[ allow(clippy::mutex_atomix) ]
             next_compaction: Mutex::new(0),
             data_blocks,
             tables: RwLock::new(Vec::new())

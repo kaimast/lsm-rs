@@ -107,7 +107,7 @@ impl DataBlock {
         Self{ entries }
     }
 
-    pub fn get_offset(&self, offset: usize, previous_key: &Vec<u8>) -> (Vec<u8>, Entry) {
+    pub fn get_offset(&self, offset: usize, previous_key: &[u8]) -> (Vec<u8>, Entry) {
         let (pkey, entry) = &self.entries[offset];
         let kdata = [&previous_key[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
