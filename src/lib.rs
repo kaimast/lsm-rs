@@ -462,16 +462,14 @@ impl DbLogic {
             if at_end {
                 //Done
                 break;
+            } else if next_child_key.is_some() && next_parent_key.is_some() {
+                pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).to_vec();
+            } else if next_child_key.is_some() {
+                pos = next_child_key.as_ref().unwrap().clone();
+            } else if next_parent_key.is_some() {
+                pos = (*next_parent_key.as_ref().unwrap()).clone();
             } else {
-                if next_child_key.is_some() && next_parent_key.is_some() {
-                    pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).to_vec();
-                } else if next_child_key.is_some() {
-                    pos = next_child_key.as_ref().unwrap().clone();
-                } else if next_parent_key.is_some() {
-                    pos = (*next_parent_key.as_ref().unwrap()).clone();
-                } else {
-                    panic!("Invalid state");
-                }
+                panic!("Invalid state");
             }
         }
 
