@@ -340,6 +340,9 @@ impl<K: Key> DbLogic<K> {
                     child_iters.push(child.iter());
                 }
 
+                let mut child_iters_iter = child_iters.iter_mut();
+                let mut child_iter = child_iters_iter.next();
+
                 while pos <= max {
                     let mut entry = None;
                     let mut next_pos = None;
@@ -355,20 +358,28 @@ impl<K: Key> DbLogic<K> {
                         }
                     }
 
-                    for child_iter in child_iters.iter_mut() {
-                        let child_key = child_iter.get_key();
+                    // Tables in the next level are guaranteed to not overlap
+                    // So we only need to look at one table at a time
+                    if let Some(iter) = &mut child_iter {
+                        let child_key = iter.get_key();
 
                         if child_key == pos {
-                            let child_entry = child_iter.get_entry();
+                            let child_entry = iter.get_entry();
 
-                            if !child_iter.at_end() {
-                                child_iter.step();
+                            if iter.at_end() {
+                                child_iter = child_iters_iter.next();
+                            } else {
+                                iter.step();
+                            }
 
-                                let next_key = child_iter.get_key();
-                                if let Some(npos) = next_pos {
-                                    next_pos = Some(std::cmp::min(npos, next_key));
-                                } else {
-                                    next_pos = Some(next_key);
+                            if let Some(next_iter) = &mut child_iter {
+                                if !next_iter.at_end() {
+                                    let next_key = next_iter.get_key();
+                                    if let Some(npos) = next_pos {
+                                        next_pos = Some(std::cmp::min(npos, next_key));
+                                    } else {
+                                        next_pos = Some(next_key);
+                                    }
                                 }
                             }
 
@@ -381,7 +392,7 @@ impl<K: Key> DbLogic<K> {
                             }
                         }
                     }
-
+                    
                     let entry = entry.unwrap();
                     entries.push((pos, entry));
 
@@ -414,6 +425,8 @@ impl<K: Key> DbLogic<K> {
 
                 child_tables.insert(new_pos, Arc::new(new_table));
                 parent_tables.remove(offset);
+
+                return true;
             }
         }
 
