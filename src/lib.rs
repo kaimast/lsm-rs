@@ -5,7 +5,6 @@
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 
-use std::thread;
 use std::sync::{Arc, Mutex, RwLock, atomic};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -21,7 +20,9 @@ use values::{Value, ValueLog};
 mod sorted_table;
 use sorted_table::{SortedTable, Key};
 
+#[cfg(feature="compaction")]
 mod tasks;
+#[cfg(feature="compaction")]
 use tasks::TaskManager;
 
 mod memtable;
@@ -97,6 +98,7 @@ impl Default for Params {
 
 pub struct Datastore<K: Key> {
     inner: Arc<DbLogic<K>>,
+    #[ cfg(feature="compaction") ]
     tasks: Arc<TaskManager<K>>
 }
 
@@ -122,14 +124,22 @@ impl<K: 'static+Key> Datastore<K> {
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Self {
         let inner = Arc::new( DbLogic::new(mode, params) );
+
+        #[ cfg(feature="compaction") ]
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
+
+        #[ cfg(feature="compaction") ]
         let tasks_cpy = tasks.clone();
 
-        thread::spawn(move ||{
+        #[ cfg(feature="compaction") ]
+        std::thread::spawn(move ||{
             TaskManager::work_loop(tasks_cpy);
         });
 
-        Self{ inner, tasks }
+        #[ cfg(feature="compaction") ]
+        return Self{ inner, tasks };
+        #[ cfg(not(feature="compaction")) ]
+        return Self{ inner };
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)
@@ -157,6 +167,7 @@ impl<K: 'static+Key> Datastore<K> {
         let needs_compaction = self.inner.write_opts(write_batch, opts);
 
         if needs_compaction {
+            #[ cfg(feature="compaction") ]
             self.tasks.wake_up();
         }
     }
@@ -491,7 +502,7 @@ mod tests {
 
     #[test]
     fn get_put_many() {
-        const COUNT: usize = 1_000_000;
+        const COUNT: usize = 1_000_00;
 
         test_init();
         let ds = Datastore::<String>::new(SM);
@@ -513,7 +524,7 @@ mod tests {
 
     #[test]
     fn override_many() {
-        const COUNT: usize = 1_000_000;
+        const COUNT: usize = 1_000_00;
 
         test_init();
         let ds = Datastore::<String>::new(SM);
