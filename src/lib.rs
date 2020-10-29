@@ -255,7 +255,7 @@ impl<K: Key> DbLogic<K> {
 
         {
             let imm_mems = self.imm_memtables.lock().unwrap();
-            for imm in imm_mems.iter() {
+            for imm in imm_mems.iter().rev() {
                 if let Some(val_ref) = imm.get(key) {
                     return Some(self.value_log.get_pending(&val_ref));
                 }
