@@ -21,6 +21,20 @@ pub trait ToBytes {
     fn decode(v: &[u8]) -> Self;
 }
 
+impl ToBytes for Vec<u8> {
+    fn encode(&self) -> Vec<u8> {
+        self.clone()
+    }
+
+    fn encode_ref(&self) -> Option<&[u8]> {
+        Some(self.as_slice())
+    }
+
+    fn decode(v: &[u8]) -> Self {
+        v.to_vec()
+    }
+}
+
 impl ToBytes for String {
     fn encode(&self) -> Vec<u8> {
         let mut val = Vec::new();
