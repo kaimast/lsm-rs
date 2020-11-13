@@ -13,7 +13,6 @@ use data_blocks::{DataBlocks};
 
 mod values;
 use values::{Value, ValueLog};
-pub use values::ToBytes;
 
 mod sorted_table;
 use sorted_table::{SortedTable, Key};
@@ -44,8 +43,8 @@ impl WriteBatch {
         Self{ writes: Vec::new() }
     }
 
-    pub fn put<K: ToBytes, V: ToBytes>(&mut self, key: &K, value: &V) {
-        self.writes.push((key.encode(), value.encode()));
+    pub fn put<K: serde::Serialize, V: serde::Serialize>(&mut self, key: &K, value: &V) {
+        self.writes.push((bincode::serialize(key).unwrap(), bincode::serialize(value).unwrap()));
     }
 }
 
@@ -141,21 +140,17 @@ impl Datastore {
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)
-    pub fn get<K: ToBytes, V: ToBytes>(&self, key: &K)-> Option<V> {
-        if let Some(inner_key) = key.encode_ref() {
-            self.inner.get(inner_key)
-        } else {
-            let inner_key = key.encode();
-            self.inner.get(inner_key.as_slice())
-        }
+    pub fn get<K: serde::Serialize, V: serde::de::DeserializeOwned>(&self, key: &K)-> Option<V> {
+        let key_data = bincode::serialize(key).unwrap();
+        self.inner.get(&key_data)
     }
 
-    pub fn put<K: ToBytes, V: ToBytes>(&self, key: &K, value: &V) {
+    pub fn put<K: serde::Serialize, V: serde::Serialize>(&self, key: &K, value: &V) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS);
     }
 
-    pub fn put_opts<K: ToBytes, V: ToBytes>(&self, key: &K, value: &V, opts: &WriteOptions) {
+    pub fn put_opts<K: serde::Serialize, V: serde::Serialize>(&self, key: &K, value: &V, opts: &WriteOptions) {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts);
@@ -250,7 +245,7 @@ impl DbLogic {
         }
     }
 
-    pub fn get<V: ToBytes>(&self, key: &[u8]) -> Option<V> {
+    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &[u8]) -> Option<V> {
         let memtable = self.memtable.read().unwrap();
 
         if let Some(val_ref) = memtable.get(key) {

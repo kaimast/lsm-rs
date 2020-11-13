@@ -15,59 +15,6 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 
 pub type Value = Vec<u8>;
 
-pub trait ToBytes {
-    fn encode(&self) -> Vec<u8>;
-    fn encode_ref(&self) -> Option<&[u8]>;
-    fn decode(v: &[u8]) -> Self;
-}
-
-impl ToBytes for Vec<u8> {
-    fn encode(&self) -> Vec<u8> {
-        self.clone()
-    }
-
-    fn encode_ref(&self) -> Option<&[u8]> {
-        Some(self.as_slice())
-    }
-
-    fn decode(v: &[u8]) -> Self {
-        v.to_vec()
-    }
-}
-
-impl ToBytes for String {
-    fn encode(&self) -> Vec<u8> {
-        let mut val = Vec::new();
-        val.extend_from_slice(self.as_bytes());
-        val
-    }
-
-    fn encode_ref(&self) -> Option<&[u8]> {
-        Some(self.as_bytes())
-    }
-
-    fn decode(v: &[u8]) -> Self {
-        Self::from_utf8(v.to_vec()).unwrap()
-    }
-}
-
-impl ToBytes for u64 {
-    fn encode(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn encode_ref(&self) -> Option<&[u8]> {
-        None
-    }
-
-    fn decode(v: &[u8]) -> Self {
-        let mut data = [0; 8];
-        data.clone_from_slice(v);
-        Self::from_le_bytes(data)
-    }
-
-}
-
 const NUM_SHARDS: usize = 16;
 const SHARD_SIZE: usize = 100;
 
@@ -159,7 +106,7 @@ impl ValueLog {
         (id, val_len)
     }
 
-    pub fn get<V: ToBytes>(&self, value_ref: &ValueId) -> V {
+    pub fn get<V: serde::de::DeserializeOwned>(&self, value_ref: &ValueId) -> V {
         let (id, offset) = value_ref;
         let shard_id = Self::batch_to_shard_id(*id);
 
@@ -180,15 +127,15 @@ impl ValueLog {
         };
 
         let val = batch.get_value(*offset);
-        V::decode(val)
+        bincode::deserialize(val).unwrap()
     }
 
-    pub fn get_pending<V: ToBytes>(&self, id: &ValueId) -> V {
+    pub fn get_pending<V: serde::de::DeserializeOwned>(&self, id: &ValueId) -> V {
         let lock = self.pending_values.read().unwrap();
         let (_, values) = &*lock;
 
         let vdata = values.get(id.1 as usize).expect("out of pending values bounds");
-        V::decode(vdata)
+        bincode::deserialize(vdata).unwrap()
     }
 }
 
