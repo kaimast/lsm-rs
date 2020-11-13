@@ -12,7 +12,8 @@ mod data_blocks;
 use data_blocks::{DataBlocks};
 
 mod values;
-use values::{Value, ToBytes, ValueLog};
+use values::{Value, ValueLog};
+pub use values::ToBytes;
 
 mod sorted_table;
 use sorted_table::{SortedTable, Key};
