@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 
 mod entry;
 
+mod iterate;
+use iterate::DbIterator;
+
 mod data_blocks;
 use data_blocks::{DataBlocks};
 
@@ -92,7 +95,7 @@ impl Default for Params {
     }
 }
 
-pub struct Datastore {
+pub struct Database {
     inner: Arc<DbLogic>,
     #[ cfg(feature="compaction") ]
     tasks: Arc<TaskManager>
@@ -113,7 +116,7 @@ pub struct DbLogic {
     data_blocks: Arc<DataBlocks>
 }
 
-impl Datastore {
+impl Database {
     pub fn new(mode: StartMode) -> Self {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -156,6 +159,14 @@ impl Datastore {
         self.write_opts(batch, opts);
     }
 
+    pub fn iter(&self) -> DbIterator {
+        todo!() /*
+        let (offset, table) = level.start_compaction();
+        let 
+        let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
+        */
+    }
+
     pub fn write(&self, write_batch: WriteBatch) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS);
@@ -171,7 +182,7 @@ impl Datastore {
     }
 }
 
-impl Drop for Datastore {
+impl Drop for Database {
     fn drop(&mut self) {
         self.inner.stop();
     }
@@ -529,7 +540,7 @@ mod tests {
     #[test]
     fn get_put() {
         test_init();
-        let ds = Datastore::new(SM);
+        let ds = Database::new(SM);
         
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
@@ -553,7 +564,7 @@ mod tests {
         const COUNT: u64 = 100_000;
 
         test_init();
-        let ds = Datastore::new(SM);
+        let ds = Database::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -575,7 +586,7 @@ mod tests {
         const COUNT: u64 = 100_000;
 
         test_init();
-        let ds = Datastore::new(SM);
+        let ds = Database::new(SM);
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -604,7 +615,7 @@ mod tests {
         const COUNT: u64 = 1000;
 
         test_init();
-        let ds = Datastore::new(SM);
+        let ds = Database::new(SM);
         let mut batch = WriteBatch::new();
 
         for pos in 0..COUNT {

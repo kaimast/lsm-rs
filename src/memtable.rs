@@ -3,7 +3,13 @@ use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::Params;
 
+use std::collections::BTreeMap;
+
 pub struct Memtable {
+    // Sorted data
+    table: BTreeMap<Key, ValueId>,
+
+    // Sequential updates
     entries: Vec<(Key, Entry)>,
     size: usize,
 
@@ -11,33 +17,39 @@ pub struct Memtable {
     next_seq_number: u64
 }
 
+pub struct MemtableIterator {
+
+}
+
+impl MemtableIterator {
+
+}
+
 impl Memtable {
     pub fn new() -> Self {
         let entries = Vec::new();
         let size = 0;
+        let table = BTreeMap::new();
         let next_seq_number = 0;
 
-        Self{entries, size, next_seq_number}
+        Self{entries, size, next_seq_number, table}
     }
 
     pub fn get(&self, key: &[u8]) -> Option<ValueId> {
-        // Iter from back to front, to get the most recent updates
-        for (ekey, entry) in self.entries.iter().rev() {
-            if ekey == key {
-                return Some(entry.value_ref);
-            }
+        match self.table.get(key) {
+            Some(id) => Some(id.clone()),
+            None => None
         }
-
-        None
     }
 
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
         self.size += value_len;
-        self.entries.push((key, Entry{
+        self.entries.push((key.clone(), Entry{
             value_ref, seq_number: self.next_seq_number
         }));
 
         self.next_seq_number += 1;
+        self.table.insert(key, value_ref);
     }
 
     pub fn maybe_seal(&mut self, params: &Params) -> Option<Memtable> {
@@ -46,14 +58,20 @@ impl Memtable {
         }
 
         let entries = std::mem::take(&mut self.entries);
+        let table = std::mem::take(&mut self.table);
+
         let size = self.size;
         self.size = 0;
         let next_seq_number = 0; // not used
 
-        Some(Memtable{ entries, size, next_seq_number })
+        Some(Memtable{ entries, size, next_seq_number, table })
     }
 
     pub fn take(self) -> Vec<(Key, Entry)> {
         self.entries
+    }
+
+    pub fn iter(&self) -> MemtableIterator {
+        todo!();
     }
 }
