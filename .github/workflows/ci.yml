@@ -21,7 +21,7 @@ jobs:
          toolchain: nightly
          override: true
          components: cargo, rustc, clippy
-    - name: Linting
-      run: cargo clippy -- -D warnings
     - name: Basic tests
       run: env RUST_TEST_THREADS=1 RUST_LOG=debug cargo test --release
+    - name: Linting #Do liniting last because it is most likely to fail
+      run: cargo clippy -- -D warnings

@@ -26,7 +26,7 @@ mod tasks;
 use tasks::TaskManager;
 
 mod memtable;
-use memtable::Memtable;
+use memtable::{Memtable, MemtableRef, ImmMemtableRef};
 
 mod level;
 use level::Level;
@@ -105,8 +105,8 @@ pub struct DbLogic {
     #[allow(dead_code)]
     manifest: Arc<Manifest>,
     params: Arc<Params>,
-    memtable: RwLock<Memtable>,
-    imm_memtables: Mutex<VecDeque<Memtable>>,
+    memtable: RwLock<MemtableRef>,
+    imm_memtables: Mutex<VecDeque<ImmMemtableRef>>,
     imm_cond: Condvar,
     value_log: ValueLog,
     wal: Mutex<WriteAheadLog>,
@@ -232,7 +232,7 @@ impl DbLogic {
         let manifest = Arc::new(Manifest::new(params.clone()));
         manifest.store();
 
-        let memtable = RwLock::new( Memtable::new() );
+        let memtable = RwLock::new( MemtableRef::wrap( Memtable::new() ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
         let value_log = ValueLog::new(params.clone());
@@ -259,14 +259,14 @@ impl DbLogic {
     pub fn get<V: serde::de::DeserializeOwned>(&self, key: &[u8]) -> Option<V> {
         let memtable = self.memtable.read().unwrap();
 
-        if let Some(val_ref) = memtable.get(key) {
+        if let Some(val_ref) = memtable.get().get(key) {
             return Some(self.value_log.get_pending(&val_ref));
         }
 
         {
             let imm_mems = self.imm_memtables.lock().unwrap();
             for imm in imm_mems.iter().rev() {
-                if let Some(val_ref) = imm.get(&key) {
+                if let Some(val_ref) = imm.get().get(&key) {
                     //FIXME
                     return Some(self.value_log.get_pending(&val_ref));
                 }
@@ -285,6 +285,8 @@ impl DbLogic {
 
     pub fn write_opts(&self, mut write_batch: WriteBatch, opt: &WriteOptions) -> bool {
         let mut memtable = self.memtable.write().unwrap();
+        let mut mem_inner = memtable.get_mut();
+
         let mut wal = self.wal.lock().unwrap();
 
         for (key, value) in write_batch.writes.iter() {
@@ -297,10 +299,13 @@ impl DbLogic {
 
         for (key, value) in write_batch.writes.drain(..) {
             let (value_pos, value_len) = self.value_log.add_value(value);
-            memtable.put(key, value_pos, value_len);
+            mem_inner.put(key, value_pos, value_len);
         }
 
-        if let Some(imm) = memtable.maybe_seal(&self.params) {
+        if mem_inner.is_full(&*self.params) {
+            drop(mem_inner);
+
+            let imm = memtable.take();
             let mut imm_mems = self.imm_memtables.lock().unwrap();
 
             // Currently only one immutable memtable is supported
@@ -334,7 +339,7 @@ impl DbLogic {
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
                 let l0 = self.levels.get(0).unwrap();
-                l0.create_l0_table(table_id, mem.take());
+                l0.create_l0_table(table_id, mem.get().get_entries());
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();

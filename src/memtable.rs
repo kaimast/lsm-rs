@@ -3,7 +3,47 @@ use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::Params;
 
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::collections::BTreeMap;
+
+#[ derive(Clone) ]
+pub(crate) struct MemtableRef {
+    inner: Arc<RwLock<Memtable>>
+}
+
+#[ derive(Clone) ]
+pub(crate) struct ImmMemtableRef {
+    inner: Arc<RwLock<Memtable>>
+}
+
+impl ImmMemtableRef {
+    pub fn get<'a>(&'a self) -> RwLockReadGuard<Memtable> {
+        self.inner.read().unwrap()
+    }
+}
+
+impl MemtableRef {
+    pub fn wrap(inner: Memtable) -> Self {
+        Self{ inner: Arc::new( RwLock::new( inner )) }
+    }
+
+    /// Make the current contents into an immutable memtable
+    /// And create a new mutable one
+    pub fn take(&mut self) -> ImmMemtableRef {
+        let mut inner =  Arc::new( RwLock::new( Memtable::new() ));
+        std::mem::swap(&mut inner, &mut self.inner);
+
+        ImmMemtableRef{ inner }
+    }
+
+    pub fn get<'a>(&'a self) -> RwLockReadGuard<Memtable> {
+        self.inner.read().unwrap()
+    }
+
+    pub fn get_mut<'a>(&'a self) -> RwLockWriteGuard<Memtable> {
+        self.inner.write().unwrap()
+    }
+}
 
 pub struct Memtable {
     // Sorted data
@@ -52,23 +92,14 @@ impl Memtable {
         self.table.insert(key, value_ref);
     }
 
-    pub fn maybe_seal(&mut self, params: &Params) -> Option<Memtable> {
-        if self.size < params.max_memtable_size {
-            return None;
-        }
-
-        let entries = std::mem::take(&mut self.entries);
-        let table = std::mem::take(&mut self.table);
-
-        let size = self.size;
-        self.size = 0;
-        let next_seq_number = 0; // not used
-
-        Some(Memtable{ entries, size, next_seq_number, table })
+    #[inline]
+    pub fn is_full(&self, params: &Params) -> bool {
+        self.size >= params.max_memtable_size
     }
 
-    pub fn take(self) -> Vec<(Key, Entry)> {
-        self.entries
+    //FIXME avoid this copy somehow without breaking seek consistency
+    pub fn get_entries(&self) -> Vec<(Key, Entry)> {
+        self.entries.clone()
     }
 
     pub fn iter(&self) -> MemtableIterator {
