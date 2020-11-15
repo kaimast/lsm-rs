@@ -266,7 +266,7 @@ impl DbLogic {
         {
             let imm_mems = self.imm_memtables.lock().unwrap();
             for imm in imm_mems.iter().rev() {
-                if let Some(val_ref) = imm.get().get(&key) {
+                if let Some(val_ref) = imm.get().get(key) {
                     //FIXME
                     return Some(self.value_log.get_pending(&val_ref));
                 }
