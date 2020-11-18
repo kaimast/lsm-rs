@@ -1,4 +1,4 @@
-use crate::sorted_table::Key;
+use crate::sorted_table::{InternalIterator, Key};
 use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::Params;
@@ -24,36 +24,51 @@ pub struct MemtableIterator {
     inner: Arc<RwLock<Memtable>>,
     next_index: usize,
     key: Option<Key>,
-    value: Option<ValueId>
+    entry: Option<Entry>
 }
 
 impl MemtableIterator {
     pub fn new(inner: Arc<RwLock<Memtable>>) -> Self {
-        let ilock = inner.read();
+        let mut obj = Self{ inner, key: None, entry: None, next_index: 0 };
+        obj.step();
 
-        if let Some((key, value)) = ilock.table.get(0) {
-            let key = Some(key.clone());
-            let value = Some(value.clone());
-            drop(ilock);
+        obj
+    }
+}
 
-            Self{ inner, key, value, next_index: 1}
-        } else {
-            drop(ilock);
-            Self{ inner, key: None, value: None, next_index: 1 }
+impl InternalIterator for MemtableIterator {
+    fn step(&mut self) {
+        let ilock = self.inner.read();
+        let entries = &ilock.entries;
+
+        if self.next_index >= entries.len() {
+            return;
         }
+
+        let key = &entries[self.next_index].0;
+
+        while self.next_index+1 < entries.len()
+            && &entries[self.next_index+1].0 == key {
+            self.next_index += 1;
+        }
+
+        let (key, entry) = entries[self.next_index].clone();
+        self.key = Some(key);
+        self.entry = Some(entry);
+        self.next_index += 1;
     }
 
-    pub fn at_end(&self) -> bool {
-        let len = self.inner.read().table.len();
+    fn at_end(&self) -> bool {
+        let len = self.inner.read().entries.len();
         self.next_index >= len
     }
 
-    pub fn get_key(&self) -> &Key {
+    fn get_key(&self) -> &Key {
         &(self.key.as_ref().expect("Not a valid iterator"))
     }
 
-    pub fn get_value_ref(&self) -> &ValueId {
-        &(self.value.as_ref().expect("Not a valid iterator"))
+    fn get_entry(&self) -> &Entry {
+        self.entry.as_ref().expect("Not a valid iterator")
     }
 }
 
@@ -90,16 +105,13 @@ impl MemtableRef {
         self.inner.read()
     }
 
-    pub fn get_mut<'a>(&'a self) -> RwLockWriteGuard<Memtable> {
+    pub fn get_mut(&self) -> RwLockWriteGuard<Memtable> {
         self.inner.write()
     }
 }
 
 pub struct Memtable {
-    // Sorted data
-    table: Vec<(Key, ValueId)>,
-
-    // Sequential updates
+    // Sorted upadtes
     entries: Vec<(Key, Entry)>,
     size: usize,
 
@@ -111,37 +123,46 @@ impl Memtable {
     pub fn new() -> Self {
         let entries = Vec::new();
         let size = 0;
-        let table = Vec::new();
         let next_seq_number = 0;
 
-        Self{entries, size, next_seq_number, table}
+        Self{entries, size, next_seq_number}
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
-        match self.table.binary_search_by_key(&key, |t| t.0.as_slice()) {
-            Ok(pos) => Some(self.table[pos].1.clone()),
+    pub fn get(&self, key: &[u8]) -> Option<Entry> {
+        match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
+            Ok(mut pos) => {
+                //Find most recent update
+                while self.entries.len() > pos+1
+                    && self.entries[pos+1].0 == key {
+                    pos = pos+1;
+                }
+                Some(self.entries[pos].1.clone())
+            }
             Err(_) => None
         }
     }
 
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
+        let pos = match self.entries.binary_search_by_key(&&key, |t| &t.0) {
+            Ok(mut pos) => {
+                //Find most recent update
+                while self.entries.len() > pos+1
+                    && self.entries[pos+1].0 == key {
+                    pos = pos+1;
+                }
+                pos
+            },
+            Err(pos) => pos,
+        };
+
+        self.entries.insert(pos,
+            (key.clone(), Entry{
+                value_ref, seq_number: self.next_seq_number
+            })
+        );
+
         self.size += value_len;
-        self.entries.push((key.clone(), Entry{
-            value_ref, seq_number: self.next_seq_number
-        }));
-
         self.next_seq_number += 1;
-
-        match self.table.binary_search_by_key(&&key, |t| &t.0) {
-            Ok(pos) => {
-                // Override
-                self.table[pos] = (key, value_ref);
-            }
-            Err(pos) => {
-                // Does not exist yet; insert after
-                self.table.insert(pos, (key, value_ref));
-            }
-        }
     }
 
     #[inline]
@@ -152,10 +173,6 @@ impl Memtable {
     //FIXME avoid this copy somehow without breaking seek consistency
     pub fn get_entries(&self) -> Vec<(Key, Entry)> {
         self.entries.clone()
-    }
-
-    pub fn iter(&self) -> MemtableIterator {
-        todo!();
     }
 }
 
@@ -176,7 +193,7 @@ mod tests {
         reference.get_mut().put(key, val_id.clone(), 1024);
 
         let iter = reference.clone_immutable().into_iter();
-        assert_eq!(iter.get_value_ref(), &val_id);
+        assert_eq!(iter.get_entry().value_ref, val_id);
     }
 
 }

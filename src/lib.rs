@@ -19,7 +19,7 @@ mod values;
 use values::{Value, ValueLog};
 
 mod sorted_table;
-use sorted_table::{SortedTable, Key};
+use sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 
 #[cfg(feature="compaction")]
 mod tasks;
@@ -161,11 +161,8 @@ impl Database {
     }
 
     pub fn iter(&self) -> DbIterator {
-        todo!() /*
-        let (offset, table) = level.start_compaction();
-        let 
-        let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
-        */
+        self.inner.iter()
+
     }
 
     pub fn write(&self, write_batch: WriteBatch) {
@@ -257,19 +254,38 @@ impl DbLogic {
         }
     }
 
+    pub fn iter(&self) -> DbIterator {
+        let mut table_iters = Vec::new();
+        let mut mem_iters = Vec::new();
+
+        mem_iters.push(self.memtable.read().clone_immutable().into_iter());
+
+        for imm in self.imm_memtables.lock().iter() {
+            mem_iters.push(imm.clone().into_iter());
+        }
+
+        for level in self.levels.iter() {
+            for table in level.get_tables().iter() {
+                table_iters.push(TableIterator::new(table.clone()));
+            }
+        }
+
+        DbIterator::new(mem_iters, table_iters)
+    }
+
     pub fn get<V: serde::de::DeserializeOwned>(&self, key: &[u8]) -> Option<V> {
         let memtable = self.memtable.read();
 
-        if let Some(val_ref) = memtable.get().get(key) {
-            return Some(self.value_log.get_pending(&val_ref));
+        if let Some(e) = memtable.get().get(key) {
+            return Some(self.value_log.get_pending(&e.value_ref));
         }
 
         {
             let imm_mems = self.imm_memtables.lock();
             for imm in imm_mems.iter().rev() {
-                if let Some(val_ref) = imm.get().get(key) {
+                if let Some(e) = imm.get().get(key) {
                     //FIXME
-                    return Some(self.value_log.get_pending(&val_ref));
+                    return Some(self.value_log.get_pending(&e.value_ref));
                 }
             }
         }
@@ -401,12 +417,12 @@ impl DbLogic {
         let min = min.to_vec();
         let max = max.to_vec();
 
-        let mut parent_iter = table.iter();
+        let mut parent_iter = TableIterator::new(table.clone());
         let mut child_iters = Vec::new();
         let mut pos = min.to_vec();
 
         for (_, child) in overlaps.iter() {
-            child_iters.push(child.iter());
+            child_iters.push(TableIterator::new(child.clone()));
         }
 
         let mut child_iters_iter = child_iters.iter_mut();
@@ -427,7 +443,7 @@ impl DbLogic {
 
             if let Some(key) = next_parent_key {
                 if key == &pos {
-                    entry = Some(parent_iter.get_entry());
+                    entry = Some(parent_iter.get_entry().clone());
 
                     if parent_iter.at_end() {
                         next_parent_key = None;
@@ -443,7 +459,7 @@ impl DbLogic {
             if let Some(iter) = &mut child_iter {
                 if let Some(key) = &next_child_key {
                     if key == &pos {
-                        let child_entry = iter.get_entry();
+                        let child_entry = iter.get_entry().clone();
 
                         if let Some(e) = &entry {
                             if e.seq_number < child_entry.seq_number {
@@ -470,7 +486,7 @@ impl DbLogic {
 
             let at_end = pos == max;
 
-            entries.push((pos, entry.unwrap()));
+            entries.push((pos, entry.unwrap().clone()));
 
             if at_end {
                 //Done

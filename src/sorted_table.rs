@@ -17,17 +17,24 @@ pub struct SortedTable {
     data_blocks: Arc<DataBlocks>
 }
 
-pub struct TableIterator<'a> {
+pub trait InternalIterator {
+    fn at_end(&self) -> bool;
+    fn step(&mut self);
+    fn get_key(&self) -> &Key;
+    fn get_entry(&self) -> &Entry;
+}
+
+pub struct TableIterator {
     block_pos: usize,
     block_offset: usize,
     key: Key,
     entry: Entry,
-    table: &'a SortedTable
+    table: Arc<SortedTable>
 }
 
 
-impl<'a> TableIterator<'a> {
-    fn new(table: &'a SortedTable) -> Self {
+impl TableIterator {
+    pub fn new(table: Arc<SortedTable>) -> Self {
         let last_key = vec![];
         let block_id = table.block_ids[0];
         let first_block = table.data_blocks.get_block(&block_id);
@@ -42,20 +49,22 @@ impl<'a> TableIterator<'a> {
 
         Self{ key, entry, block_pos, block_offset, table }
     }
+}
 
-    pub fn at_end(&self) -> bool {
+impl InternalIterator for TableIterator {
+    fn at_end(&self) -> bool {
         self.block_pos >= self.table.block_ids.len()
     }
 
-    pub fn get_key(&self) -> &Key {
+    fn get_key(&self) -> &Key {
         &self.key
     }
 
-    pub fn get_entry(&self) -> Entry {
-        self.entry.clone()
+    fn get_entry(&self) -> &Entry {
+        &self.entry
     }
 
-    pub fn step(&mut self) {
+    fn step(&mut self) {
         let block_id = self.table.block_ids[self.block_pos];
         let block = self.table.data_blocks.get_block(&block_id);
 
@@ -142,11 +151,6 @@ impl SortedTable {
         }
 
         Self{ block_index, size, block_ids, data_blocks, min, max }
-    }
-
-    #[inline]
-    pub fn iter(&self) -> TableIterator {
-        TableIterator::new(&self)
     }
 
     // Get the size of this table (in bytes)
