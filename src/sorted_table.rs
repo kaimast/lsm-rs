@@ -90,30 +90,8 @@ impl InternalIterator for TableIterator {
 }
 
 impl SortedTable {
-    pub fn new(mut entries: Vec<(Key, Entry)>, data_blocks: Arc<DataBlocks>) -> Self {
-        if entries.is_empty() {
-            panic!("Cannot create empty table");
-        }
-
-        entries.sort_by(|elem1, elem2| -> std::cmp::Ordering {
-            if elem1.0 == elem2.0 {
-                // If keys are equal, sort by sequence number
-                elem1.1.seq_number.cmp(&elem2.1.seq_number)
-            } else {
-                elem1.0.cmp(&elem2.0)
-            }
-        });
-
-        let min = entries[0].0.clone();
-        let max = entries[entries.len()-1].0.clone();
-
-        assert!(min < max);
-
-        Self::new_from_sorted(entries, min, max, data_blocks)
-    }
-
-    /// Create a table from an already sorted set of entries
-    pub fn new_from_sorted(mut entries: Vec<(Key, Entry)>, min: Key, max: Key, data_blocks: Arc<DataBlocks>) -> Self {
+    pub fn new(mut entries: Vec<(Key, Entry)>, min: Key, max: Key, data_blocks: Arc<DataBlocks>)
+            -> Self {
         let mut block_ids = Vec::new();
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
@@ -200,5 +178,32 @@ impl SortedTable {
     #[inline]
     pub fn overlaps(&self, other: &SortedTable) -> bool {
         self.get_max() >= other.get_min() && self.get_min() <= other.get_max()
+    }
+}
+
+#[ cfg(test) ]
+mod tests {
+    use super::*;
+    use crate::Params;
+    use crate::entry::Entry;
+
+    #[test]
+    fn iterate() {
+        let params = Arc::new( Params::default() );
+        let data_blocks = Arc::new( DataBlocks::new(params) );
+
+        let key = vec![5];
+        let entry = Entry{ seq_number: 1, value_ref: (4,2) };
+
+        let entries = vec![(key.clone(), entry)];
+        let table = Arc::new( SortedTable::new(entries, key.clone(), key.clone(), data_blocks) );
+
+        let mut iter = TableIterator::new( table );
+
+        assert_eq!(iter.at_end(), false);
+        assert_eq!(iter.get_key(), &key);
+
+        iter.step();
+        assert_eq!(iter.at_end(), true);
     }
 }

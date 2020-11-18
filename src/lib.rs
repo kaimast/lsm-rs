@@ -470,11 +470,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(key) = next_parent_key {
                 if key == &pos {
                     entry = Some(parent_iter.get_entry().clone());
+                    parent_iter.step();
 
                     if parent_iter.at_end() {
                         next_parent_key = None;
                     } else {
-                        parent_iter.step();
                         next_parent_key = Some(parent_iter.get_key());
                     }
                 }
@@ -495,10 +495,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             entry = Some(child_entry);
                         }
 
+                        iter.step();
+
                         if iter.at_end() {
                             child_iter = child_iters_iter.next();
-                        } else {
-                            iter.step();
                         }
 
                         if let Some(next_iter) = &mut child_iter {
@@ -528,7 +528,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        let new_table = SortedTable::new_from_sorted(entries, min, max, self.data_blocks.clone());
+        let new_table = SortedTable::new(entries, min, max, self.data_blocks.clone());
 
         // Install new tables atomically
         let mut parent_tables = level.get_tables();
