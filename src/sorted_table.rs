@@ -187,9 +187,15 @@ mod tests {
     use crate::Params;
     use crate::entry::Entry;
 
+    use tempfile::tempdir;
+
     #[test]
     fn iterate() {
-        let params = Arc::new( Params::default() );
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
         let data_blocks = Arc::new( DataBlocks::new(params) );
 
         let key = vec![5];

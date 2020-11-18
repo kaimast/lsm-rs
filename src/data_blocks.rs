@@ -70,7 +70,7 @@ impl DataBlocks {
         let block_data = super::get_encoder().serialize(&*block).unwrap();
         let fpath = self.get_file_path(&id);
 
-        let mut file = std::fs::File::create(fpath).unwrap();
+        let mut file = std::fs::File::create(fpath).expect("Failed to store data block on disk");
         file.write_all(block_data.as_slice()).expect("Failed to store data block on disk");
         file.sync_all().unwrap();
         log::trace!("Created new data block on disk");

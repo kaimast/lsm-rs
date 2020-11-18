@@ -13,6 +13,7 @@ log = { version="0.4" }
 
 [dev-dependencies]
 env_logger = { version="0.7" }
+tempfile = { version="3" }
 
 [lib]
 path = "src/lib.rs"
