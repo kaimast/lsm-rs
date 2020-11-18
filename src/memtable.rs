@@ -41,6 +41,7 @@ impl InternalIterator for MemtableIterator {
         let ilock = self.inner.read();
         let entries = &ilock.entries;
 
+        #[ allow(clippy::comparison_chain) ]
         if self.next_index > entries.len() {
             panic!("Cannot step(); already at end");
         } else if self.next_index == entries.len() {
@@ -77,7 +78,7 @@ impl InternalIterator for MemtableIterator {
 
 
 impl ImmMemtableRef {
-    pub fn get<'a>(&'a self) -> RwLockReadGuard<Memtable> {
+    pub fn get(&self) -> RwLockReadGuard<Memtable> {
         self.inner.read()
     }
 
@@ -140,8 +141,8 @@ impl Memtable {
             Ok(mut pos) => {
                 //Find most recent update
                 while self.entries.len() > pos+1
-                    && self.entries[pos+1].0 == key {
-                    pos = pos+1;
+                        && self.entries[pos+1].0 == key {
+                    pos += 1;
                 }
                 Some(self.entries[pos].1.clone())
             }
@@ -163,7 +164,7 @@ impl Memtable {
         };
 
         self.entries.insert(pos,
-            (key.clone(), Entry{
+            (key, Entry{
                 value_ref, seq_number: self.next_seq_number
             })
         );

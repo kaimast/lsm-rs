@@ -31,7 +31,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
     fn parse_iter<'a>(last_key: &Option<Key>, iter: &'a mut dyn InternalIterator,
             min_kv: &mut Option<(&'a Key, &'a Entry)>) -> bool {
         if let Some(last_key) = last_key {
-            while !iter.at_end() && iter.get_key() <= &last_key {
+            while !iter.at_end() && iter.get_key() <= last_key {
                 iter.step();
             }
         }

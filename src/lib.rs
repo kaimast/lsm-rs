@@ -498,10 +498,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 let entry = table_iter.get_entry();
 
                 if let Some((min_key, min_entry)) = min_kv {
-                    if key < min_key {
-                        min_kv = Some((key, entry));
-                    } else if key == min_key
-                            && entry.seq_number > min_entry.seq_number {
+                    if key < min_key ||
+                        (key == min_key
+                         && entry.seq_number > min_entry.seq_number ) {
                         min_kv = Some((key, entry));
                     }
                 } else {

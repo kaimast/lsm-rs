@@ -65,6 +65,7 @@ impl InternalIterator for TableIterator {
     }
 
     fn step(&mut self) {
+        #[ allow(clippy::comparison_chain) ]
         if self.block_pos == self.table.block_ids.len() {
             self.block_pos += 1;
             return;
@@ -145,17 +146,17 @@ impl SortedTable {
     }
 
     #[inline]
-    pub fn get_min(&self) -> &Key {
+    pub fn get_min(&self) -> &[u8] {
         &self.min
     }
 
     #[inline]
-    pub fn get_max(&self) -> &Key {
+    pub fn get_max(&self) -> &[u8] {
         &self.max
     }
 
     pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
-        if key < self.get_min().as_slice() || key > self.get_max().as_slice() {
+        if key < self.get_min() || key > self.get_max() {
             return None;
         }
 
@@ -176,7 +177,7 @@ impl SortedTable {
     }
 
     #[inline]
-    pub fn overlaps(&self, min: &Key, max: &Key) -> bool {
+    pub fn overlaps(&self, min: &[u8], max: &[u8]) -> bool {
         self.get_max() >= min && self.get_min() <= max
     }
 }

@@ -150,7 +150,7 @@ impl Level {
         (offsets, tables)
     }
 
-    pub fn get_overlaps(&self, min: &Key, max: &Key) -> Vec<(usize, Arc<SortedTable>)> {
+    pub fn get_overlaps(&self, min: &[u8], max: &[u8]) -> Vec<(usize, Arc<SortedTable>)> {
         let mut overlaps = Vec::new();
         let tables = self.tables.read().unwrap();
 
