@@ -48,7 +48,7 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
+    pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
         let tables = self.tables.read().unwrap();
 
         // Iterate from back to front (newest to oldest)

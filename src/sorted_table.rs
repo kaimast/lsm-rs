@@ -154,7 +154,7 @@ impl SortedTable {
         &self.max
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
+    pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
         if key < self.get_min().as_slice() || key > self.get_max().as_slice() {
             return None;
         }
@@ -168,8 +168,8 @@ impl SortedTable {
         let block_id = self.block_ids[block_offset];
         let block = self.data_blocks.get_block(&block_id);
 
-        if let Some(vid) = block.get(key) {
-            return Some(vid);
+        if let Some(res) = block.get(key) {
+            return Some(res);
         }
 
         None

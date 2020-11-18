@@ -118,14 +118,14 @@ impl DataBlock {
         (kdata, entry.clone())
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<ValueId> {
+    pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
         let mut last_kdata = vec![];
 
         for (pkey, entry) in self.entries.iter() {
             let this_key = [&last_kdata[..pkey.prefix_len], &pkey.suffix[..]].concat();
 
             if this_key == key {
-                return Some(entry.value_ref);
+                return Some((entry.seq_number, entry.value_ref));
             }
 
             last_kdata = this_key;

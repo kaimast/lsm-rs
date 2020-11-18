@@ -112,6 +112,7 @@ impl Default for Params {
 #[inline]
 fn get_encoder() ->
         bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
+    // Use BigEndian to make integers sortable properly
     bincode::options().with_big_endian()
 }
 
@@ -317,14 +318,26 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
+        let mut max_found = None;
+
         for level in self.levels.iter() {
-            if let Some(val_ref) = level.get(key) {
-                let value = self.value_log.get(&val_ref);
-                return Some(value);
+            if let Some((seq_id, val_ref)) = level.get(key) {
+                if let Some((other_seq_id, _)) = max_found {
+                    if other_seq_id < seq_id {
+                        max_found = Some((seq_id, val_ref));
+                    }
+                } else {
+                    max_found = Some((seq_id, val_ref));
+                }
             }
         }
 
-        None
+        if let Some((_, val_ref)) = max_found {
+            let value = self.value_log.get(&val_ref);
+            Some(value)
+        } else {
+            None
+        }
     }
 
     pub fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> bool {
@@ -441,7 +454,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             return
         }
 
-        log::debug!("Compacting one table in level {} with {} table(s) in level {}", level_pos, overlaps.len(), level_pos+1);
+        log::debug!("Compacting {} table(s) in level {} with {} table(s) in level {}", tables.len(), level_pos, overlaps.len(), level_pos+1);
 
         //Merge
         let mut entries = Vec::new();
