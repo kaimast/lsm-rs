@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 lru = { version="0.6" }
 parking_lot = { version="0.11" }
-bincode = { version="1" }
+bincode = { version="^1.3" }
 serde = { version="1", features=["derive"] }
 log = { version="0.4" }
 

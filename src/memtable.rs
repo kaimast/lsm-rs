@@ -41,7 +41,10 @@ impl InternalIterator for MemtableIterator {
         let ilock = self.inner.read();
         let entries = &ilock.entries;
 
-        if self.next_index >= entries.len() {
+        if self.next_index > entries.len() {
+            panic!("Cannot step(); already at end");
+        } else if self.next_index == entries.len() {
+            self.next_index += 1;
             return;
         }
 
@@ -60,11 +63,11 @@ impl InternalIterator for MemtableIterator {
 
     fn at_end(&self) -> bool {
         let len = self.inner.read().entries.len();
-        self.next_index >= len
+        self.next_index > len
     }
 
     fn get_key(&self) -> &Key {
-        &(self.key.as_ref().expect("Not a valid iterator"))
+        self.key.as_ref().expect("Not a valid iterator")
     }
 
     fn get_entry(&self) -> &Entry {
@@ -143,12 +146,12 @@ impl Memtable {
     }
 
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
-        let pos = match self.entries.binary_search_by_key(&&key, |t| &t.0) {
+        let pos = match self.entries.binary_search_by_key(&key.as_slice(), |t| t.0.as_slice()) {
             Ok(mut pos) => {
                 //Find most recent update
-                while self.entries.len() > pos+1
+                while pos+1 < self.entries.len()
                     && self.entries[pos+1].0 == key {
-                    pos = pos+1;
+                    pos += 1;
                 }
                 pos+1
             },
@@ -187,13 +190,30 @@ mod tests {
         let iter = reference.clone_immutable().into_iter();
         assert_eq!(iter.at_end(), true);
 
-        let key = vec![5,1,2,3];
-        let val_id = (5, 141);
+        let key1 = bincode::serialize(&(5u64)).unwrap();
+        let val1 = (5, 141);
 
-        reference.get_mut().put(key, val_id.clone(), 1024);
+        let key2 = bincode::serialize(&(10u64)).unwrap();
+        let val2 = (92, 76);
 
-        let iter = reference.clone_immutable().into_iter();
-        assert_eq!(iter.get_entry().value_ref, val_id);
+        reference.get_mut().put(key1.clone(), val1.clone(), 1024);
+        reference.get_mut().put(key2.clone(), val2.clone(), 1024);
+
+        let mut iter = reference.clone_immutable().into_iter();
+
+        assert_eq!(iter.get_key(), &key1);
+        assert_eq!(iter.get_entry().value_ref, val1);
+
+        iter.step();
+
+        assert_eq!(iter.get_key(), &key2);
+        assert_eq!(iter.get_entry().value_ref, val2);
+
+        assert_eq!(iter.at_end(), false);
+
+        iter.step();
+
+        assert_eq!(iter.at_end(), true);
     }
 
     #[test]

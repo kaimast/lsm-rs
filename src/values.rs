@@ -4,6 +4,8 @@ use std::io::Write;
 
 use serde::{Serialize, Deserialize};
 
+use bincode::Options;
+
 use lru::LruCache;
 
 use crate::Params;
@@ -78,7 +80,7 @@ impl ValueLog {
        let batch = ValueBatch{ values };
 
         // Store on disk before grabbing the lock
-        let block_data = bincode::serialize(&batch).unwrap();
+        let block_data = super::get_encoder().serialize(&batch).unwrap();
         let fpath = self.get_file_path(&id);
 
         let mut file = std::fs::File::create(fpath).unwrap();
@@ -95,7 +97,7 @@ impl ValueLog {
         let mut lock = self.pending_values.write().unwrap();
         let (next_id, values) = &mut *lock;
 
-        let data = bincode::serialize(&val).expect("Failed to serialize value");
+        let data = super::get_encoder().serialize(&val).expect("Failed to serialize value");
         values.push(val);
 
         let val_len = data.len();
@@ -119,7 +121,9 @@ impl ValueLog {
                 log::trace!("Loading value batch from disk");
                 let fpath = self.get_file_path(&id);
                 let data = std::fs::read(fpath).expect("Cannot read value batch block from disk");
-                let batch: Arc<ValueBatch> = Arc::new( bincode::deserialize(&data).unwrap() );
+
+                let batch = super::get_encoder().deserialize(&data).unwrap();
+                let batch: Arc<ValueBatch> = Arc::new(batch);
 
                 cache.put(*id, batch.clone());
                 batch
@@ -127,7 +131,7 @@ impl ValueLog {
         };
 
         let val = batch.get_value(*offset);
-        bincode::deserialize(val).unwrap()
+        super::get_encoder().deserialize(val).unwrap()
     }
 
     pub fn get_pending<V: serde::de::DeserializeOwned>(&self, id: &ValueId) -> V {
@@ -135,7 +139,7 @@ impl ValueLog {
         let (_, values) = &*lock;
 
         let vdata = values.get(id.1 as usize).expect("out of pending values bounds");
-        bincode::deserialize(vdata).unwrap()
+        super::get_encoder().deserialize(vdata).unwrap()
     }
 }
 

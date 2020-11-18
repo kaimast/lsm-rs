@@ -10,6 +10,8 @@ use std::sync::{Arc, atomic};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
+use bincode::Options;
+
 mod entry;
 
 mod iterate;
@@ -57,7 +59,8 @@ impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     }
 
     pub fn put(&mut self, key: &K, value: &V) {
-        self.writes.push((bincode::serialize(key).unwrap(), bincode::serialize(value).unwrap()));
+        let enc = get_encoder();
+        self.writes.push((enc.serialize(key).unwrap(), enc.serialize(value).unwrap()));
     }
 }
 
@@ -103,6 +106,12 @@ impl Default for Params {
             num_levels: 5,
         }
     }
+}
+
+#[inline]
+fn get_encoder() ->
+        bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
+    bincode::options().with_big_endian()
 }
 
 pub struct Database<K: KV_Trait, V: KV_Trait> {
@@ -157,7 +166,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Will deserialize V from the raw data (avoids an additional copy)
     #[inline]
     pub fn get(&self, key: &K)-> Option<V> {
-        let key_data = bincode::serialize(key).unwrap();
+        let key_data = get_encoder().serialize(key).unwrap();
         self.inner.get(&key_data)
     }
 
@@ -599,8 +608,8 @@ mod tests {
     }
 
     #[test]
-    fn iter() {
-        const COUNT: u64 = 1000;
+    fn iterate() {
+        const COUNT: u64 = 5_000;
 
         test_init();
         let ds = Database::<u64, String>::new(SM);
@@ -615,10 +624,18 @@ mod tests {
             ds.put_opts(&key, &value, &options);
         }
 
+        let mut count = 0;
+
         for (pos, (key, val)) in ds.iter().enumerate() {
+            println!("{:?} {:?}", key, val);
+
             assert_eq!(pos as u64, key);
             assert_eq!(val, format!("some_string_{}", pos));
+
+            count += 1;
         }
+
+        assert_eq!(count, COUNT);
     }
 
     #[test]

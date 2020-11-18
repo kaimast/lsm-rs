@@ -53,7 +53,7 @@ impl TableIterator {
 
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
-        self.block_pos >= self.table.block_ids.len()
+        self.block_pos > self.table.block_ids.len()
     }
 
     fn get_key(&self) -> &Key {
@@ -65,6 +65,13 @@ impl InternalIterator for TableIterator {
     }
 
     fn step(&mut self) {
+        if self.block_pos == self.table.block_ids.len() {
+            self.block_pos += 1;
+            return;
+        } else if self.block_pos > self.table.block_ids.len() {
+            panic!("Cannot step(); already at end");
+        }
+
         let block_id = self.table.block_ids[self.block_pos];
         let block = self.table.data_blocks.get_block(&block_id);
 

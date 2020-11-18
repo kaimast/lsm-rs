@@ -4,6 +4,8 @@ use serde::{Serialize, Deserialize};
 
 use crate::Params;
 
+use bincode::Options;
+
 #[ derive(Serialize, Deserialize) ]
 struct Inner {
     levels: Vec<Vec<usize>>
@@ -24,12 +26,10 @@ impl Manifest {
     }
 
     pub fn store(&self) {
-        let data = bincode::serialize(&self.inner).unwrap();
+        let data = super::get_encoder().serialize(&self.inner).unwrap();
         let manifest_path = self.params.db_path.join(std::path::Path::new("MANIFEST"));
 
         std::fs::write(&manifest_path, data).expect("Failed to store manifest");
     }
-
 }
-
 

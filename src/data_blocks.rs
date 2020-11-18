@@ -6,6 +6,8 @@ use serde::{Serialize, Deserialize};
 
 use lru::LruCache;
 
+use bincode::Options;
+
 use crate::Params;
 use crate::sorted_table::Key;
 use crate::entry::Entry;
@@ -65,7 +67,7 @@ impl DataBlocks {
         let shard_id = Self::block_to_shard_id(id);
 
         // Store on disk before grabbing the lock
-        let block_data = bincode::serialize(&*block).unwrap();
+        let block_data = super::get_encoder().serialize(&*block).unwrap();
         let fpath = self.get_file_path(&id);
 
         let mut file = std::fs::File::create(fpath).unwrap();
@@ -89,7 +91,9 @@ impl DataBlocks {
             log::trace!("Loading key block from disk");
             let fpath = self.get_file_path(&id);
             let data = std::fs::read(fpath).expect("Cannot read data block from disk");
-            let block: Arc<DataBlock> = Arc::new( bincode::deserialize(&data).unwrap() );
+
+            let block = super::get_encoder().deserialize(&data).unwrap();
+            let block: Arc<DataBlock>= Arc::new(block);
 
             cache.put(*id, block.clone());
             block
