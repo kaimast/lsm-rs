@@ -2,7 +2,8 @@
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 
-use std::sync::{Arc, Condvar, Mutex, RwLock, atomic};
+use parking_lot::{Condvar, Mutex, RwLock};
+use std::sync::{Arc, atomic};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +13,7 @@ mod iterate;
 use iterate::DbIterator;
 
 mod data_blocks;
-use data_blocks::{DataBlocks};
+use data_blocks::DataBlocks;
 
 mod values;
 use values::{Value, ValueLog};
@@ -257,14 +258,14 @@ impl DbLogic {
     }
 
     pub fn get<V: serde::de::DeserializeOwned>(&self, key: &[u8]) -> Option<V> {
-        let memtable = self.memtable.read().unwrap();
+        let memtable = self.memtable.read();
 
         if let Some(val_ref) = memtable.get().get(key) {
             return Some(self.value_log.get_pending(&val_ref));
         }
 
         {
-            let imm_mems = self.imm_memtables.lock().unwrap();
+            let imm_mems = self.imm_memtables.lock();
             for imm in imm_mems.iter().rev() {
                 if let Some(val_ref) = imm.get().get(key) {
                     //FIXME
@@ -284,10 +285,10 @@ impl DbLogic {
     }
 
     pub fn write_opts(&self, mut write_batch: WriteBatch, opt: &WriteOptions) -> bool {
-        let mut memtable = self.memtable.write().unwrap();
+        let mut memtable = self.memtable.write();
         let mut mem_inner = memtable.get_mut();
 
-        let mut wal = self.wal.lock().unwrap();
+        let mut wal = self.wal.lock();
 
         for (key, value) in write_batch.writes.iter() {
             wal.store(key, value);
@@ -306,12 +307,12 @@ impl DbLogic {
             drop(mem_inner);
 
             let imm = memtable.take();
-            let mut imm_mems = self.imm_memtables.lock().unwrap();
+            let mut imm_mems = self.imm_memtables.lock();
 
             // Currently only one immutable memtable is supported
             #[ cfg(feature="compaction") ]
             while !imm_mems.is_empty() {
-                imm_mems = self.imm_cond.wait(imm_mems).unwrap();
+                self.imm_cond.wait(&mut imm_mems);
             }
 
             self.value_log.next_pending();
@@ -331,7 +332,7 @@ impl DbLogic {
     /// Returns true if any work was done
     pub fn do_compaction(&self) -> bool {
         {
-            let mut imm_mems = self.imm_memtables.lock().unwrap();
+            let mut imm_mems = self.imm_memtables.lock();
 
             if let Some(mem) = imm_mems.pop_front() {
                 self.value_log.flush_pending();
@@ -510,7 +511,7 @@ impl DbLogic {
 
     pub fn needs_compaction(&self) -> bool {
         {
-            let imm_mems = self.imm_memtables.lock().unwrap();
+            let imm_mems = self.imm_memtables.lock();
 
             if !imm_mems.is_empty() {
                 return true;

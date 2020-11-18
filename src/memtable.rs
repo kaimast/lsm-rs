@@ -3,7 +3,8 @@ use crate::entry::Entry;
 use crate::values::ValueId;
 use crate::Params;
 
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::Arc;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[ derive(Clone) ]
 pub struct MemtableRef {
@@ -28,7 +29,7 @@ pub struct MemtableIterator {
 
 impl MemtableIterator {
     pub fn new(inner: Arc<RwLock<Memtable>>) -> Self {
-        let ilock = inner.read().unwrap();
+        let ilock = inner.read();
 
         if let Some((key, value)) = ilock.table.get(0) {
             let key = Some(key.clone());
@@ -43,7 +44,7 @@ impl MemtableIterator {
     }
 
     pub fn at_end(&self) -> bool {
-        let len = self.inner.read().unwrap().table.len();
+        let len = self.inner.read().table.len();
         self.next_index >= len
     }
 
@@ -59,7 +60,7 @@ impl MemtableIterator {
 
 impl ImmMemtableRef {
     pub fn get<'a>(&'a self) -> RwLockReadGuard<Memtable> {
-        self.inner.read().unwrap()
+        self.inner.read()
     }
 
     pub fn into_iter(self) -> MemtableIterator {
@@ -86,11 +87,11 @@ impl MemtableRef {
     }
 
     pub fn get(& self) -> RwLockReadGuard<Memtable> {
-        self.inner.read().unwrap()
+        self.inner.read()
     }
 
     pub fn get_mut<'a>(&'a self) -> RwLockWriteGuard<Memtable> {
-        self.inner.write().unwrap()
+        self.inner.write()
     }
 }
 
