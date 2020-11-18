@@ -500,10 +500,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if let Some((min_key, min_entry)) = min_kv {
                     if key < min_key {
                         min_kv = Some((key, entry));
-                    } else if key == min_key {
-                        if entry.seq_number > min_entry.seq_number {
-                            min_kv = Some((key, entry));
-                        }
+                    } else if key == min_key
+                            && entry.seq_number > min_entry.seq_number {
+                        min_kv = Some((key, entry));
                     }
                 } else {
                     min_kv = Some((key, entry));
