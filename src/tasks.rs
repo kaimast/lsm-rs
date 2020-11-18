@@ -1,20 +1,22 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use super::KV_Trait;
+
 use crate::DbLogic;
 
 pub trait Task {
     fn wake_up(&self);
 }
 
-pub struct TaskManager {
-    datastore: Arc<DbLogic>,
+pub struct TaskManager<K: KV_Trait, V: KV_Trait> {
+    datastore: Arc<DbLogic<K, V>>,
     last_change: Mutex<Instant>,
     sc_condition: Condvar
 }
 
-impl TaskManager {
-    pub fn new(datastore: Arc<DbLogic>) -> Self {
+impl<K: KV_Trait, V: KV_Trait>TaskManager<K, V> {
+    pub fn new(datastore: Arc<DbLogic<K,V>>) -> Self {
         let last_change = Mutex::new(Instant::now());
         let sc_condition = Condvar::new();
 
@@ -27,7 +29,7 @@ impl TaskManager {
         self.sc_condition.notify_one();
     }
 
-    pub fn work_loop(tasks: Arc<TaskManager>) {
+    pub fn work_loop(tasks: Arc<TaskManager<K, V>>) {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
         let mut idle = false;

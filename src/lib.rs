@@ -1,8 +1,11 @@
 // For writing to the log
+#![ feature(trait_alias) ]
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 
 use parking_lot::{Condvar, Mutex, RwLock};
+
+use std::marker::PhantomData;
 use std::sync::{Arc, atomic};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -38,21 +41,27 @@ use wal::WriteAheadLog;
 mod manifest;
 use manifest::Manifest;
 
-pub struct WriteBatch {
+pub trait KV_Trait = serde::Serialize+serde::de::DeserializeOwned;
+
+pub struct WriteBatch<K: KV_Trait, V: KV_Trait> {
+    _marker: PhantomData<fn(K,V)>,
     writes: Vec<(Key, Value)>
 }
 
-impl WriteBatch {
+impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     pub fn new() -> Self {
-        Self{ writes: Vec::new() }
+        Self{
+            writes: Vec::new(),
+            _marker: PhantomData
+        }
     }
 
-    pub fn put<K: serde::Serialize, V: serde::Serialize>(&mut self, key: &K, value: &V) {
+    pub fn put(&mut self, key: &K, value: &V) {
         self.writes.push((bincode::serialize(key).unwrap(), bincode::serialize(value).unwrap()));
     }
 }
 
-impl Default for WriteBatch {
+impl<K: KV_Trait, V: KV_Trait> Default for WriteBatch<K, V> {
     fn default() -> Self {
         Self::new()
     }
@@ -96,20 +105,22 @@ impl Default for Params {
     }
 }
 
-pub struct Database {
-    inner: Arc<DbLogic>,
+pub struct Database<K: KV_Trait, V: KV_Trait> {
+    inner: Arc<DbLogic<K, V>>,
     #[ cfg(feature="compaction") ]
-    tasks: Arc<TaskManager>
+    tasks: Arc<TaskManager<K, V>>
 }
 
-pub struct DbLogic {
+pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
+    _marker: PhantomData<fn(K,V)>,
+
     #[allow(dead_code)]
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<ImmMemtableRef>>,
     imm_cond: Condvar,
-    value_log: ValueLog,
+    value_log: Arc<ValueLog>,
     wal: Mutex<WriteAheadLog>,
     levels: Vec<Level>,
     next_table_id: atomic::AtomicUsize,
@@ -117,7 +128,7 @@ pub struct DbLogic {
     data_blocks: Arc<DataBlocks>
 }
 
-impl Database {
+impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     pub fn new(mode: StartMode) -> Self {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -144,33 +155,37 @@ impl Database {
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)
-    pub fn get<K: serde::Serialize, V: serde::de::DeserializeOwned>(&self, key: &K)-> Option<V> {
+    #[inline]
+    pub fn get(&self, key: &K)-> Option<V> {
         let key_data = bincode::serialize(key).unwrap();
         self.inner.get(&key_data)
     }
 
-    pub fn put<K: serde::Serialize, V: serde::Serialize>(&self, key: &K, value: &V) {
+    #[inline]
+    pub fn put(&self, key: &K, value: &V) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS);
     }
 
-    pub fn put_opts<K: serde::Serialize, V: serde::Serialize>(&self, key: &K, value: &V, opts: &WriteOptions) {
+    #[inline]
+    pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts);
     }
 
-    pub fn iter(&self) -> DbIterator {
+    #[inline]
+    pub fn iter(&self) -> DbIterator<K, V> {
         self.inner.iter()
-
     }
 
-    pub fn write(&self, write_batch: WriteBatch) {
+    #[inline]
+    pub fn write(&self, write_batch: WriteBatch<K, V>) {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS);
     }
 
-    pub fn write_opts(&self, write_batch: WriteBatch, opts: &WriteOptions) {
+    pub fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) {
         let needs_compaction = self.inner.write_opts(write_batch, opts);
 
         if needs_compaction {
@@ -180,13 +195,13 @@ impl Database {
     }
 }
 
-impl Drop for Database {
+impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
     fn drop(&mut self) {
         self.inner.stop();
     }
 }
 
-impl DbLogic {
+impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     pub fn new(start_mode: StartMode, params: Params) -> Self {
         let create;
 
@@ -233,7 +248,7 @@ impl DbLogic {
         let memtable = RwLock::new( MemtableRef::wrap( Memtable::new() ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
-        let value_log = ValueLog::new(params.clone());
+        let value_log = Arc::new( ValueLog::new(params.clone()) );
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
         let wal = Mutex::new(WriteAheadLog::new(params.clone()));
@@ -248,13 +263,15 @@ impl DbLogic {
             levels.push(Level::new(index, data_blocks.clone()));
         }
 
+        let _marker = PhantomData;
+
         Self {
             manifest, memtable, value_log, wal, imm_memtables, imm_cond,
-            params, running, levels, next_table_id, data_blocks
+            params, running, levels, next_table_id, data_blocks, _marker
         }
     }
 
-    pub fn iter(&self) -> DbIterator {
+    pub fn iter(&self) -> DbIterator<K, V> {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
@@ -270,10 +287,10 @@ impl DbLogic {
             }
         }
 
-        DbIterator::new(mem_iters, table_iters)
+        DbIterator::new(mem_iters, table_iters, self.value_log.clone())
     }
 
-    pub fn get<V: serde::de::DeserializeOwned>(&self, key: &[u8]) -> Option<V> {
+    pub fn get(&self, key: &[u8]) -> Option<V> {
         let memtable = self.memtable.read();
 
         if let Some(e) = memtable.get().get(key) {
@@ -300,7 +317,7 @@ impl DbLogic {
         None
     }
 
-    pub fn write_opts(&self, mut write_batch: WriteBatch, opt: &WriteOptions) -> bool {
+    pub fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> bool {
         let mut memtable = self.memtable.write();
         let mut mem_inner = memtable.get_mut();
 
@@ -562,23 +579,46 @@ mod tests {
     #[test]
     fn get_put() {
         test_init();
-        let ds = Database::new(SM);
+        let ds = Database::<String, String>::new(SM);
         
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
         let value = String::from("Bar");
         let value2 = String::from("Baz");
 
-        assert_eq!(ds.get::<String, String>(&key1), None);
-        assert_eq!(ds.get::<String, String>(&key2), None);
+        assert_eq!(ds.get(&key1), None);
+        assert_eq!(ds.get(&key2), None);
 
         ds.put(&key1, &value);
 
         assert_eq!(ds.get(&key1), Some(value.clone()));
-        assert_eq!(ds.get::<String, String>(&key2), None);
+        assert_eq!(ds.get(&key2), None);
 
         ds.put(&key1, &value2);
         assert_eq!(ds.get(&key1), Some(value2.clone()));
+    }
+
+    #[test]
+    fn iter() {
+        const COUNT: u64 = 1000;
+
+        test_init();
+        let ds = Database::<u64, String>::new(SM);
+
+        // Write without fsync to speed up tests
+        let mut options = WriteOptions::default();
+        options.sync = false;
+
+        for pos in 0..COUNT {
+            let key = pos;
+            let value = format!("some_string_{}", pos);
+            ds.put_opts(&key, &value, &options);
+        }
+
+        for (pos, (key, val)) in ds.iter().enumerate() {
+            assert_eq!(pos as u64, key);
+            assert_eq!(val, format!("some_string_{}", pos));
+        }
     }
 
     #[test]

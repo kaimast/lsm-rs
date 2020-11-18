@@ -150,7 +150,7 @@ impl Memtable {
                     && self.entries[pos+1].0 == key {
                     pos = pos+1;
                 }
-                pos
+                pos+1
             },
             Err(pos) => pos,
         };
@@ -196,4 +196,35 @@ mod tests {
         assert_eq!(iter.get_entry().value_ref, val_id);
     }
 
+    #[test]
+    fn get_put() {
+        let mut mem = Memtable::new();
+
+        let key1 = vec![5, 2, 4];
+        let key2 = vec![3, 8, 1];
+
+        let val1 = (5, 1);
+        let val2 = (1, 8);
+
+        mem.put(key1.clone(), val1.clone(), 50);
+        mem.put(key2.clone(), val2.clone(), 41);
+
+        assert_eq!(mem.get(&key1).unwrap().value_ref, val1);
+        assert_eq!(mem.get(&key2).unwrap().value_ref, val2);
+    }
+
+    #[test]
+    fn override_entry() {
+        let mut mem = Memtable::new();
+
+        let key1 = vec![5, 2, 4];
+
+        let val1 = (5, 1);
+        let val2 = (1, 8);
+
+        mem.put(key1.clone(), val1.clone(), 50);
+        mem.put(key1.clone(), val2.clone(), 42);
+
+        assert_eq!(mem.get(&key1).unwrap().value_ref, val2);
+    }
 }

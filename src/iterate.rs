@@ -1,21 +1,31 @@
-use crate::values::ValueId;
+use crate::values::ValueLog;
 use crate::entry::Entry;
 use crate::sorted_table::{Key, TableIterator, InternalIterator};
 use crate::memtable::MemtableIterator;
 
-pub struct DbIterator {
+use std::marker::PhantomData;
+use std::sync::Arc;
+use serde::de::DeserializeOwned;
+
+pub struct DbIterator<K: DeserializeOwned, V: DeserializeOwned> {
+    phantom_key: PhantomData<K>,
+    phantom_value: PhantomData<V>,
+
     last_key: Option<Vec<u8>>,
     mem_iters: Vec<MemtableIterator>,
     table_iters: Vec<TableIterator>,
+    value_log: Arc<ValueLog>,
 }
 
-impl DbIterator {
-    pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
-        Self{ mem_iters, table_iters, last_key: None }
+impl<K: DeserializeOwned, V: DeserializeOwned> DbIterator<K,V> {
+    pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
+            , value_log: Arc<ValueLog>) -> Self {
+        Self{
+            mem_iters, table_iters, value_log,
+            last_key: None, phantom_key: PhantomData, phantom_value: PhantomData
+        }
     }
-}
 
-impl DbIterator {
     #[inline]
     fn parse_iter<'a>(last_key: &Option<Key>, iter: &'a mut dyn InternalIterator,
         min_key: &mut Option<&'a Key>, min_entry: &mut Option<&'a Entry>) {
@@ -45,8 +55,8 @@ impl DbIterator {
     }
 }
 
-impl Iterator for DbIterator {
-    type Item = (Key, ValueId);
+impl<K: DeserializeOwned, V: DeserializeOwned> Iterator for DbIterator<K, V> {
+    type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut min_key = None;
@@ -61,8 +71,12 @@ impl Iterator for DbIterator {
         }
 
         if let Some(key) = min_key {
+            let res_key = bincode::deserialize(&key).unwrap();
+            let value = self.value_log.get(&min_entry.unwrap().value_ref);
+
             self.last_key = Some(key.clone());
-            Some((key.clone(), min_entry.unwrap().value_ref))
+
+            Some((res_key, value))
         } else {
             None
         }

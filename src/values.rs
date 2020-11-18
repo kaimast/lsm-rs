@@ -118,7 +118,7 @@ impl ValueLog {
             } else {
                 log::trace!("Loading value batch from disk");
                 let fpath = self.get_file_path(&id);
-                let data = std::fs::read(fpath).expect("Cannot value batch block from disk");
+                let data = std::fs::read(fpath).expect("Cannot read value batch block from disk");
                 let batch: Arc<ValueBatch> = Arc::new( bincode::deserialize(&data).unwrap() );
 
                 cache.put(*id, batch.clone());
