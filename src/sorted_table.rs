@@ -176,8 +176,8 @@ impl SortedTable {
     }
 
     #[inline]
-    pub fn overlaps(&self, other: &SortedTable) -> bool {
-        self.get_max() >= other.get_min() && self.get_min() <= other.get_max()
+    pub fn overlaps(&self, min: &Key, max: &Key) -> bool {
+        self.get_max() >= min && self.get_min() <= max
     }
 }
 

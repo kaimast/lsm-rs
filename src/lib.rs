@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use bincode::Options;
 
 mod entry;
+use entry::Entry;
 
 mod iterate;
 use iterate::DbIterator;
@@ -404,15 +405,28 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     }
 
     fn compact(&self, level_pos: usize, level: &Level) {
-        let (offset, table) = level.start_compaction();
-        let overlaps = self.levels[level_pos+1].get_overlaps(&*table);
+        let (offsets, mut tables) = level.start_compaction();
+        assert!(!tables.is_empty());
+
+        let mut min = tables[0].get_min();
+        let mut max = tables[0].get_max();
+
+        if tables.len() > 1 {
+            for table in tables[1..].iter() {
+                min = std::cmp::min(min, table.get_min());
+                max = std::cmp::max(max, table.get_max());
+            }
+        }
+
+        let overlaps = self.levels[level_pos+1].get_overlaps(&min, &max);
 
         // Fast path
-        if overlaps.is_empty() {
+        if tables.len() == 1 && overlaps.is_empty() {
             let mut parent_tables = level.get_tables();
             let mut child_tables = self.levels[level_pos+1].get_tables();
 
             log::debug!("Moving table from level {} to level {}", level_pos, level_pos+1);
+            let table = tables.remove(0);
 
             let mut new_pos = 0;
             for (pos, other_table) in child_tables.iter().enumerate() {
@@ -422,7 +436,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 }
             }
 
-            parent_tables.remove(offset);
+            parent_tables.remove(offsets[0]);
             child_tables.insert(new_pos, table);
             return
         }
@@ -431,8 +445,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         //Merge
         let mut entries = Vec::new();
-        let mut min = table.get_min();
-        let mut max = table.get_max();
 
         for (_, table) in overlaps.iter() {
             min = std::cmp::min(min, table.get_min());
@@ -444,88 +456,52 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let min = min.to_vec();
         let max = max.to_vec();
 
-        let mut parent_iter = TableIterator::new(table.clone());
-        let mut child_iters = Vec::new();
-        let mut pos = min.to_vec();
-
-        for (_, child) in overlaps.iter() {
-            child_iters.push(TableIterator::new(child.clone()));
+        let mut table_iters = Vec::new();
+        for table in tables.drain(..) {
+            table_iters.push(TableIterator::new(table.clone()));
         }
 
-        let mut child_iters_iter = child_iters.iter_mut();
-        let mut child_iter = child_iters_iter.next();
+        for (_, child) in overlaps.iter() {
+            table_iters.push(TableIterator::new(child.clone()));
+        }
 
-        let mut next_parent_key = Some(parent_iter.get_key());
-
-        //TODO None means there are no overlapping tables at the lower level
-        // add a fast path for this case
-        let mut next_child_key = if let Some(child) = child_iter.as_ref() {
-            Some(child.get_key().clone())
-        } else {
-            None
-        };
+        let mut last_key: Option<Key> = None;
 
         loop {
-            let mut entry = None;
+            let mut min_kv: Option<(&Key, &Entry)> = None;
 
-            if let Some(key) = next_parent_key {
-                if key == &pos {
-                    entry = Some(parent_iter.get_entry().clone());
-                    parent_iter.step();
-
-                    if parent_iter.at_end() {
-                        next_parent_key = None;
-                    } else {
-                        next_parent_key = Some(parent_iter.get_key());
+            for table_iter in table_iters.iter_mut() {
+                if let Some(last_key) = &last_key {
+                    while !table_iter.at_end() && table_iter.get_key() <= last_key {
+                        table_iter.step();
                     }
+                }
+
+                if table_iter.at_end() {
+                    continue;
+                }
+
+                let key = table_iter.get_key();
+                let entry = table_iter.get_entry();
+
+                if let Some((min_key, min_entry)) = min_kv {
+                    if key < min_key {
+                        min_kv = Some((key, entry));
+                    } else if key == min_key {
+                        if entry.seq_number > min_entry.seq_number {
+                            min_kv = Some((key, entry));
+                        }
+                    }
+                } else {
+                    min_kv = Some((key, entry));
                 }
             }
 
-            // Tables in the next level are guaranteed to not overlap
-            // So we only need to look at one table at a time
-            if let Some(iter) = &mut child_iter {
-                if let Some(key) = &next_child_key {
-                    if key == &pos {
-                        let child_entry = iter.get_entry().clone();
-
-                        if let Some(e) = &entry {
-                            if e.seq_number < child_entry.seq_number {
-                                entry = Some(child_entry);
-                            }
-                        } else {
-                            entry = Some(child_entry);
-                        }
-
-                        iter.step();
-
-                        if iter.at_end() {
-                            child_iter = child_iters_iter.next();
-                        }
-
-                        if let Some(next_iter) = &mut child_iter {
-                            next_child_key = Some(next_iter.get_key().clone());
-                        } else {
-                            next_child_key = None;
-                        }
-                    }
-                }
-            }
-
-            let at_end = pos == max;
-
-            entries.push((pos, entry.unwrap().clone()));
-
-            if at_end {
-                //Done
-                break;
-            } else if next_child_key.is_some() && next_parent_key.is_some() {
-                pos = std::cmp::min(next_child_key.as_ref().unwrap(), next_parent_key.as_ref().unwrap()).to_vec();
-            } else if next_child_key.is_some() {
-                pos = next_child_key.as_ref().unwrap().clone();
-            } else if next_parent_key.is_some() {
-                pos = (*next_parent_key.as_ref().unwrap()).clone();
+            if let Some((key, entry)) = min_kv {
+                entries.push((key.clone(), entry.clone()));
+                last_key = Some(key.clone());
             } else {
-                panic!("Invalid state");
+                break;
             }
         }
 
@@ -549,7 +525,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         child_tables.insert(new_pos, Arc::new(new_table));
-        parent_tables.remove(offset);
+
+        for offset in offsets.iter().rev() {
+            parent_tables.remove(*offset);
+        }
     }
 
     pub fn needs_compaction(&self) -> bool {
@@ -710,5 +689,4 @@ mod tests {
             assert_eq!(ds.get(&key), Some(pos));
         }
     }
-
 }

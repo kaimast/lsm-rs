@@ -105,32 +105,57 @@ impl Level {
         }
     }
 
-    pub fn start_compaction(&self) -> (usize, Arc<SortedTable>) {
+    pub fn start_compaction(&self) -> (Vec<usize>, Vec<Arc<SortedTable>>) {
         #[ allow(clippy::mutex_atomic) ]
         let mut next_compaction = self.next_compaction.lock().unwrap();
-        let tables = self.tables.read().unwrap();
+        let all_tables = self.tables.read().unwrap();
 
-        if tables.is_empty() {
+        if all_tables.is_empty() {
             panic!("Cannot start compaction; level {} is empty", self.index);
         }
 
-        if *next_compaction >= tables.len() {
+        if *next_compaction >= all_tables.len() {
             *next_compaction = 0;
         }
 
         let offset = *next_compaction;
-        let table = tables[offset].clone();
+        let table = all_tables[offset].clone();
         *next_compaction += 1;
 
-        (offset, table)
+        let mut tables = vec![table];
+        let mut offsets;
+
+        // Level 0 might have overlapping tables
+        if self.index == 0 {
+            offsets = vec![];
+
+            for (pos, table) in all_tables.iter().enumerate() {
+                if pos == offset {
+                    offsets.push(pos);
+                    continue;
+                }
+
+                let min = tables[0].get_min();
+                let max = tables[0].get_max();
+
+                if table.overlaps(min, max) {
+                    offsets.push(pos);
+                    tables.push(table.clone());
+                }
+            }
+        } else {
+            offsets = vec![offset];
+        }
+
+        (offsets, tables)
     }
 
-    pub fn get_overlaps(&self, parent_table: &SortedTable) -> Vec<(usize, Arc<SortedTable>)> {
+    pub fn get_overlaps(&self, min: &Key, max: &Key) -> Vec<(usize, Arc<SortedTable>)> {
         let mut overlaps = Vec::new();
         let tables = self.tables.read().unwrap();
 
         for (pos, table) in tables.iter().enumerate() {
-            if table.overlaps(parent_table) {
+            if table.overlaps(min, max) {
                 overlaps.push((pos, table.clone()));
             }
         }
