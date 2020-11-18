@@ -97,8 +97,8 @@ impl MemtableRef {
 
     /// Make the current contents into an immutable memtable
     /// And create a new mutable one
-    pub fn take(&mut self) -> ImmMemtableRef {
-        let mut inner =  Arc::new( RwLock::new( Memtable::new() ));
+    pub fn take(&mut self, next_seq_number: u64)  -> ImmMemtableRef {
+        let mut inner =  Arc::new( RwLock::new( Memtable::new(next_seq_number) ));
         std::mem::swap(&mut inner, &mut self.inner);
 
         ImmMemtableRef{ inner }
@@ -123,12 +123,16 @@ pub struct Memtable {
 }
 
 impl Memtable {
-    pub fn new() -> Self {
+    pub fn new(next_seq_number: u64) -> Self {
         let entries = Vec::new();
         let size = 0;
-        let next_seq_number = 0;
 
         Self{entries, size, next_seq_number}
+    }
+
+    #[inline]
+    pub fn get_next_seq_number(&self) -> u64 {
+        self.next_seq_number
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Entry> {
@@ -185,7 +189,7 @@ mod tests {
 
     #[test]
     fn iterate() {
-        let reference = MemtableRef::wrap( Memtable::new() );
+        let reference = MemtableRef::wrap( Memtable::new(1) );
 
         let iter = reference.clone_immutable().into_iter();
         assert_eq!(iter.at_end(), true);
@@ -218,7 +222,7 @@ mod tests {
 
     #[test]
     fn get_put() {
-        let mut mem = Memtable::new();
+        let mut mem = Memtable::new(1);
 
         let key1 = vec![5, 2, 4];
         let key2 = vec![3, 8, 1];
@@ -235,7 +239,7 @@ mod tests {
 
     #[test]
     fn override_entry() {
-        let mut mem = Memtable::new();
+        let mut mem = Memtable::new(1);
 
         let key1 = vec![5, 2, 4];
 

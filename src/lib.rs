@@ -254,7 +254,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let manifest = Arc::new(Manifest::new(params.clone()));
         manifest.store();
 
-        let memtable = RwLock::new( MemtableRef::wrap( Memtable::new() ) );
+        let memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
         let value_log = Arc::new( ValueLog::new(params.clone()) );
@@ -346,9 +346,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         if mem_inner.is_full(&*self.params) {
+            let next_seq_num = mem_inner.get_next_seq_number();
             drop(mem_inner);
+            let imm = memtable.take(next_seq_num);
 
-            let imm = memtable.take();
             let mut imm_mems = self.imm_memtables.lock();
 
             // Currently only one immutable memtable is supported
