@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install rustc and clippy nightly
+      uses: actions-rs/toolchain@v1
+      with:
+         profile: minimal
+         toolchain: nightly
+         override: true
+         components: cargo, rustc, clippy
+    - name: Basic tests (Async)
+      run: env RUST_TEST_THREADS=1 RUST_LOG=debug cargo test --release
+    - name: Basic tests (Sync)
+      run: env RUST_TEST_THREADS=1 RUST_LOG=debug cargo test --release --features=sync
+    #Do liniting last because it is most likely to fail
+    - name: Linting (Async)
+      run: cargo clippy -- -D warnings
+    - name: Linting (Sync)
+      run: cargo clippy -- -D warnings --features=sync
