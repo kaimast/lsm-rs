@@ -44,7 +44,7 @@ impl TableIterator {
             (0, entry_len)
         };
 
-        Self{ key, entry, block_pos, block_offset, table }
+        Self{ block_pos, block_offset, key, entry, table }
     }
 }
 

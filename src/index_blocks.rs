@@ -7,10 +7,10 @@ use std::cmp::Ordering;
 
 #[ derive(Serialize, Deserialize) ]
 pub struct IndexBlock {
+    index: Vec<(Key, DataBlockId)>,
+    size: usize,
     min: Key,
     max: Key,
-    size: usize,
-    index: Vec<(Key, DataBlockId)>,
 }
 
 impl IndexBlock {

@@ -29,4 +29,4 @@ jobs:
     - name: Linting (Async)
       run: cargo clippy -- -D warnings
     - name: Linting (Sync)
-      run: cargo clippy -- -D warnings --features=sync
+      run: cargo clippy --features=sync -- -D warnings

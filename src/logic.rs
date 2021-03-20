@@ -100,8 +100,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let _marker = PhantomData;
 
         Self {
-            manifest, memtable, value_log, wal, imm_memtables, imm_cond,
-            params, running, levels, next_table_id, data_blocks, _marker
+            _marker, manifest, params, memtable, imm_memtables, imm_cond,
+            value_log, wal, levels, next_table_id, running, data_blocks
         }
     }
 

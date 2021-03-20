@@ -51,7 +51,7 @@ impl DataBlocks {
             block_caches.push(Mutex::new(BlockShard::new(shard_size)));
         }
 
-        Self{ params, manifest, block_caches }
+        Self{ params, block_caches, manifest }
     }
 
     #[inline]

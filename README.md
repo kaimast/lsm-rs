@@ -1,7 +1,8 @@
 # Modular, Asynchronous Implementation of a Log-Structured Merge Tree
 
-[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/kaimast/lsm-rs/blob/main/LICENSE
+[![ci-badge](https://github.com/kaimast/lsm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kaimast/lsm-rs/actions)
+[![license-badge](https://img.shields.io/crates/l/lsm)](https://github.com/kaimast/lsm-rs/blob/main/LICENSE)
+[![crates-badge](https://img.shields.io/crates/v/lsm)](https://crates.io/crates/lsm)
 
 **Note: This is an experimental implementation and not intended for production environments.**
  Please use the [leveldb](https://github.com/skade/leveldb) or [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb) crate for this purpose.
