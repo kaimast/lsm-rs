@@ -67,7 +67,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent (which could be the first one) as deleted
     #[inline]
-    pub async fn delete(self, key: &K) {
+    pub fn delete(&self, key: &K) {
         const OPTS: WriteOptions = WriteOptions::new();
 
         let mut batch = WriteBatch::new();
@@ -77,7 +77,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     }
 
     #[inline]
-    pub async fn delete_opts(self, key: &K, opts: &WriteOptions) {
+    pub fn delete_opts(&self, key: &K, opts: &WriteOptions) {
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
@@ -209,6 +209,33 @@ mod tests {
 
         for pos in 0..COUNT {
             assert_eq!(ds.get(&pos), Some(format!("some_string_{}", pos)));
+        }
+    }
+
+    #[test]
+    fn get_put_delete_many() {
+        const COUNT: u64 = 10_000;
+
+        test_init();
+        let ds = Database::new(SM);
+
+        // Write without fsync to speed up tests
+        let mut options = WriteOptions::default();
+        options.sync = false;
+
+        for pos in 0..COUNT {
+            let key = pos;
+            let value = format!("some_string_{}", pos);
+            ds.put_opts(&key, &value, &options).unwrap();
+        }
+
+        for pos in 0..COUNT {
+            let key = pos;
+            ds.delete(&key);
+        }
+
+        for pos in 0..COUNT {
+            assert_eq!(ds.get(&pos), None);
         }
     }
 

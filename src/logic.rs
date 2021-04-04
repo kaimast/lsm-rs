@@ -235,8 +235,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     let (value_pos, value_len) = self.value_log.add_value(value).await;
                     mem_inner.put(key, value_pos, value_len);
                 }
-                crate::WriteOp::Delete(_) => {
-                    todo!();
+                crate::WriteOp::Delete(key) => {
+                    log::trace!("Storing deletion for key `{:?}`", key);
+                    mem_inner.delete(key);
                 }
             }
         }

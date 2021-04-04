@@ -170,6 +170,29 @@ impl Memtable {
         self.next_seq_number += 1;
     }
 
+
+    pub fn delete(&mut self, key: Key) {
+        let pos = match self.entries.binary_search_by_key(&key.as_slice(), |t| t.0.as_slice()) {
+            Ok(mut pos) => {
+                //Find most recent update
+                while pos+1 < self.entries.len()
+                    && self.entries[pos+1].0 == key {
+                    pos += 1;
+                }
+                pos+1
+            },
+            Err(pos) => pos,
+        };
+
+        self.entries.insert(pos,
+            (key, Entry::Deletion{
+                _value_ref: (0,0), seq_number: self.next_seq_number
+            })
+        );
+
+        self.next_seq_number += 1;
+    }
+
     #[inline]
     pub fn is_full(&self, params: &Params) -> bool {
         self.size >= params.max_memtable_size
