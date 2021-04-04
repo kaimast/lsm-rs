@@ -1,7 +1,6 @@
 use crate::Params;
 use crate::sorted_table::{SortedTable, Key};
 use crate::entry::Entry;
-use crate::values::ValueId;
 use crate::manifest::Manifest;
 use crate::data_blocks::DataBlocks;
 
@@ -59,14 +58,14 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
+    pub async fn get(&self, key: &[u8]) -> Option<Entry> {
         let tables = self.tables.read().await;
 
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
-            if let Some(val_ref) = table.get(key) {
-                return Some(val_ref);
+            if let Some(entry) = table.get(key) {
+                return Some(entry);
             }
         }
 

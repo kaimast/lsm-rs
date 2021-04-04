@@ -161,7 +161,7 @@ impl Memtable {
         };
 
         self.entries.insert(pos,
-            (key, Entry{
+            (key, Entry::Value{
                 value_ref, seq_number: self.next_seq_number
             })
         );
@@ -204,12 +204,12 @@ mod tests {
         let mut iter = reference.clone_immutable().into_iter();
 
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry().value_ref, val1);
+        assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val1);
 
         iter.step();
 
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry().value_ref, val2);
+        assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val2);
 
         assert_eq!(iter.at_end(), false);
 
@@ -231,8 +231,8 @@ mod tests {
         mem.put(key1.clone(), val1.clone(), 50);
         mem.put(key2.clone(), val2.clone(), 41);
 
-        assert_eq!(mem.get(&key1).unwrap().value_ref, val1);
-        assert_eq!(mem.get(&key2).unwrap().value_ref, val2);
+        assert_eq!(mem.get(&key1).unwrap().get_value_ref().unwrap(), &val1);
+        assert_eq!(mem.get(&key2).unwrap().get_value_ref().unwrap(), &val2);
     }
 
     #[test]
@@ -247,6 +247,6 @@ mod tests {
         mem.put(key1.clone(), val1.clone(), 50);
         mem.put(key1.clone(), val2.clone(), 42);
 
-        assert_eq!(mem.get(&key1).unwrap().value_ref, val2);
+        assert_eq!(mem.get(&key1).unwrap().get_value_ref().unwrap(), &val2);
     }
 }

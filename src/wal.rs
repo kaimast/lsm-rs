@@ -52,6 +52,8 @@ impl WriteAheadLog{
     }
 
     pub fn store(&mut self, op: &WriteOp) {
+        // we do not use serde here to avoid copying data
+
         let op_type = op.get_type().to_le_bytes();
         let klen = op.get_key_length().to_le_bytes();
         let vlen = op.get_value_length().to_le_bytes();
