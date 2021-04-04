@@ -201,18 +201,25 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut wal = self.wal.lock().await;
 
-        for (key, value) in write_batch.writes.iter() {
-            wal.store(key, value);
+        for op in write_batch.writes.iter() {
+            wal.store(op);
         }
         if opt.sync {
             wal.sync();
         }
         drop(wal);
 
-        for (key, value) in write_batch.writes.drain(..) {
-            log::trace!("Storing new value for key `{:?}`", key);
-            let (value_pos, value_len) = self.value_log.add_value(value).await;
-            mem_inner.put(key, value_pos, value_len);
+        for op in write_batch.writes.drain(..) {
+            match op {
+                crate::WriteOp::Put(key, value) => {
+                    log::trace!("Storing new value for key `{:?}`", key);
+                    let (value_pos, value_len) = self.value_log.add_value(value).await;
+                    mem_inner.put(key, value_pos, value_len);
+                }
+                crate::WriteOp::Delete(_) => {
+                    todo!();
+                }
+            }
         }
 
         if mem_inner.is_full(&*self.params) {

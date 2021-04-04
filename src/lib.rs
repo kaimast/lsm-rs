@@ -23,7 +23,6 @@ pub mod async_iter;
 pub use async_iter as iterate;
 
 mod values;
-use values::Value;
 
 mod sorted_table;
 use sorted_table::Key;
@@ -41,6 +40,8 @@ mod cond_var;
 mod entry;
 mod data_blocks;
 mod index_blocks;
+
+use wal::WriteOp;
 
 #[ cfg(not(feature="sync")) ]
 mod async_api;
@@ -60,7 +61,7 @@ pub trait KV_Trait = Send+serde::Serialize+serde::de::DeserializeOwned+'static+U
 /// Note: The batch will not be applied to the database until it is passed to `Database::write`
 pub struct WriteBatch<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
-    writes: Vec<(Key, Value)>
+    writes: Vec<WriteOp>,
 }
 
 #[ derive(Clone, Debug) ]
@@ -81,7 +82,15 @@ impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     pub fn put(&mut self, key: &K, value: &V) {
         let enc = get_encoder();
         self.writes.push(
-            (enc.serialize(key).unwrap(), enc.serialize(value).unwrap()));
+            WriteOp::Put(enc.serialize(key).unwrap(), enc.serialize(value).unwrap())
+        );
+    }
+
+    pub fn delete(&mut self, key: &K) {
+        let enc = get_encoder();
+        self.writes.push(
+            WriteOp::Delete(enc.serialize(key).unwrap())
+        );
     }
 }
 

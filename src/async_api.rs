@@ -44,6 +44,27 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         self.inner.get(&key_data).await
     }
 
+    /// Delete an existing entry
+    /// For efficiency, the datastore does not check whether the key actually existed
+    /// Instead, it will just mark the most recent (which could be the first one) as deleted
+    #[inline]
+    pub async fn delete(self, key: &K) {
+        const OPTS: WriteOptions = WriteOptions::new();
+
+        let mut batch = WriteBatch::new();
+        batch.delete(key);
+
+        self.inner.write_opts(batch, &OPTS).await.unwrap();
+    }
+
+    #[inline]
+    pub async fn delete_opts(self, key: &K, opts: &WriteOptions) {
+        let mut batch = WriteBatch::new();
+        batch.delete(key);
+
+        self.inner.write_opts(batch, opts).await.unwrap();
+    }
+
     /// Store
     #[inline]
     pub async fn put(&self, key: &K, value: &V) -> Result<(), WriteError> {
