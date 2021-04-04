@@ -15,7 +15,6 @@ use crate::manifest::Manifest;
 use crate::Params;
 use crate::sorted_table::Key;
 use crate::entry::Entry;
-use crate::values::ValueId;
 
 pub type DataBlockId = u64;
 
@@ -259,7 +258,7 @@ impl DataBlock {
         u32::from_le_bytes(self.data[pos..pos+offset_len].try_into().unwrap()) - rl_len_len
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
+    pub fn get(&self, key: &[u8]) -> Option<Entry> {
         let rl_len = self.restart_list_len();
 
         let mut start: u32 = 0;
@@ -274,7 +273,7 @@ impl DataBlock {
             match this_key.as_slice().cmp(key) {
                 Ordering::Equal => {
                     // exact match
-                    return Some((entry.seq_number, entry.value_ref));
+                    return Some(entry);
                 }
                 Ordering::Less => {
                     // continue with right half
@@ -303,7 +302,7 @@ impl DataBlock {
             let (this_key, entry, new_pos) = self.get_offset(pos, &last_key);
 
             if key == this_key {
-                return Some((entry.seq_number, entry.value_ref));
+                return Some(entry);
             }
 
             pos = new_pos as u32;
@@ -322,10 +321,10 @@ mod tests {
     #[test]
     fn store_and_load() {
         let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
-        let entry1 = Entry{ seq_number: 14234524, value_ref: (4,2) };
+        let entry1 = Entry::Value{ seq_number: 14234524, value_ref: (4,2) };
 
         let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
-        let entry2 = Entry{ seq_number: 424234, value_ref: (4,50) };
+        let entry2 = Entry::Value{ seq_number: 424234, value_ref: (4,50) };
 
         let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
 

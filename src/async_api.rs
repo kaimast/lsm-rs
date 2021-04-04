@@ -44,6 +44,27 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         self.inner.get(&key_data).await
     }
 
+    /// Delete an existing entry
+    /// For efficiency, the datastore does not check whether the key actually existed
+    /// Instead, it will just mark the most recent (which could be the first one) as deleted
+    #[inline]
+    pub async fn delete(&self, key: &K) {
+        const OPTS: WriteOptions = WriteOptions::new();
+
+        let mut batch = WriteBatch::new();
+        batch.delete(key);
+
+        self.inner.write_opts(batch, &OPTS).await.unwrap();
+    }
+
+    #[inline]
+    pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) {
+        let mut batch = WriteBatch::new();
+        batch.delete(key);
+
+        self.inner.write_opts(batch, opts).await.unwrap();
+    }
+
     /// Store
     #[inline]
     pub async fn put(&self, key: &K, value: &V) -> Result<(), WriteError> {
@@ -178,6 +199,33 @@ mod tests {
 
         for pos in 0..COUNT {
             assert_eq!(ds.get(&pos).await, Some(format!("some_string_{}", pos)));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_put_delete_many() {
+        const COUNT: u64 = 10_000;
+
+        test_init();
+        let ds = Database::new(SM).await;
+
+        // Write without fsync to speed up tests
+        let mut options = WriteOptions::default();
+        options.sync = false;
+
+        for pos in 0..COUNT {
+            let key = pos;
+            let value = format!("some_string_{}", pos);
+            ds.put_opts(&key, &value, &options).await.unwrap();
+        }
+
+        for pos in 0..COUNT {
+            let key = pos;
+            ds.delete(&key).await;
+        }
+
+        for pos in 0..COUNT {
+            assert_eq!(ds.get(&pos).await, None);
         }
     }
 

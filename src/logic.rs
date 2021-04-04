@@ -162,8 +162,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut vref = None;
         let memtable = self.memtable.read().await;
 
-        if let Some(e) = memtable.get().get(key) {
-            vref = Some(e.value_ref);
+        if let Some(entry) = memtable.get().get(key) {
+            match entry {
+                Entry::Value{value_ref, ..} => {
+                    vref = Some(value_ref)
+                }
+                Entry::Deletion{..} => { return None; }
+            }
         };
 
         if let Some(vref) = vref {
@@ -174,9 +179,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let imm_mems = self.imm_memtables.lock().await;
 
             for imm in imm_mems.iter().rev() {
-                if let Some(e) = imm.get().get(key) {
-                    vref = Some(e.value_ref);
-                    break;
+                if let Some(entry) = imm.get().get(key) {
+                    match entry {
+                        Entry::Value{ value_ref, ..} => {
+                            vref = Some(value_ref);
+                            break;
+                        }
+                        Entry::Deletion{..} => {
+                            return None;
+                        }
+                    }
                 }
             }
         }
@@ -186,9 +198,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         for level in self.levels.iter() {
-            if let Some((_, val_ref)) = level.get(key).await {
-                let value = self.value_log.get(val_ref).await;
-                return Some(value);
+            if let Some(entry) = level.get(key).await {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        let value = self.value_log.get(value_ref).await;
+                        return Some(value);
+                    }
+                    Entry::Deletion{..} => {
+                        return None;
+                    }
+                }
             }
         }
 
@@ -201,18 +220,26 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut wal = self.wal.lock().await;
 
-        for (key, value) in write_batch.writes.iter() {
-            wal.store(key, value);
+        for op in write_batch.writes.iter() {
+            wal.store(op);
         }
         if opt.sync {
             wal.sync();
         }
         drop(wal);
 
-        for (key, value) in write_batch.writes.drain(..) {
-            log::trace!("Storing new value for key `{:?}`", key);
-            let (value_pos, value_len) = self.value_log.add_value(value).await;
-            mem_inner.put(key, value_pos, value_len);
+        for op in write_batch.writes.drain(..) {
+            match op {
+                crate::WriteOp::Put(key, value) => {
+                    log::trace!("Storing new value for key `{:?}`", key);
+                    let (value_pos, value_len) = self.value_log.add_value(value).await;
+                    mem_inner.put(key, value_pos, value_len);
+                }
+                crate::WriteOp::Delete(key) => {
+                    log::trace!("Storing deletion for key `{:?}`", key);
+                    mem_inner.delete(key);
+                }
+            }
         }
 
         if mem_inner.is_full(&*self.params) {
@@ -380,8 +407,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 }
 
                 if let Some(other_entry) = min_entry {
-                    if entry.seq_number > other_entry.seq_number {
-                        log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, entry.seq_number, other_entry.seq_number);
+                    if entry.get_sequence_number() > other_entry.get_sequence_number() {
+                        log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, entry.get_sequence_number(), other_entry.get_sequence_number());
 
                         min_entry = Some(entry);
                     }

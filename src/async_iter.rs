@@ -2,6 +2,8 @@ use crate::values::ValueLog;
 use crate::sorted_table::TableIterator;
 use crate::memtable::MemtableIterator;
 use crate::KV_Trait;
+use crate::entry::Entry;
+use crate::sync_iter::DbIterator as SyncIter;
 
 use bincode::Options;
 
@@ -13,7 +15,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::pin::Pin;
 
-use crate::sync_iter::DbIterator as SyncIter;
 
 type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
 
@@ -80,7 +81,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
     }
 
-    async fn next(mut slf: Self) -> (Self, Option<(K, V)>) {
+    async fn next_entry(mut slf: Self) -> (Self, Option<(bool,K,Entry)>) {
         let mut min_kv = None;
         let mut is_pending = true;
 
@@ -93,22 +94,40 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                 is_pending = false;
             }
         }
-
         if let Some((key, entry)) = min_kv {
             let res_key = super::get_encoder().deserialize(&key).unwrap();
-            let val_ref = &entry.value_ref;
-
-            let res_val = if is_pending {
-                slf.value_log.get_pending(*val_ref).await
-            } else {
-                slf.value_log.get(*val_ref).await
-            };
+            let entry = entry.clone();
 
             slf.last_key = Some(key.clone());
-
-            (slf, Some((res_key, res_val)))
+            (slf, Some((is_pending, res_key, entry))) //TODO can we avoid cloning here?
         } else {
             (slf, None)
+        }
+    }
+
+    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
+        loop {
+            let (slf, result) = Self::next_entry(slf_).await;
+
+            if let Some((is_pending, key, entry)) = result {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        let res_val = if is_pending {
+                            slf.value_log.get_pending(value_ref).await
+                        } else {
+                            slf.value_log.get(value_ref).await
+                        };
+
+                        return (slf, Some((key, res_val)));
+                    },
+                    Entry::Deletion{..} => {
+                        // This is a deletion. Skip
+                        slf_ = slf;
+                    }
+                }
+            } else {
+                return (slf, None);
+            }
         }
     }
 }

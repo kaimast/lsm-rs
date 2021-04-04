@@ -55,7 +55,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
                     true
                 }
                 Ordering::Equal => {
-                    if entry.seq_number > min_entry.seq_number {
+                    if entry.get_sequence_number() > min_entry.get_sequence_number() {
                         *min_kv = Some((key, entry));
                         true
                     } else {
@@ -69,12 +69,8 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
             true
         }
     }
-}
 
-impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
-    type Item = (K, V);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_entry(&mut self) -> Option<(bool, K, Entry)> {
         let mut min_kv = None;
         let mut is_pending = true;
 
@@ -87,28 +83,47 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
                 is_pending = false;
             }
         }
+        if let Some((key, entry)) = min_kv {
+            let res_key = super::get_encoder().deserialize(&key).unwrap();
+            let entry = entry.clone();
 
-        let value_log = &*self.value_log;
-        let last_key = &mut self.last_key;
+            self.last_key = Some(key.clone());
+            Some((is_pending, res_key, entry))//TODO can we avoid cloning here?
+        } else {
+            None
+        }
+    }
+}
 
-        self.tokio_rt.block_on(async move {
-            if let Some((key, entry)) = min_kv {
-                let res_key = super::get_encoder().deserialize(&key).unwrap();
-                let val_ref = &entry.value_ref;
+impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
+    type Item = (K, V);
 
-                let res_val = if is_pending {
-                    value_log.get_pending(*val_ref).await
-                } else {
-                    value_log.get(*val_ref).await
-                };
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let result = self.next_entry();
+            let value_log = &*self.value_log;
 
-                *last_key = Some(key.clone());
+            if let Some((is_pending, key, entry)) = result {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        return self.tokio_rt.block_on(async move {
+                            let res_val = if is_pending {
+                                value_log.get_pending(value_ref).await
+                            } else {
+                                value_log.get(value_ref).await
+                            };
 
-                Some((res_key, res_val))
+                            Some((key, res_val))
+                        });
+                    }
+                    Entry::Deletion{..} => {
+                        // this is a deletion... skip
+                    }
+                }
             } else {
-                None
+                return None;
             }
-        })
+        }
     }
 }
 

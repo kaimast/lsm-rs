@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::Params;
 use crate::entry::Entry;
-use crate::values::ValueId;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
 use crate::index_blocks::IndexBlock;
 
@@ -172,7 +171,7 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
+    pub fn get(&self, key: &[u8]) -> Option<Entry> {
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id);
 
@@ -207,10 +206,10 @@ mod tests {
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
 
         let key1 = vec![5];
-        let entry1 = Entry{ seq_number: 1, value_ref: (4,2) };
+        let entry1 = Entry::Value{ seq_number: 1, value_ref: (4,2) };
 
         let key2 = vec![15];
-        let entry2 = Entry{ seq_number: 4, value_ref: (4,50) };
+        let entry2 = Entry::Value{ seq_number: 4, value_ref: (4,50) };
 
         let id = 124234;
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
@@ -253,7 +252,7 @@ mod tests {
 
         for pos in 0..COUNT {
             let key = (pos as u32).to_le_bytes().to_vec();
-            let entry = Entry{ seq_number: 500+pos as u64, value_ref: (100, pos) };
+            let entry = Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) };
 
             entries.push((key, entry));
         }
@@ -268,7 +267,7 @@ mod tests {
 
             assert_eq!(iter.get_key(), &(pos as u32).to_le_bytes().to_vec());
             assert_eq!(iter.get_entry(),
-                    &Entry{ seq_number: 500+pos as u64, value_ref: (100, pos) });
+                    &Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) });
 
             iter.step();
         }

@@ -1,7 +1,6 @@
 use crate::Params;
 use crate::sorted_table::{SortedTable, Key};
 use crate::entry::Entry;
-use crate::values::ValueId;
 use crate::manifest::Manifest;
 use crate::data_blocks::DataBlocks;
 
@@ -34,17 +33,7 @@ impl Level {
         }
     }
 
-    pub async fn create_l0_table(&self, _id: usize, mut entries: Vec<(Key, Entry)>) {
-        // Remove duplicates
-        let mut pos = 0;
-        while pos+1 < entries.len() {
-            if entries[pos].0 == entries[pos+1].0 {
-                entries.remove(pos);
-            } else {
-                pos += 1;
-            }
-        }
-
+    pub async fn create_l0_table(&self, _id: usize, entries: Vec<(Key, Entry)>) {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
@@ -59,14 +48,14 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<(u64, ValueId)> {
+    pub async fn get(&self, key: &[u8]) -> Option<Entry> {
         let tables = self.tables.read().await;
 
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
-            if let Some(val_ref) = table.get(key) {
-                return Some(val_ref);
+            if let Some(entry) = table.get(key) {
+                return Some(entry);
             }
         }
 

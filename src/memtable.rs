@@ -111,6 +111,8 @@ impl MemtableRef {
     }
 }
 
+/// In-memory representation of state that has not been written to level 0 yet.
+/// This datastructure does not exist on disk, but can be recreated from the write-ahead log
 pub struct Memtable {
     // Sorted upadtes
     entries: Vec<(Key, Entry)>,
@@ -135,38 +137,46 @@ impl Memtable {
 
     pub fn get(&self, key: &[u8]) -> Option<Entry> {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
-            Ok(mut pos) => {
-                //Find most recent update
-                while self.entries.len() > pos+1
-                        && self.entries[pos+1].0 == key {
-                    pos += 1;
-                }
-                Some(self.entries[pos].1.clone())
-            }
+            Ok(pos) => Some(self.entries[pos].1.clone()),
             Err(_) => None
         }
     }
 
-    pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
-        let pos = match self.entries.binary_search_by_key(&key.as_slice(), |t| t.0.as_slice()) {
-            Ok(mut pos) => {
-                //Find most recent update
-                while pos+1 < self.entries.len()
-                    && self.entries[pos+1].0 == key {
-                    pos += 1;
-                }
-                pos+1
+    /// Get position were to insert the key
+    /// Will remove existing entries with the same key
+    fn get_key_pos(&mut self, key: &[u8]) -> usize {
+        match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
+            Ok(pos) => {
+                self.entries.remove(pos); // remove old entry
+                pos
             },
             Err(pos) => pos,
-        };
+        }
+    }
+
+    pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
+        let pos = self.get_key_pos(key.as_slice());
 
         self.entries.insert(pos,
-            (key, Entry{
+            (key, Entry::Value{
                 value_ref, seq_number: self.next_seq_number
             })
         );
 
         self.size += value_len;
+        self.next_seq_number += 1;
+    }
+
+
+    pub fn delete(&mut self, key: Key) {
+        let pos = self.get_key_pos(key.as_slice());
+
+        self.entries.insert(pos,
+            (key, Entry::Deletion{
+                _value_ref: (0,0), seq_number: self.next_seq_number
+            })
+        );
+
         self.next_seq_number += 1;
     }
 
@@ -204,12 +214,12 @@ mod tests {
         let mut iter = reference.clone_immutable().into_iter();
 
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry().value_ref, val1);
+        assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val1);
 
         iter.step();
 
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry().value_ref, val2);
+        assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val2);
 
         assert_eq!(iter.at_end(), false);
 
@@ -231,9 +241,44 @@ mod tests {
         mem.put(key1.clone(), val1.clone(), 50);
         mem.put(key2.clone(), val2.clone(), 41);
 
-        assert_eq!(mem.get(&key1).unwrap().value_ref, val1);
-        assert_eq!(mem.get(&key2).unwrap().value_ref, val2);
+        assert_eq!(mem.get(&key1).unwrap().get_value_ref().unwrap(), &val1);
+        assert_eq!(mem.get(&key2).unwrap().get_value_ref().unwrap(), &val2);
     }
+
+    #[test]
+    fn update() {
+        let mut mem = Memtable::new(1);
+
+        assert_eq!(mem.entries.len(), 0);
+
+        let key = vec![5, 2, 4];
+
+        let val1 = (5, 1);
+        let val2 = (1, 8);
+
+        mem.put(key.clone(), val1.clone(), 50);
+        mem.put(key.clone(), val2.clone(), 41);
+
+        assert_eq!(mem.entries.len(), 1);
+        assert_eq!(mem.get(&key).unwrap().get_value_ref(), Some(&val2));
+    }
+
+    #[test]
+    fn delete() {
+        let mut mem = Memtable::new(1);
+
+        assert_eq!(mem.entries.len(), 0);
+
+        let key = vec![5, 2, 4];
+        let val = (5, 1);
+
+        mem.put(key.clone(), val.clone(), 50);
+        mem.delete(key.clone());
+
+        assert_eq!(mem.entries.len(), 1);
+        assert_eq!(mem.get(&key).unwrap().get_value_ref(), None);
+    }
+
 
     #[test]
     fn override_entry() {
@@ -247,6 +292,6 @@ mod tests {
         mem.put(key1.clone(), val1.clone(), 50);
         mem.put(key1.clone(), val2.clone(), 42);
 
-        assert_eq!(mem.get(&key1).unwrap().value_ref, val2);
+        assert_eq!(mem.get(&key1).unwrap().get_value_ref().unwrap(), &val2);
     }
 }

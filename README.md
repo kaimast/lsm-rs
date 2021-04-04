@@ -26,10 +26,10 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
-To run tests (on Linux) execute the following command.
+We provide a makefile for convenience:
 
 ```
-env RUST_TEST_THREADS=1 RUST_BACKTRACE=1 RUST_LOG=debug cargo test 
+make test
 ```
 
 ## Similar Crates

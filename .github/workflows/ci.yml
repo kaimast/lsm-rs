@@ -22,11 +22,11 @@ jobs:
          override: true
          components: cargo, rustc, clippy
     - name: Basic tests (Async)
-      run: env RUST_TEST_THREADS=1 RUST_LOG=debug cargo test --release
+      run: make async-tests
     - name: Basic tests (Sync)
-      run: env RUST_TEST_THREADS=1 RUST_LOG=debug cargo test --release --features=sync
+      run: make sync-tests
     #Do liniting last because it is most likely to fail
     - name: Linting (Async)
-      run: cargo clippy -- -D warnings
+      run: make async-lint
     - name: Linting (Sync)
-      run: cargo clippy --features=sync -- -D warnings
+      run: make sync-lint
