@@ -33,17 +33,7 @@ impl Level {
         }
     }
 
-    pub async fn create_l0_table(&self, _id: usize, mut entries: Vec<(Key, Entry)>) {
-        // Remove duplicates
-        let mut pos = 0;
-        while pos+1 < entries.len() {
-            if entries[pos].0 == entries[pos+1].0 {
-                entries.remove(pos);
-            } else {
-                pos += 1;
-            }
-        }
-
+    pub async fn create_l0_table(&self, _id: usize, entries: Vec<(Key, Entry)>) {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
