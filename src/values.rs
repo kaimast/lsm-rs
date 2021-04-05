@@ -1,11 +1,7 @@
 use std::sync::Arc;
 use std::path::Path;
-use std::io::Write;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
-
-#[ cfg(feature="snappy-compression") ]
-use std::io::Read;
 
 use tokio::sync::{Mutex, RwLock};
 
@@ -87,26 +83,7 @@ impl ValueLog {
         // Store on disk before grabbing the lock
         let fpath = self.get_file_path(&id);
 
-        let mut file = std::fs::File::create(fpath)
-            .expect("Failed to store data block on disk");
-
-        #[ cfg(feature="snappy-compression") ]
-        {
-            use snap::write::FrameEncoder;
-
-            let mut encoder = FrameEncoder::new(file);
-            encoder.write_all(batch.data.as_slice())
-                .expect("Failed to store data block on disk");
-            file = encoder.into_inner().unwrap();
-        }
-
-        #[ cfg(not(feature="snappy-compression")) ]
-        log::trace!("Created new value batch on disk");
-        {
-            file.write_all(batch.data.as_slice()).expect("Failed to store value batch on disk");
-        }
-
-        file.sync_all().unwrap();
+        crate::disk::write(&fpath, &batch.data.as_slice()).await;
 
         let shard_id = Self::batch_to_shard_id(id);
         let mut cache = self.batch_caches[shard_id].lock().await;
@@ -140,27 +117,7 @@ impl ValueLog {
         } else {
             log::trace!("Loading value batch from disk");
             let fpath = self.get_file_path(&id);
-            let data;
-
-            #[ cfg(feature="snappy-compression") ]
-            {
-                use snap::read::FrameDecoder;
-
-                let file = std::fs::File::open(fpath)
-                    .expect("Failed to open data block file");
-                let mut decoder = FrameDecoder::new(file);
-
-                let mut rdata = Vec::new();
-                decoder.read_to_end(&mut rdata).unwrap();
-
-                data = rdata;
-            }
-
-            #[ cfg(not(feature="snappy-compression")) ]
-            {
-                data = std::fs::read(fpath)
-                    .expect("Cannot read value batch block from disk");
-            }
+            let data = crate::disk::read(&fpath).await;
 
             let batch = Arc::new( ValueBatch{ data } );
 

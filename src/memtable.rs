@@ -25,16 +25,17 @@ pub struct MemtableIterator {
 }
 
 impl MemtableIterator {
-    pub fn new(inner: Arc<Memtable>) -> Self {
+    pub async fn new(inner: Arc<Memtable>) -> Self {
         let mut obj = Self{ inner, key: None, entry: None, next_index: 0 };
-        obj.step();
+        obj.step().await;
 
         obj
     }
 }
 
+#[ async_trait::async_trait ]
 impl InternalIterator for MemtableIterator {
-    fn step(&mut self) {
+    async fn step(&mut self) {
         let entries = &self.inner.entries;
 
         #[ allow(clippy::comparison_chain) ]
@@ -78,8 +79,8 @@ impl ImmMemtableRef {
         &*self.inner
     }
 
-    pub fn into_iter(self) -> MemtableIterator {
-        MemtableIterator::new( self.inner )
+    pub async fn into_iter(self) -> MemtableIterator {
+        MemtableIterator::new( self.inner ).await
     }
 }
 
@@ -195,11 +196,11 @@ impl Memtable {
 mod tests {
     use super::*;
 
-    #[test]
-    fn iterate() {
+    #[tokio::test]
+    async fn iterate() {
         let mut reference = MemtableRef::wrap( Memtable::new(1) );
 
-        let iter = reference.clone_immutable().into_iter();
+        let iter = reference.clone_immutable().into_iter().await;
         assert_eq!(iter.at_end(), true);
 
         let key1 = bincode::serialize(&(5u64)).unwrap();
@@ -211,19 +212,19 @@ mod tests {
         unsafe{ reference.get_mut().put(key1.clone(), val1.clone(), 1024) };
         unsafe{ reference.get_mut().put(key2.clone(), val2.clone(), 1024) };
 
-        let mut iter = reference.clone_immutable().into_iter();
+        let mut iter = reference.clone_immutable().into_iter().await;
 
         assert_eq!(iter.get_key(), &key1);
         assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val1);
 
-        iter.step();
+        iter.step().await;
 
         assert_eq!(iter.get_key(), &key2);
         assert_eq!(iter.get_entry().get_value_ref().unwrap(), &val2);
 
         assert_eq!(iter.at_end(), false);
 
-        iter.step();
+        iter.step().await;
 
         assert_eq!(iter.at_end(), true);
     }

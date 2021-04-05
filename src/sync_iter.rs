@@ -33,16 +33,16 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
     }
 
     #[inline]
-    pub(crate) fn parse_iter<'a>(last_key: &Option<Key>, iter: &'a mut dyn InternalIterator,
-            min_kv: &mut Option<(&'a Key, &'a Entry)>) -> bool {
+    pub(crate) async fn parse_iter<'a>(last_key: &Option<Key>, iter: &'a mut dyn InternalIterator,
+            min_kv: Option<(&'a Key, &'a Entry)>) -> (bool, Option<(&'a Key, &'a Entry)>) {
         if let Some(last_key) = last_key {
             while !iter.at_end() && iter.get_key() <= last_key {
-                iter.step();
+                iter.step().await;
             }
         }
 
         if iter.at_end() {
-            return false;
+            return (false, min_kv);
         }
 
         let key = iter.get_key();
@@ -51,47 +51,68 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
         if let Some((min_key, min_entry)) = min_kv {
             match key.cmp(min_key) {
                 Ordering::Less => {
-                    *min_kv = Some((key, entry));
-                    true
+                    (true, Some((key, entry)))
                 }
                 Ordering::Equal => {
                     if entry.get_sequence_number() > min_entry.get_sequence_number() {
-                        *min_kv = Some((key, entry));
-                        true
+                        (true, Some((key, entry)))
                     } else {
-                        false
+                        (false, min_kv)
                     }
                 }
-                Ordering::Greater => false
+                Ordering::Greater => (false, min_kv)
             }
         } else {
-            *min_kv = Some((key, entry));
-            true
+            (true, Some((key, entry)))
         }
     }
 
     fn next_entry(&mut self) -> Option<(bool, K, Entry)> {
-        let mut min_kv = None;
-        let mut is_pending = true;
+        let (result, last_key, mem_iters, table_iters) = {
+            let mut mem_iters = std::mem::take(&mut self.mem_iters);
+            let mut table_iters = std::mem::take(&mut self.table_iters);
+            let mut last_key = self.last_key.clone();
 
-        for iter in self.mem_iters.iter_mut() {
-            Self::parse_iter(&self.last_key, iter, &mut min_kv);
-        }
+            self.tokio_rt.block_on(async move {
+                let mut is_pending = true;
+                let mut min_kv = None;
 
-        for iter in self.table_iters.iter_mut() {
-            if Self::parse_iter(&self.last_key, iter, &mut min_kv) {
-                is_pending = false;
-            }
-        }
-        if let Some((key, entry)) = min_kv {
-            let res_key = super::get_encoder().deserialize(&key).unwrap();
-            let entry = entry.clone();
+                for iter in mem_iters.iter_mut() {
+                    let (change, kv) = Self::parse_iter(&last_key, iter, min_kv).await;
 
-            self.last_key = Some(key.clone());
-            Some((is_pending, res_key, entry))//TODO can we avoid cloning here?
-        } else {
-            None
-        }
+                    if change {
+                        min_kv = kv;
+                    }
+                }
+
+                for iter in table_iters.iter_mut() {
+                    let (change, kv) = Self::parse_iter(&last_key, iter, min_kv).await;
+
+                    if change {
+                        is_pending = false;
+                        min_kv = kv;
+                    }
+                }
+
+                let result = if let Some((key, entry)) = min_kv.take() {
+                    let res_key = super::get_encoder().deserialize(&key).unwrap();
+                    let entry = entry.clone();
+
+                    last_key = Some(key.clone());
+                    Some((is_pending, res_key, entry))//TODO can we avoid cloning here?
+                } else {
+                    None
+                };
+
+                (result, last_key, mem_iters, table_iters)
+            })
+        };
+
+        self.last_key = last_key;
+        self.mem_iters = mem_iters;
+        self.table_iters = table_iters;
+
+        result
     }
 }
 

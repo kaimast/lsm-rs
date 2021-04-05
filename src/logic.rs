@@ -110,17 +110,23 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
-        mem_iters.push(self.memtable.read().await.clone_immutable().into_iter());
+        {
+            let memtable = self.memtable.read().await;
+            let iter = memtable.clone_immutable().into_iter().await;
+            mem_iters.push(iter);
+        }
 
         for imm in self.imm_memtables.lock().await.iter() {
-            mem_iters.push(imm.clone().into_iter());
+            let iter = imm.clone().into_iter().await;
+            mem_iters.push(iter);
         }
 
         for level in self.levels.iter() {
             let tables = level.get_tables_ro().await;
 
             for table in tables.iter() {
-                table_iters.push(TableIterator::new(table.clone()));
+                let iter = TableIterator::new(table.clone()).await;
+                table_iters.push(iter);
             }
         }
 
@@ -137,11 +143,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let imm_mems = self.imm_memtables.lock().await;
 
             mem_iters.push(
-               memtable.clone_immutable().into_iter()
+               memtable.clone_immutable().into_iter().await
             );
 
             for imm in imm_mems.iter() {
-                mem_iters.push(imm.clone().into_iter());
+                let iter = imm.clone().into_iter().await;
+                mem_iters.push(iter);
             }
         }
 
@@ -149,7 +156,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let tables = level.get_tables_ro().await;
 
             for table in tables.iter() {
-                table_iters.push(TableIterator::new(table.clone()));
+                let iter = TableIterator::new(table.clone()).await;
+                table_iters.push(iter);
             }
         }
 
@@ -356,11 +364,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut table_iters = Vec::new();
         for table in tables.drain(..) {
-            table_iters.push(TableIterator::new(table.clone()));
+            table_iters.push(TableIterator::new(table.clone()).await);
         }
 
         for (_, child) in overlaps.iter() {
-            table_iters.push(TableIterator::new(child.clone()));
+            table_iters.push(TableIterator::new(child.clone()).await);
         }
 
         let mut last_key: Option<Key> = None;
@@ -373,7 +381,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 // Advance the iterator, if needed
                 if let Some(last_key) = &last_key {
                     while !table_iter.at_end() && table_iter.get_key() <= last_key {
-                        table_iter.step();
+                        table_iter.step().await;
                     }
                 }
 

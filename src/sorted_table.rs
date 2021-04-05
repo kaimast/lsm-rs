@@ -14,9 +14,10 @@ pub struct SortedTable {
     data_blocks: Arc<DataBlocks>
 }
 
-pub trait InternalIterator {
+#[async_trait::async_trait]
+pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
-    fn step(&mut self);
+    async fn step(&mut self);
     fn get_key(&self) -> &Key;
     fn get_entry(&self) -> &Entry;
 }
@@ -30,10 +31,10 @@ pub struct TableIterator {
 }
 
 impl TableIterator {
-    pub fn new(table: Arc<SortedTable>) -> Self {
+    pub async fn new(table: Arc<SortedTable>) -> Self {
         let last_key = vec![];
         let block_id = table.index.get_block_id(0);
-        let first_block = table.data_blocks.get_block(&block_id);
+        let first_block = table.data_blocks.get_block(&block_id).await;
         let (key, entry, entry_len) = first_block.get_offset(0, &last_key);
 
         // Are we already at the end of the first block?
@@ -47,6 +48,7 @@ impl TableIterator {
     }
 }
 
+#[async_trait::async_trait]
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
         self.block_pos > self.table.index.num_data_blocks()
@@ -60,7 +62,7 @@ impl InternalIterator for TableIterator {
         &self.entry
     }
 
-    fn step(&mut self) {
+    async fn step(&mut self) {
         #[ allow(clippy::comparison_chain) ]
         if self.block_pos == self.table.index.num_data_blocks() {
             self.block_pos += 1;
@@ -70,7 +72,7 @@ impl InternalIterator for TableIterator {
         }
 
         let block_id = self.table.index.get_block_id(self.block_pos);
-        let block = self.table.data_blocks.get_block(&block_id);
+        let block = self.table.data_blocks.get_block(&block_id).await;
 
         let (key, entry, new_offset) = block.get_offset(self.block_offset, &self.key);
         self.key = key;
@@ -171,9 +173,9 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<Entry> {
+    pub async fn get(&self, key: &[u8]) -> Option<Entry> {
         let block_id = self.index.binary_search(key)?;
-        let block = self.data_blocks.get_block(&block_id);
+        let block = self.data_blocks.get_block(&block_id).await;
 
         block.get(key)
     }
@@ -215,19 +217,19 @@ mod tests {
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
         let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
 
-        let mut iter = TableIterator::new( table );
+        let mut iter = TableIterator::new(table).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
         assert_eq!(iter.get_entry(), &entry1);
 
-        iter.step();
+        iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
         assert_eq!(iter.get_entry(), &entry2);
 
-        iter.step();
+        iter.step().await;
 
         assert_eq!(iter.at_end(), true);
     }
@@ -260,7 +262,7 @@ mod tests {
         let id = 1;
         let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await );
 
-        let mut iter = TableIterator::new( table );
+        let mut iter = TableIterator::new(table).await;
 
         for pos in 0..COUNT {
             assert_eq!(iter.at_end(), false);
@@ -269,7 +271,7 @@ mod tests {
             assert_eq!(iter.get_entry(),
                     &Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) });
 
-            iter.step();
+            iter.step().await;
         }
 
         assert_eq!(iter.at_end(), true);

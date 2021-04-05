@@ -33,6 +33,7 @@ mod memtable;
 mod logic;
 use logic::DbLogic;
 
+mod disk;
 mod level;
 mod wal;
 mod manifest;
