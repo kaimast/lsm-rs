@@ -161,8 +161,6 @@ impl Level {
         }
 
         offsets.sort_unstable();
-        println!("{:?}", offsets);
-
         (offsets, tables)
     }
 
