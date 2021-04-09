@@ -202,7 +202,35 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    // Use multi-threading to enable background compaction
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_put_delete_large_entry() {
+        const SIZE: usize = 1_000_000;
+
+        test_init();
+        let ds = Database::new(SM).await;
+
+        let mut options = WriteOptions::default();
+        options.sync = true;
+
+        for _ in 0..10 {
+            let mut value = Vec::new();
+            value.resize(SIZE, 0);
+
+            let value = String::from_utf8(value).unwrap();
+            let key: u64 = 424245;
+
+            ds.put_opts(&key, &value, &options).await.unwrap();
+
+            assert_eq!(ds.get(&key).await, Some(value));
+
+            ds.delete(&key).await;
+
+            assert_eq!(ds.get(&key).await, None);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn get_put_delete_many() {
         const COUNT: u64 = 10_000;
 

@@ -357,7 +357,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             max = std::cmp::max(max, table.get_max());
         }
 
-        assert!(min < max);
+        // Table can potentially contain a single entry
+        assert!(min <= max);
 
         let min = min.to_vec();
         let max = max.to_vec();
