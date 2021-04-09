@@ -86,11 +86,18 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         let mut is_pending = true;
 
         for iter in slf.mem_iters.iter_mut() {
-            SyncIter::<K,V>::parse_iter(&slf.last_key, iter, &mut min_kv);
+            let (change, kv) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
+
+            if change {
+                min_kv = kv;
+            }
         }
 
         for iter in slf.table_iters.iter_mut() {
-            if SyncIter::<K,V>::parse_iter(&slf.last_key, iter, &mut min_kv) {
+            let (change, kv ) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
+
+            if change {
+                min_kv = kv;
                 is_pending = false;
             }
         }

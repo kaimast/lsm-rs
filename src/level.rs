@@ -54,7 +54,7 @@ impl Level {
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
-            if let Some(entry) = table.get(key) {
+            if let Some(entry) = table.get(key).await {
                 return Some(entry);
             }
         }

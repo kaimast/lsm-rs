@@ -1,20 +1,17 @@
 use std::sync::Arc;
 use std::path::Path;
-use std::io::Write;
 use std::convert::TryInto;
 use std::cmp::Ordering;
 
-#[cfg(feature="snappy-compression")]
-use std::io::Read;
-
-use parking_lot::Mutex;
-
 use lru::LruCache;
 
+use crate::disk;
 use crate::manifest::Manifest;
 use crate::Params;
 use crate::sorted_table::Key;
 use crate::entry::Entry;
+
+use tokio::sync::Mutex;
 
 pub type DataBlockId = u64;
 
@@ -72,66 +69,24 @@ impl DataBlocks {
         // Store on disk before grabbing the lock
         let block_data = &block.data;
         let fpath = self.get_file_path(&id);
+        disk::write(&fpath, block_data).await;
 
-        let mut file = std::fs::File::create(fpath)
-            .expect("Failed to store data block on disk");
-
-        #[ cfg(feature="snappy-compression") ]
-        {
-            use snap::write::FrameEncoder;
-
-            let mut encoder = FrameEncoder::new(file);
-            encoder.write_all(block_data)
-                .expect("Failed to store data block on disk");
-            file = encoder.into_inner().unwrap();
-        }
-
-        #[ cfg(not(feature="snappy-compression")) ]
-        {
-            file.write_all(block_data)
-                .expect("Failed to store data block on disk");
-        }
-
-        file.sync_all().unwrap();
-        log::trace!("Created new data block on disk");
-
-        let mut cache = self.block_caches[shard_id].lock();
+        let mut cache = self.block_caches[shard_id].lock().await;
         cache.put(id, block);
 
         id
     }
 
-    pub fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
+    pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
 
-        let mut cache = self.block_caches[shard_id].lock();
+        let mut cache = self.block_caches[shard_id].lock().await;
         if let Some(block) = cache.get(id) {
             block.clone()
         } else {
             log::trace!("Loading data block from disk");
             let fpath = self.get_file_path(&id);
-            let data;
-
-            #[ cfg(feature="snappy-compression") ]
-            {
-                use snap::read::FrameDecoder;
-
-                let file = std::fs::File::open(fpath)
-                    .expect("Failed to open data block file");
-                let mut decoder = FrameDecoder::new(file);
-
-                let mut rdata = Vec::new();
-                decoder.read_to_end(&mut rdata).unwrap();
-
-                data = rdata;
-            }
-
-            #[ cfg(not(feature="snappy-compression")) ]
-            {
-                data = std::fs::read(fpath)
-                    .expect("Cannot read data block from disk");
-            }
-
+            let data = disk::read(&fpath).await;
             let block = Arc::new(DataBlock::new_from_data(data));
 
             cache.put(*id, block.clone());
