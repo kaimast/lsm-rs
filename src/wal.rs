@@ -23,14 +23,14 @@ impl WriteOp {
     const PUT_OP: u8 = 1;
     const DELETE_OP: u8 = 2;
 
-    fn get_key(&self) -> &[u8] {
+    pub fn get_key(&self) -> &[u8] {
         match self {
             Self::Put(key, _) => key,
             Self::Delete(key) => key
         }
     }
 
-    fn get_type(&self) -> u8 {
+    pub fn get_type(&self) -> u8 {
         match self {
             Self::Put(_, _) => Self::PUT_OP,
             Self::Delete(_) => Self::DELETE_OP

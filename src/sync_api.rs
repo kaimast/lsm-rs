@@ -29,11 +29,20 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
-        let tasks_cpy = tasks.clone();
+        {
+            let tasks = takss.clone();
+            tokio_rt.spawn(async move {
+                TaskManager::work_loop(tasks).await;
+            });
+        }
 
-        tokio_rt.spawn(async move {
-            TaskManager::work_loop(tasks_cpy).await;
-        });
+        #[ cfg(feature="wisckey") ]
+        {
+            let inner = inner.clone();
+            tokio_rt.spawn(async move {
+                inner.garbage_collect().await;
+            });
+        }
 
         Self{ inner, tasks, tokio_rt }
     }

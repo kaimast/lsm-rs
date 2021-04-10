@@ -25,14 +25,23 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Self {
         let inner = Arc::new( DbLogic::new(mode, params).await );
-
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
-        let tasks_cpy = tasks.clone();
+        {
+            let tasks = tasks.clone();
 
-        tokio::spawn(async move {
-            TaskManager::work_loop(tasks_cpy).await;
-        });
+            tokio::spawn(async move {
+                TaskManager::work_loop(tasks).await;
+            });
+        }
+
+        #[ cfg(feature="wisckey") ]
+        {
+            let inner = inner.clone();
+            tokio::spawn(async move {
+                inner.garbage_collect().await;
+            });
+        }
 
         Self{ inner, tasks }
     }
@@ -215,7 +224,7 @@ mod tests {
 
         for _ in 0..10 {
             let mut value = Vec::new();
-            value.resize(SIZE, 0);
+            value.resize(SIZE, 'a' as u8);
 
             let value = String::from_utf8(value).unwrap();
             let key: u64 = 424245;

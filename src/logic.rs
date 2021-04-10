@@ -23,6 +23,9 @@ use crate::cond_var::Condvar;
 #[ cfg(not(feature="wisckey")) ]
 use bincode::Options;
 
+#[ cfg(feature="wisckey") ]
+use std::collections::HashSet;
+
 pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
@@ -40,6 +43,12 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
+
+    #[ cfg(feature="wisckey") ]
+    watched_keys: Mutex<HashSet<Key>>,
+
+    #[ cfg(feature="wisckey") ]
+    watched_keys_cond: Condvar,
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
@@ -94,7 +103,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
-        let value_log = ValueLog::new(params.clone(), manifest.clone()).await;
+        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
+
+        #[cfg(feature="wisckey")]
+        let watched_keys = Mutex::new( HashSet::new() );
+
+        #[cfg(feature="wisckey") ]
+        let watched_keys_cond = Condvar::new();
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -112,6 +127,53 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
             wal, levels, next_table_id, running, data_blocks,
             #[ cfg(feature="wisckey") ] value_log,
+            #[ cfg(feature="wisckey") ] watched_keys,
+            #[ cfg(feature="wisckey") ] watched_keys_cond,
+        }
+    }
+
+    #[cfg(feature="wisckey")]
+    pub async fn garbage_collect(&self) {
+        loop {
+            let batch_id = self.value_log.get_oldest_batch_id().await;
+            log::trace!("Checking if we can garbage collection batch #{}", batch_id);
+
+            let mut watch_lock = self.watched_keys.lock().await;
+            assert!(watch_lock.is_empty());
+
+            loop {
+                let mut keys = self.value_log.get_keys(batch_id).await;
+                watch_lock.clear();
+
+                //TODO only re-check keys that have changed
+                for key in keys.drain() {
+                    let mut found = false;
+
+                    // We count all references because clients might
+                    // still iterate over outdated values
+                    for vref in self.get_value_refs(&key).await {
+                        let (value_batch, _) = vref;
+
+                        if batch_id == value_batch {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if found {
+                        watch_lock.insert(key);
+                    }
+                }
+
+                if watch_lock.is_empty() {
+                    break;
+                } else {
+                    watch_lock = self.watched_keys_cond.wait(watch_lock, &self.watched_keys).await;
+                }
+            }
+
+            // Batch is not needed anymore
+            self.value_log.delete_batch(batch_id).await;
         }
     }
 
@@ -178,24 +240,113 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         return DbIterator::new(mem_iters, table_iters);
     }
 
+    #[ cfg(feature="wisckey") ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
 
-        #[ cfg(feature="wisckey") ]
-        let mut vref = None;
+        // special case for memtable to avoid race conditions
+        {
+            let memtable = self.memtable.read().await;
+
+            if let Some(entry) = memtable.get().get(key) {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        let val = self.value_log.get_pending(value_ref).await;
+                        return Some(val);
+                    }
+                    Entry::Deletion{..} => { return None; }
+                }
+            };
+        }
+
+        if let Some(value_ref) = self.get_value_ref(key).await {
+            Some( self.value_log.get(value_ref).await )
+        } else {
+            None
+        }
+    }
+
+    /// Get the most recent value reference for a specific key
+    /// - This does *not* include pending values
+    #[ cfg(feature="wisckey") ]
+    pub async fn get_value_ref(&self, key: &[u8]) -> Option<crate::values::ValueId> {
+        {
+            let imm_mems = self.imm_memtables.lock().await;
+
+            for imm in imm_mems.iter().rev() {
+                if let Some(entry) = imm.get().get(key) {
+                    match entry {
+                        Entry::Value{ value_ref, ..} => {
+                            return Some(value_ref);
+                        }
+                        Entry::Deletion{..} => {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+
+        for level in self.levels.iter() {
+            if let Some(entry) = level.get(key).await {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        return Some(value_ref);
+                    }
+                    Entry::Deletion{..} => {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get all values associated for a specific key
+    /// - This does *not* include pending values
+    #[ cfg(feature="wisckey") ]
+    pub async fn get_value_refs(&self, key: &[u8]) -> Vec<crate::values::ValueId> {
+        let mut result = vec![];
+
+        {
+            let imm_mems = self.imm_memtables.lock().await;
+
+            for imm in imm_mems.iter().rev() {
+                if let Some(entry) = imm.get().get(key) {
+                    match entry {
+                        Entry::Value{ value_ref, ..} => {
+                            result.push(value_ref);
+                        }
+                        Entry::Deletion{..} => {}
+                    }
+                }
+            }
+        }
+
+        for level in self.levels.iter() {
+            if let Some(entry) = level.get(key).await {
+                match entry {
+                    Entry::Value{value_ref, ..} => {
+                        result.push(value_ref);
+                    }
+                    Entry::Deletion{..} => {}
+                }
+            }
+        }
+
+        result
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    pub async fn get(&self, key: &[u8]) -> Option<V> {
+        log::trace!("Starting to seek for key `{:?}`", key);
 
         let memtable = self.memtable.read().await;
-
-        #[ cfg(not(feature="wisckey")) ]
         let encoder = crate::get_encoder();
 
         if let Some(entry) = memtable.get().get(key) {
             match entry {
-                #[ cfg(feature="wisckey") ]
-                Entry::Value{value_ref, ..} => {
-                    vref = Some(value_ref)
-                }
-                #[ cfg(not(feature="wisckey")) ]
                 Entry::Value{value, ..} => {
                     let value = encoder.deserialize(&value).unwrap();
                     return Some(value);
@@ -204,23 +355,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         };
 
-        #[ cfg(feature="wisckey") ]
-        if let Some(vref) = vref {
-            return Some(self.value_log.get_pending(vref).await);
-        }
-
         {
             let imm_mems = self.imm_memtables.lock().await;
 
             for imm in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
-                        #[ cfg(feature="wisckey") ]
-                        Entry::Value{ value_ref, ..} => {
-                            vref = Some(value_ref);
-                            break;
-                        }
-                        #[ cfg(not(feature="wisckey")) ]
                         Entry::Value{ value, ..} => {
                             let value = encoder.deserialize(&value).unwrap();
                             return Some(value);
@@ -233,26 +373,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        #[ cfg(feature="wisckey") ]
-        if let Some(vref) = vref {
-            return Some(self.value_log.get(vref).await);
-        }
-
         for level in self.levels.iter() {
-            #[ cfg(feature="wisckey") ]
-            if let Some(entry) = level.get(key).await {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
-                        let value = self.value_log.get(value_ref).await;
-                        return Some(value);
-                    }
-                    Entry::Deletion{..} => {
-                        return None;
-                    }
-                }
-            }
-
-            #[ cfg(not(feature="wisckey")) ]
             if let Some(entry) = level.get(key).await {
                 match entry {
                     Entry::Value{value, ..} => {
@@ -281,8 +402,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[cfg(feature="wisckey")]
         {
+            let watched_keys = self.watched_keys.lock().await;
+            let mut watch_triggered = false;
+
             for op in write_batch.writes.drain(..) {
                 wal.store(&op).await;
+
+                if watched_keys.contains(op.get_key()) {
+                    watch_triggered = true;
+                }
 
                 match op {
                     crate::WriteOp::Put(key, value) => {
@@ -293,6 +421,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         vlog_info.push((key, None));
                     }
                 }
+            }
+
+            if watch_triggered {
+                self.watched_keys_cond.notify_all();
             }
         }
 
@@ -339,15 +471,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
+
+            #[ cfg(feature="wisckey") ]
+            self.value_log.next_pending().await;
+
             drop(memtable);
 
             // Currently only one immutable memtable is supported
             while !imm_mems.is_empty() {
                 imm_mems = self.imm_cond.wait(imm_mems, &self.imm_memtables).await;
             }
-
-            #[ cfg(feature="wisckey") ]
-            self.value_log.next_pending().await;
 
             imm_mems.push_back(imm);
 

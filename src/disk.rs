@@ -6,8 +6,12 @@ use std::path::Path;
 #[ cfg(feature="snappy-compression") ]
 pub async fn read(fpath: &Path) -> Vec<u8> {
     let mut decoder = snap::raw::Decoder::new();
-    let compressed =fs::read(fpath).await
-            .expect("Cannot read file from disk");
+    let compressed = match fs::read(fpath).await {
+        Ok(data) => data,
+        Err(e) => {
+            panic!("Cannot read file {:?} from disk: {}", fpath, e);
+        }
+    };
 
     decoder.decompress_vec(&compressed)
         .expect("Failed to decompress data")
