@@ -25,8 +25,15 @@ jobs:
       run: make async-tests
     - name: Basic tests (Sync)
       run: make sync-tests
+    - name: Basic tests (No compression)
+      run: make no-compression-tests
+    - name: Basic tests (No wisckey)
+      run: make no-wisckey-tests
     #Do liniting last because it is most likely to fail
     - name: Linting (Async)
       run: make async-lint
     - name: Linting (Sync)
       run: make sync-lint
+    - name: Linting (No WiscKey)
+      run: make no-wisckey-lint
+    -
