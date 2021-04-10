@@ -153,7 +153,10 @@ impl Memtable {
                 // remove old entry
 
                 #[ cfg(feature="wisckey") ]
-                let entry_len = key.len(); //FIXME no easy way to get value size
+                let entry_len = {
+                    self.entries.remove(pos);
+                    key.len() //FIXME no easy way to get value size
+                };
 
                 #[ cfg(not(feature="wisckey")) ]
                 let entry_len = {
@@ -339,6 +342,23 @@ mod tests {
 
         assert_eq!(mem.entries.len(), 1);
         assert_eq!(mem.get(&key).unwrap().get_value_ref(), None);
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    #[test]
+    fn delete() {
+        let mut mem = Memtable::new(1);
+
+        assert_eq!(mem.entries.len(), 0);
+
+        let key = vec![5, 2, 4];
+        let val = vec![5, 1];
+
+        mem.put(key.clone(), val.clone());
+        mem.delete(key.clone());
+
+        assert_eq!(mem.entries.len(), 1);
+        assert_eq!(mem.get(&key).unwrap().get_value(), None);
     }
 
     #[ cfg(feature="wisckey") ]

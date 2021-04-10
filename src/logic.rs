@@ -401,17 +401,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[cfg(feature="wisckey")]
         {
-            let watched_key = self.watched_key.lock().await;
-            let mut watch_triggered = false;
-
-            for op in write_batch.writes.drain(..) {
+             for op in write_batch.writes.drain(..) {
                 wal.store(&op).await;
-
-                if let Some(key) = &*watched_key {
-                    if key == op.get_key() {
-                        watch_triggered = true;
-                    }
-                }
 
                 match op {
                     crate::WriteOp::Put(key, value) => {
@@ -422,10 +413,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         vlog_info.push((key, None));
                     }
                 }
-            }
-
-            if watch_triggered {
-                self.watched_key_cond.notify_all();
             }
         }
 
@@ -645,6 +632,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
                         min_entry = Some(entry);
 
+                        // Check whether we overwrote a key that is about to
+                        // be garbage collected
                         #[ cfg(feature="wisckey") ]
                         if let Some(wkey) = &*watched_key {
                             if wkey == key {
