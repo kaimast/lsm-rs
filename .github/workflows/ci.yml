@@ -36,4 +36,3 @@ jobs:
       run: make sync-lint
     - name: Linting (No WiscKey)
       run: make no-wisckey-lint
-    -
