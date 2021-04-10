@@ -81,17 +81,15 @@ impl ValueLog {
     }
 
     pub async fn get_oldest_batch_id(&self) -> ValueBatchId {
-        loop {
-            let mut bid = None;
-            let mut bid_lock = self.batch_ids.lock().await;
+        let mut bid = None;
+        let mut bid_lock = self.batch_ids.lock().await;
 
-            while bid.is_none() {
-                bid_lock = self.batch_ids_cond.wait(bid_lock, &self.batch_ids).await;
-                bid = bid_lock.first();
-            }
-
-            return *bid.unwrap();
+        while bid.is_none() {
+            bid_lock = self.batch_ids_cond.wait(bid_lock, &self.batch_ids).await;
+            bid = bid_lock.first();
         }
+
+        return *bid.unwrap();
     }
 
     pub async fn delete_batch(&self, bid: ValueBatchId) {

@@ -30,7 +30,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
         {
-            let tasks = takss.clone();
+            let tasks = tasks.clone();
             tokio_rt.spawn(async move {
                 TaskManager::work_loop(tasks).await;
             });

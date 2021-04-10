@@ -591,6 +591,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut last_key: Option<Key> = None;
 
+        #[ cfg(feature="wisckey") ]
+        let watched_keys = self.watched_keys.lock().await;
+
+        #[ cfg(feature="wisckey") ]
+        let mut watch_triggered = false;
+
         loop {
             log::trace!("Starting compaction for next key");
             let mut min_key = None;
@@ -637,6 +643,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, entry.get_sequence_number(), other_entry.get_sequence_number());
 
                         min_entry = Some(entry);
+
+                        #[ cfg(feature="wisckey") ]
+                        if watched_keys.contains(key) {
+                            watch_triggered = true;
+                        }
                     }
                 } else {
                     log::trace!("Found new key {:?}", key);
@@ -681,6 +692,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         self.manifest.update_table_set(add_set, remove_set).await;
+
+        #[ cfg(feature="wisckey") ]
+        if watch_triggered {
+            self.watched_keys_cond.notify_all();
+        }
 
         log::trace!("Done compacting tables");
     }
