@@ -90,11 +90,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let imm_cond = Condvar::new();
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
-        let wal = Mutex::new(WriteAheadLog::new(params.clone()));
+        let wal = Mutex::new(WriteAheadLog::new(params.clone()).await);
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
-        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
+        let value_log = ValueLog::new(params.clone(), manifest.clone()).await;
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -235,7 +235,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[ cfg(feature="wisckey") ]
         if let Some(vref) = vref {
-            return Some(self.value_log.get_pending(vref).await);
+            return Some(self.value_log.get(vref).await);
         }
 
         for level in self.levels.iter() {
@@ -276,23 +276,53 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut wal = self.wal.lock().await;
 
-        for op in write_batch.writes.iter() {
-            wal.store(op);
+        #[cfg(feature="wisckey")]
+        let mut vlog_info = Vec::new();
+
+        #[cfg(feature="wisckey")]
+        {
+            for op in write_batch.writes.drain(..) {
+                wal.store(&op).await;
+
+                match op {
+                    crate::WriteOp::Put(key, value) => {
+                        let vinfo = self.value_log.add_value(&key, value).await;
+                        vlog_info.push((key, Some(vinfo)));
+                    }
+                    crate::WriteOp::Delete(key) => {
+                        vlog_info.push((key, None));
+                    }
+                }
+            }
         }
+
+        #[ cfg(not(feature="wisckey")) ]
+        for op in write_batch.writes.iter() {
+            wal.store(op).await;
+        }
+
         if opt.sync {
-            wal.sync();
+            wal.sync().await;
+            #[cfg(feature="wisckey")]
+            self.value_log.sync().await;
         }
         drop(wal);
 
+        #[ cfg(feature="wisckey") ]
+        for (key, vref) in vlog_info.drain(..) {
+            if let Some(vinfo) = vref {
+                log::trace!("Storing new value for key `{:?}`", key);
+                let (value_pos, value_len) = vinfo;
+                mem_inner.put(key, value_pos, value_len);
+            } else {
+                log::trace!("Storing deletion for key `{:?}`", key);
+                mem_inner.delete(key);
+            }
+        }
+
+        #[ cfg(not(feature="wisckey")) ]
         for op in write_batch.writes.drain(..) {
             match op {
-                #[ cfg(feature="wisckey") ]
-                crate::WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{:?}`", key);
-                    let (value_pos, value_len) = self.value_log.add_value(value).await;
-                    mem_inner.put(key, value_pos, value_len);
-                }
-                #[ cfg(not(feature="wisckey")) ]
                 crate::WriteOp::Put(key, value) => {
                     log::trace!("Storing new value for key `{:?}`", key);
                     mem_inner.put(key, value);
@@ -339,16 +369,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             if let Some(mem) = imm_mems.pop_front() {
-                #[ cfg(feature="wisckey") ]
-                self.value_log.flush_pending().await;
-
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
                 let l0 = self.levels.get(0).unwrap();
                 l0.create_l0_table(table_id, mem.get().get_entries()).await;
 
                 log::debug!("Created new L0 table");
-                self.imm_cond.notify_all(imm_mems);
+                self.imm_cond.notify_all();
                 return true;
             }
         }

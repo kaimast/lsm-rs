@@ -29,7 +29,7 @@ impl<K: KV_Trait, V: KV_Trait>TaskManager<K, V> {
     pub async fn wake_up(&self) {
         let mut last_change = self.last_change.lock().await;
         *last_change = Instant::now();
-        self.sc_condition.notify_one(last_change);
+        self.sc_condition.notify_one();
     }
 
     pub async fn work_loop(tasks: Arc<TaskManager<K, V>>) {

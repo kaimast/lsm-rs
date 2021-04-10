@@ -23,20 +23,17 @@ impl Condvar {
         mutex.lock().await
     }
 
-    pub fn notify_one<T>(&self, lock: MutexGuard<T>) {
+    pub fn notify_one(&self) {
         let count = self.wait_count.load(atomic::Ordering::SeqCst);
 
         if count > 0 {
             self.wait_count.store(count-1, atomic::Ordering::SeqCst);
-            drop(lock);
-
             self.notifier.notify_one();
         }
     }
 
-    pub fn notify_all<T>(&self, lock: MutexGuard<T>) {
+    pub fn notify_all(&self) {
         let count = self.wait_count.swap(0, atomic::Ordering::SeqCst);
-        drop(lock);
 
         for _ in 0..count {
             self.notifier.notify_one();
