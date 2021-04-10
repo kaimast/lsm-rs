@@ -23,9 +23,6 @@ use crate::cond_var::Condvar;
 #[ cfg(not(feature="wisckey")) ]
 use bincode::Options;
 
-#[ cfg(feature="wisckey") ]
-use std::collections::HashSet;
-
 pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
@@ -45,10 +42,10 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     value_log: Arc<ValueLog>,
 
     #[ cfg(feature="wisckey") ]
-    watched_keys: Mutex<HashSet<Key>>,
+    watched_key: Mutex<Option<Key>>,
 
     #[ cfg(feature="wisckey") ]
-    watched_keys_cond: Condvar,
+    watched_key_cond: Condvar,
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
@@ -106,10 +103,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         #[cfg(feature="wisckey")]
-        let watched_keys = Mutex::new( HashSet::new() );
+        let watched_key = Mutex::new( None );
 
         #[cfg(feature="wisckey") ]
-        let watched_keys_cond = Condvar::new();
+        let watched_key_cond = Condvar::new();
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -127,8 +124,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
             wal, levels, next_table_id, running, data_blocks,
             #[ cfg(feature="wisckey") ] value_log,
-            #[ cfg(feature="wisckey") ] watched_keys,
-            #[ cfg(feature="wisckey") ] watched_keys_cond,
+            #[ cfg(feature="wisckey") ] watched_key,
+            #[ cfg(feature="wisckey") ] watched_key_cond,
         }
     }
 
@@ -136,17 +133,18 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     pub async fn garbage_collect(&self) {
         loop {
             let batch_id = self.value_log.get_oldest_batch_id().await;
-            log::trace!("Checking if we can garbage collection batch #{}", batch_id);
+            let keys = self.value_log.get_keys(batch_id).await;
 
-            let mut watch_lock = self.watched_keys.lock().await;
-            assert!(watch_lock.is_empty());
+            let mut watch_lock = self.watched_key.lock().await;
+            assert!(watch_lock.is_none());
 
             loop {
-                let mut keys = self.value_log.get_keys(batch_id).await;
-                watch_lock.clear();
+                log::trace!("Checking if we can garbage collection batch #{}", batch_id);
 
-                //TODO only re-check keys that have changed
-                for key in keys.drain() {
+                *watch_lock = None;
+
+                // Find the first key in this batch that is still valid
+                for key in keys.iter() {
                     let mut found = false;
 
                     // We count all references because clients might
@@ -161,19 +159,20 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
 
                     if found {
-                        watch_lock.insert(key);
+                        *watch_lock = Some(key.clone());
                     }
                 }
 
-                if watch_lock.is_empty() {
+                if watch_lock.is_none() {
                     break;
                 } else {
-                    watch_lock = self.watched_keys_cond.wait(watch_lock, &self.watched_keys).await;
+                    watch_lock = self.watched_key_cond.wait(watch_lock, &self.watched_key).await;
                 }
             }
 
             // Batch is not needed anymore
             self.value_log.delete_batch(batch_id).await;
+            *watch_lock = None;
         }
     }
 
@@ -402,14 +401,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[cfg(feature="wisckey")]
         {
-            let watched_keys = self.watched_keys.lock().await;
+            let watched_key = self.watched_key.lock().await;
             let mut watch_triggered = false;
 
             for op in write_batch.writes.drain(..) {
                 wal.store(&op).await;
 
-                if watched_keys.contains(op.get_key()) {
-                    watch_triggered = true;
+                if let Some(key) = &*watched_key {
+                    if key == op.get_key() {
+                        watch_triggered = true;
+                    }
                 }
 
                 match op {
@@ -424,7 +425,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
 
             if watch_triggered {
-                self.watched_keys_cond.notify_all();
+                self.watched_key_cond.notify_all();
             }
         }
 
@@ -592,7 +593,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut last_key: Option<Key> = None;
 
         #[ cfg(feature="wisckey") ]
-        let watched_keys = self.watched_keys.lock().await;
+        let watched_key = self.watched_key.lock().await;
 
         #[ cfg(feature="wisckey") ]
         let mut watch_triggered = false;
@@ -645,8 +646,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         min_entry = Some(entry);
 
                         #[ cfg(feature="wisckey") ]
-                        if watched_keys.contains(key) {
-                            watch_triggered = true;
+                        if let Some(wkey) = &*watched_key {
+                            if wkey == key {
+                                watch_triggered = true;
+                            }
                         }
                     }
                 } else {
@@ -695,7 +698,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[ cfg(feature="wisckey") ]
         if watch_triggered {
-            self.watched_keys_cond.notify_all();
+            self.watched_key_cond.notify_all();
         }
 
         log::trace!("Done compacting tables");

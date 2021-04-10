@@ -150,7 +150,25 @@ impl Memtable {
     fn get_key_pos(&mut self, key: &[u8]) -> usize {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
             Ok(pos) => {
-                self.entries.remove(pos); // remove old entry
+                // remove old entry
+
+                #[ cfg(feature="wisckey") ]
+                let entry_len = key.len(); //FIXME no easy way to get value size
+
+                #[ cfg(not(feature="wisckey")) ]
+                let entry_len = {
+                    let (_,entry) = self.entries.remove(pos);
+                    match entry {
+                        Entry::Value{value,..} => {
+                            key.len()+value.len()
+                        }
+                        Entry::Deletion{..} => {
+                            key.len()
+                        }
+                    }
+                };
+
+                self.size -= entry_len;
                 pos
             },
             Err(pos) => pos,
@@ -160,6 +178,7 @@ impl Memtable {
     #[ cfg(feature="wisckey") ]
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
         let pos = self.get_key_pos(key.as_slice());
+        let entry_len = key.len() + value_len;
 
         self.entries.insert(pos,
             (key, Entry::Value{
@@ -167,14 +186,14 @@ impl Memtable {
             })
         );
 
-        self.size += value_len;
+        self.size += entry_len;
         self.next_seq_number += 1;
     }
 
     #[ cfg(not(feature="wisckey")) ]
     pub fn put(&mut self, key: Key, value: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
-        let value_len = value.len();
+        let entry_len = key.len()+value.len();
 
         self.entries.insert(pos,
             (key, Entry::Value{
@@ -182,12 +201,13 @@ impl Memtable {
             })
         );
 
-        self.size += value_len;
+        self.size += entry_len;
         self.next_seq_number += 1;
     }
 
     pub fn delete(&mut self, key: Key) {
         let pos = self.get_key_pos(key.as_slice());
+        let entry_len = key.len();
 
         self.entries.insert(pos,
             (key, Entry::Deletion{
@@ -196,6 +216,7 @@ impl Memtable {
             })
         );
 
+        self.size += entry_len;
         self.next_seq_number += 1;
     }
 

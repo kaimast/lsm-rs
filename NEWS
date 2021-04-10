@@ -1,5 +1,6 @@
 Unreleased:
-    - Allow disabling key-value separation using the "wisckey" feature flag.
+    - Allow disabling key-value separation using the "wisckey" feature flag
+    - Implemented proper garbage collection for the value log
 
 0.1:
-    - Experimental pre-release
+    - Basic key-value store functionality
