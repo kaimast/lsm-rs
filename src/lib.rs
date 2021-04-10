@@ -22,6 +22,7 @@ pub mod async_iter;
 #[ cfg(not(feature="sync")) ]
 pub use async_iter as iterate;
 
+#[ cfg(feature="wisckey") ]
 mod values;
 
 mod sorted_table;

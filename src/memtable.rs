@@ -1,7 +1,9 @@
 use crate::sorted_table::{InternalIterator, Key};
 use crate::entry::Entry;
-use crate::values::ValueId;
 use crate::Params;
+
+#[ cfg(feature="wisckey") ]
+use crate::values::ValueId;
 
 use std::sync::Arc;
 
@@ -148,15 +150,38 @@ impl Memtable {
     fn get_key_pos(&mut self, key: &[u8]) -> usize {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
             Ok(pos) => {
-                self.entries.remove(pos); // remove old entry
+                // remove old entry
+
+                #[ cfg(feature="wisckey") ]
+                let entry_len = {
+                    self.entries.remove(pos);
+                    key.len() //FIXME no easy way to get value size
+                };
+
+                #[ cfg(not(feature="wisckey")) ]
+                let entry_len = {
+                    let (_,entry) = self.entries.remove(pos);
+                    match entry {
+                        Entry::Value{value,..} => {
+                            key.len()+value.len()
+                        }
+                        Entry::Deletion{..} => {
+                            key.len()
+                        }
+                    }
+                };
+
+                self.size -= entry_len;
                 pos
             },
             Err(pos) => pos,
         }
     }
 
+    #[ cfg(feature="wisckey") ]
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
         let pos = self.get_key_pos(key.as_slice());
+        let entry_len = key.len() + value_len;
 
         self.entries.insert(pos,
             (key, Entry::Value{
@@ -164,20 +189,37 @@ impl Memtable {
             })
         );
 
-        self.size += value_len;
+        self.size += entry_len;
         self.next_seq_number += 1;
     }
 
-
-    pub fn delete(&mut self, key: Key) {
+    #[ cfg(not(feature="wisckey")) ]
+    pub fn put(&mut self, key: Key, value: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
+        let entry_len = key.len()+value.len();
 
         self.entries.insert(pos,
-            (key, Entry::Deletion{
-                _value_ref: (0,0), seq_number: self.next_seq_number
+            (key, Entry::Value{
+                value, seq_number: self.next_seq_number
             })
         );
 
+        self.size += entry_len;
+        self.next_seq_number += 1;
+    }
+
+    pub fn delete(&mut self, key: Key) {
+        let pos = self.get_key_pos(key.as_slice());
+        let entry_len = key.len();
+
+        self.entries.insert(pos,
+            (key, Entry::Deletion{
+                seq_number: self.next_seq_number,
+                #[cfg(feature="wisckey")] _value_ref: (0,0),
+            })
+        );
+
+        self.size += entry_len;
         self.next_seq_number += 1;
     }
 
@@ -196,6 +238,7 @@ impl Memtable {
 mod tests {
     use super::*;
 
+    #[ cfg(feature="wisckey") ]
     #[tokio::test]
     async fn iterate() {
         let mut reference = MemtableRef::wrap( Memtable::new(1) );
@@ -229,6 +272,7 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn get_put() {
         let mut mem = Memtable::new(1);
@@ -246,6 +290,25 @@ mod tests {
         assert_eq!(mem.get(&key2).unwrap().get_value_ref().unwrap(), &val2);
     }
 
+    #[ cfg(not(feature="wisckey")) ]
+    #[test]
+    fn get_put() {
+        let mut mem = Memtable::new(1);
+
+        let key1 = vec![5, 2, 4];
+        let key2 = vec![3, 8, 1];
+
+        let val1 = vec![5, 1];
+        let val2 = vec![1, 8];
+
+        mem.put(key1.clone(), val1.clone());
+        mem.put(key2.clone(), val2.clone());
+
+        assert_eq!(mem.get(&key1).unwrap().get_value().unwrap(), &val1);
+        assert_eq!(mem.get(&key2).unwrap().get_value().unwrap(), &val2);
+    }
+
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn update() {
         let mut mem = Memtable::new(1);
@@ -264,6 +327,7 @@ mod tests {
         assert_eq!(mem.get(&key).unwrap().get_value_ref(), Some(&val2));
     }
 
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn delete() {
         let mut mem = Memtable::new(1);
@@ -280,7 +344,24 @@ mod tests {
         assert_eq!(mem.get(&key).unwrap().get_value_ref(), None);
     }
 
+    #[ cfg(not(feature="wisckey")) ]
+    #[test]
+    fn delete() {
+        let mut mem = Memtable::new(1);
 
+        assert_eq!(mem.entries.len(), 0);
+
+        let key = vec![5, 2, 4];
+        let val = vec![5, 1];
+
+        mem.put(key.clone(), val.clone());
+        mem.delete(key.clone());
+
+        assert_eq!(mem.entries.len(), 1);
+        assert_eq!(mem.get(&key).unwrap().get_value(), None);
+    }
+
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn override_entry() {
         let mut mem = Memtable::new(1);

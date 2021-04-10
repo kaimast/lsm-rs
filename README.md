@@ -21,15 +21,17 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * More modularity and configuration options
 
 ## Feature Flags
+* `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
 * `snappy-compression`: Use the snappy to compress data on disk (enabled by default)
-* `sync`: Expose the synchronous API instead of async one (Note: in this case the implementation will launch a tokio instance internally and hide it from the caller)
+* `sync`: Expose the synchronous API instead of async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
 We provide a makefile for convenience:
 
-```
-make test
+```sh
+make test #runs all tests
+make lint #runs cargo clippy
 ```
 
 ## Similar Crates

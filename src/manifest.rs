@@ -11,12 +11,15 @@ use crate::Params;
 
 use crate::sorted_table::TableId;
 use crate::data_blocks::DataBlockId;
+
+#[ cfg(feature="wisckey") ]
 use crate::values::ValueBatchId;
 
 #[ derive(Debug, Default, Serialize, Deserialize) ]
 struct MetaData {
     next_table_id: TableId,
     next_data_block_id: DataBlockId,
+    #[ cfg(feature="wisckey") ]
     next_value_batch_id: ValueBatchId,
 }
 
@@ -36,6 +39,7 @@ impl Manifest {
         let meta = MetaData{
             next_table_id: 1,
             next_data_block_id: 1,
+            #[ cfg(feature="wisckey") ]
             next_value_batch_id: 1,
         };
 
@@ -76,6 +80,7 @@ impl Manifest {
         id
     }
 
+    #[ cfg(feature="wisckey") ]
     pub async fn next_value_batch_id(&self) -> ValueBatchId {
         let mut meta = self.meta.lock().await;
         let id = meta.next_value_batch_id;

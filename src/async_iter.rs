@@ -1,4 +1,6 @@
+#[ cfg(feature="wisckey") ]
 use crate::values::ValueLog;
+
 use crate::sorted_table::TableIterator;
 use crate::memtable::MemtableIterator;
 use crate::KV_Trait;
@@ -12,9 +14,10 @@ use futures::stream::Stream;
 use std::task::{Context, Poll};
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::pin::Pin;
 
+#[ cfg(feature="wisckey") ]
+use std::sync::Arc;
 
 type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
 
@@ -23,9 +26,18 @@ pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: KV_Trait, V: KV_Trait> DbIterator<K, V> {
+    #[ cfg(feature="wisckey") ]
     pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>,
                       value_log: Arc<ValueLog>) -> Self {
         let inner = DbIteratorInner::new(mem_iters, table_iters, value_log);
+        let state = Box::pin(DbIteratorInner::next(inner));
+
+        Self{ state: Some(state) }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
+        let inner = DbIteratorInner::new(mem_iters, table_iters);
         let state = Box::pin(DbIteratorInner::next(inner));
 
         Self{ state: Some(state) }
@@ -69,10 +81,13 @@ struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
     last_key: Option<Vec<u8>>,
     mem_iters: Vec<MemtableIterator>,
     table_iters: Vec<TableIterator>,
+
+    #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
 }
 
 impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
+    #[ cfg(feature="wisckey") ]
     fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
             , value_log: Arc<ValueLog>) -> Self {
         Self{
@@ -81,7 +96,15 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
     }
 
-    async fn next_entry(mut slf: Self) -> (Self, Option<(bool,K,Entry)>) {
+    #[ cfg(not(feature="wisckey")) ]
+    fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
+        Self{
+            mem_iters, table_iters,
+            last_key: None, _marker: PhantomData
+        }
+    }
+
+   async fn next_entry(mut slf: Self) -> (Self, Option<(bool,K,Entry)>) {
         let mut min_kv = None;
         let mut is_pending = true;
 
@@ -112,6 +135,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
     }
 
+    #[ cfg(feature="wisckey") ]
     async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
         loop {
             let (slf, result) = Self::next_entry(slf_).await;
@@ -133,6 +157,31 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                     }
                 }
             } else {
+                return (slf, None);
+            }
+        }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
+        loop {
+            let (slf, result) = Self::next_entry(slf_).await;
+
+            if let Some((_, key, entry)) = result {
+                match entry {
+                    Entry::Value{value, ..} => {
+                        let encoder = crate::get_encoder();
+                        let res_val = encoder.deserialize(&value).unwrap();
+                        return (slf, Some((key, res_val)));
+                    },
+
+                    Entry::Deletion{..} => {
+                        // This is a deletion. Skip
+                        slf_ = slf;
+                    }
+                }
+            }
+            else {
                 return (slf, None);
             }
         }

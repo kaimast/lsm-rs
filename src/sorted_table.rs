@@ -7,6 +7,7 @@ use crate::index_blocks::IndexBlock;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
+pub type Value = Vec<u8>;
 
 pub struct SortedTable {
     identifier: TableId,
@@ -196,6 +197,7 @@ mod tests {
 
     use tempfile::tempdir;
 
+    #[ cfg(feature="wisckey") ]
     #[tokio::test]
     async fn iterate() {
         let dir = tempdir().unwrap();
@@ -234,6 +236,46 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
+    #[ cfg(not(feature="wisckey")) ]
+    #[tokio::test]
+    async fn iterate() {
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
+        let manifest = Arc::new( Manifest::new(params.clone()).await );
+
+        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+
+        let key1 = vec![5];
+        let entry1 = Entry::Value{ seq_number: 1, value: vec![4,2] };
+
+        let key2 = vec![15];
+        let entry2 = Entry::Value{ seq_number: 4, value: vec![4, 50] };
+
+        let id = 124234;
+        let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
+        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
+
+        let mut iter = TableIterator::new(table).await;
+
+        assert_eq!(iter.at_end(), false);
+        assert_eq!(iter.get_key(), &key1);
+        assert_eq!(iter.get_entry(), &entry1);
+
+        iter.step().await;
+
+        assert_eq!(iter.at_end(), false);
+        assert_eq!(iter.get_key(), &key2);
+        assert_eq!(iter.get_entry(), &entry2);
+
+        iter.step().await;
+
+        assert_eq!(iter.at_end(), true);
+    }
+
+    #[ cfg(feature="wisckey") ]
     #[tokio::test]
     async fn iterate_many() {
         const COUNT: u32 = 5_000;

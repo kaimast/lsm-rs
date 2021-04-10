@@ -1,4 +1,6 @@
+#[ cfg(feature="wisckey") ]
 use crate::values::ValueLog;
+
 use crate::entry::Entry;
 use crate::sorted_table::{Key, TableIterator, InternalIterator};
 use crate::memtable::MemtableIterator;
@@ -17,8 +19,10 @@ pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
     last_key: Option<Vec<u8>>,
     mem_iters: Vec<MemtableIterator>,
     table_iters: Vec<TableIterator>,
+    tokio_rt: Arc<tokio::runtime::Runtime>,
+
+    #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
-    tokio_rt: Arc<tokio::runtime::Runtime>
 }
 
 impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
@@ -119,6 +123,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
 impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
     type Item = (K, V);
 
+    #[ cfg(feature="wisckey") ]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let result = self.next_entry();
@@ -144,6 +149,29 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
             } else {
                 return None;
             }
+        }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let result = self.next_entry();
+
+            if let Some((_, key, entry)) = result {
+                match entry {
+                    Entry::Value{value, ..} => {
+                        let encoder = crate::get_encoder();
+                        let res_val = encoder.deserialize(&value).unwrap();
+                        return Some((key, res_val));
+                    }
+                    Entry::Deletion{..} => {
+                        // this is a deletion... skip
+                    }
+                }
+            } else {
+                return None;
+            }
+
         }
     }
 }
