@@ -5,6 +5,8 @@ use std::convert::TryInto;
 
 use tokio::sync::{Mutex, RwLock};
 
+use crate::sorted_table::Value;
+
 use bincode::Options;
 
 use lru::LruCache;
@@ -16,8 +18,6 @@ pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
 
 pub type ValueId = (ValueBatchId, ValueOffset);
-
-pub type Value = Vec<u8>;
 
 const NUM_SHARDS: usize = 16;
 

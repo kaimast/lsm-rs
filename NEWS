@@ -1,0 +1,5 @@
+Unreleased:
+    - Allow disabling key-value separation using the "wisckey" feature flag.
+
+0.1:
+    - Experimental pre-release

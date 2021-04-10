@@ -128,14 +128,21 @@ impl DataBlock {
                 restart_list.push(data.len() as u32);
             }
 
+            let mut entry_data = bincode::serialize(&entry).unwrap();
+
             let mut pkey_len = (key.prefix_len   as u32).to_le_bytes().to_vec();
             let mut skey_len = (key.suffix.len() as u32).to_le_bytes().to_vec();
+
+            #[ cfg(not(feature="wisckey")) ]
+            let mut entry_len = (entry_data.len() as u32).to_le_bytes().to_vec();
 
             data.append(&mut pkey_len);
             data.append(&mut skey_len);
             data.append(&mut key.suffix);
 
-            let mut entry_data = bincode::serialize(&entry).unwrap();
+            #[ cfg(not(feature="wisckey")) ]
+            data.append(&mut entry_len);
+
             data.append(&mut entry_data);
         }
 
@@ -176,7 +183,18 @@ impl DataBlock {
         let kdata = [&previous_key[..pkey_len as usize], &self.data[offset..offset+(skey_len as usize)]].concat();
         offset += skey_len as usize;
 
+        #[ cfg(not(feature="wisckey")) ]
+        let entry_len = {
+            let elen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
+            offset += len_len;
+
+            elen as usize
+        };
+
+        // WiscKey has constant-size entries
+        #[ cfg(feature="wisckey") ]
         let entry_len = bincode::serialized_size(&Entry::default()).unwrap() as usize;
+
         let entry = bincode::deserialize(&self.data[offset..offset+entry_len]).unwrap();
 
         offset += entry_len;
@@ -273,6 +291,7 @@ impl DataBlock {
 mod tests {
     use super::*;
 
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn store_and_load() {
         let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
@@ -280,6 +299,36 @@ mod tests {
 
         let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
         let entry2 = Entry::Value{ seq_number: 424234, value_ref: (4,50) };
+
+        let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
+
+        let params = Params::default();
+
+        let data_block = DataBlock::new_from_entries(entries, &params);
+
+        let data_block2 = DataBlock::new_from_data(data_block.data.clone());
+
+        let prev_key = vec![];
+        let (key, val, pos) = data_block2.get_offset(0, &prev_key);
+
+        assert_eq!(key, vec![5]);
+        assert_eq!(val, entry1);
+
+        let (key, val, pos) = data_block2.get_offset(pos, &key);
+
+        assert_eq!(key, vec![5, 2]);
+        assert_eq!(val, entry2);
+        assert_eq!(pos, data_block2.byte_len());
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    #[test]
+    fn store_and_load() {
+        let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
+        let entry1 = Entry::Value{ seq_number: 14234524, value: vec![4,2] };
+
+        let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
+        let entry2 = Entry::Value{ seq_number: 424234, value: vec![4,50] };
 
         let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
 

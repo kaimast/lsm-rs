@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{Key, Params};
-use crate::values::Value;
+use crate::sorted_table::Value;
 
 use std::path::Path;
 use std::fs::File;

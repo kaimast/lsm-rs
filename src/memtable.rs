@@ -1,7 +1,9 @@
 use crate::sorted_table::{InternalIterator, Key};
 use crate::entry::Entry;
-use crate::values::ValueId;
 use crate::Params;
+
+#[ cfg(feature="wisckey") ]
+use crate::values::ValueId;
 
 use std::sync::Arc;
 
@@ -155,6 +157,7 @@ impl Memtable {
         }
     }
 
+    #[ cfg(feature="wisckey") ]
     pub fn put(&mut self, key: Key, value_ref: ValueId, value_len: usize) {
         let pos = self.get_key_pos(key.as_slice());
 
@@ -168,13 +171,28 @@ impl Memtable {
         self.next_seq_number += 1;
     }
 
+    #[ cfg(not(feature="wisckey")) ]
+    pub fn put(&mut self, key: Key, value: Vec<u8>) {
+        let pos = self.get_key_pos(key.as_slice());
+        let value_len = value.len();
+
+        self.entries.insert(pos,
+            (key, Entry::Value{
+                value, seq_number: self.next_seq_number
+            })
+        );
+
+        self.size += value_len;
+        self.next_seq_number += 1;
+    }
 
     pub fn delete(&mut self, key: Key) {
         let pos = self.get_key_pos(key.as_slice());
 
         self.entries.insert(pos,
             (key, Entry::Deletion{
-                _value_ref: (0,0), seq_number: self.next_seq_number
+                seq_number: self.next_seq_number,
+                #[cfg(feature="wisckey")] _value_ref: (0,0),
             })
         );
 
@@ -196,6 +214,7 @@ impl Memtable {
 mod tests {
     use super::*;
 
+    #[ cfg(feature="wisckey") ]
     #[tokio::test]
     async fn iterate() {
         let mut reference = MemtableRef::wrap( Memtable::new(1) );
@@ -229,6 +248,7 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn get_put() {
         let mut mem = Memtable::new(1);
@@ -246,6 +266,25 @@ mod tests {
         assert_eq!(mem.get(&key2).unwrap().get_value_ref().unwrap(), &val2);
     }
 
+    #[ cfg(not(feature="wisckey")) ]
+    #[test]
+    fn get_put() {
+        let mut mem = Memtable::new(1);
+
+        let key1 = vec![5, 2, 4];
+        let key2 = vec![3, 8, 1];
+
+        let val1 = vec![5, 1];
+        let val2 = vec![1, 8];
+
+        mem.put(key1.clone(), val1.clone());
+        mem.put(key2.clone(), val2.clone());
+
+        assert_eq!(mem.get(&key1).unwrap().get_value().unwrap(), &val1);
+        assert_eq!(mem.get(&key2).unwrap().get_value().unwrap(), &val2);
+    }
+
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn update() {
         let mut mem = Memtable::new(1);
@@ -264,6 +303,7 @@ mod tests {
         assert_eq!(mem.get(&key).unwrap().get_value_ref(), Some(&val2));
     }
 
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn delete() {
         let mut mem = Memtable::new(1);
@@ -280,7 +320,7 @@ mod tests {
         assert_eq!(mem.get(&key).unwrap().get_value_ref(), None);
     }
 
-
+    #[ cfg(feature="wisckey") ]
     #[test]
     fn override_entry() {
         let mut mem = Memtable::new(1);

@@ -1,7 +1,9 @@
+#[cfg(feature="wisckey")]
 use crate::values::ValueId;
 
 use serde::{Serialize, Deserialize};
 
+#[cfg(feature="wisckey")]
 #[derive(Serialize, Deserialize, Clone, Debug,PartialEq)]
 pub enum Entry {
     Value {
@@ -15,6 +17,18 @@ pub enum Entry {
     }
 }
 
+#[cfg(not(feature="wisckey"))]
+#[derive(Serialize, Deserialize, Clone, Debug,PartialEq)]
+pub enum Entry {
+    Value {
+        seq_number: u64,
+        value: Vec<u8>,
+    },
+    Deletion {
+        seq_number: u64,
+    }
+}
+
 impl Entry {
     pub fn get_sequence_number(&self) -> u64 {
         match self {
@@ -22,15 +36,27 @@ impl Entry {
         }
     }
 
+    #[ cfg(not(feature="wisckey")) ]
     #[ allow(dead_code) ]
-    pub fn get_value_ref(&self) -> Option<&ValueId> {
+    pub fn get_value(&self) -> Option<&[u8]> {
         match self {
-            Self::Value{ value_ref, .. } => Some(value_ref),
+            Self::Value{value, ..} => Some(&value),
             Self::Deletion{..} => None,
         }
     }
+
+    #[ cfg(feature="wisckey") ]
+    #[ allow(dead_code) ]
+    pub fn get_value_ref(&self) -> Option<&ValueId> {
+        match self {
+            Self::Value{value_ref, ..} => Some(value_ref),
+            Self::Deletion{..} => None,
+        }
+    }
+
 }
 
+#[ cfg(feature="wisckey") ]
 impl Default for Entry {
     fn default() -> Self {
         Entry::Value{ seq_number: 0, value_ref: (0,0) }

@@ -1,5 +1,4 @@
 use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
-use crate::values::ValueLog;
 use crate::entry::Entry;
 use crate::{Params, StartMode, KV_Trait, WriteBatch, WriteError, WriteOptions};
 use crate::data_blocks::DataBlocks;
@@ -8,6 +7,9 @@ use crate::level::Level;
 use crate::wal::WriteAheadLog;
 use crate::manifest::Manifest;
 use crate::iterate::DbIterator;
+
+#[ cfg(feature="wisckey") ]
+use crate::values::ValueLog;
 
 use std::marker::PhantomData;
 use std::collections::VecDeque;
@@ -18,6 +20,9 @@ use tokio::sync::{RwLock, Mutex};
 
 use crate::cond_var::Condvar;
 
+#[ cfg(not(feature="wisckey")) ]
+use bincode::Options;
+
 pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
@@ -27,12 +32,14 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<ImmMemtableRef>>,
     imm_cond: Condvar,
-    value_log: Arc<ValueLog>,
     wal: Mutex<WriteAheadLog>,
     levels: Vec<Level>,
     next_table_id: atomic::AtomicUsize,
     running: atomic::AtomicBool,
-    data_blocks: Arc<DataBlocks>
+    data_blocks: Arc<DataBlocks>,
+
+    #[ cfg(feature="wisckey") ]
+    value_log: Arc<ValueLog>,
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
@@ -81,11 +88,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
-        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
         let wal = Mutex::new(WriteAheadLog::new(params.clone()));
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
+
+        #[cfg(feature="wisckey") ]
+        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         if params.num_levels == 0 {
             panic!("Need at least one level!");
@@ -101,7 +110,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            value_log, wal, levels, next_table_id, running, data_blocks
+            wal, levels, next_table_id, running, data_blocks,
+            #[ cfg(feature="wisckey") ] value_log,
         }
     }
 
@@ -161,24 +171,40 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(mem_iters, table_iters, self.value_log.clone())
+        #[ cfg(feature="wisckey") ]
+        return DbIterator::new(mem_iters, table_iters, self.value_log.clone());
+
+        #[ cfg(not(feature="wisckey")) ]
+        return DbIterator::new(mem_iters, table_iters);
     }
 
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
 
+        #[ cfg(feature="wisckey") ]
         let mut vref = None;
+
         let memtable = self.memtable.read().await;
+
+        #[ cfg(not(feature="wisckey")) ]
+        let encoder = crate::get_encoder();
 
         if let Some(entry) = memtable.get().get(key) {
             match entry {
+                #[ cfg(feature="wisckey") ]
                 Entry::Value{value_ref, ..} => {
                     vref = Some(value_ref)
+                }
+                #[ cfg(not(feature="wisckey")) ]
+                Entry::Value{value, ..} => {
+                    let value = encoder.deserialize(&value).unwrap();
+                    return Some(value);
                 }
                 Entry::Deletion{..} => { return None; }
             }
         };
 
+        #[ cfg(feature="wisckey") ]
         if let Some(vref) = vref {
             return Some(self.value_log.get_pending(vref).await);
         }
@@ -189,9 +215,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             for imm in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
+                        #[ cfg(feature="wisckey") ]
                         Entry::Value{ value_ref, ..} => {
                             vref = Some(value_ref);
                             break;
+                        }
+                        #[ cfg(not(feature="wisckey")) ]
+                        Entry::Value{ value, ..} => {
+                            let value = encoder.deserialize(&value).unwrap();
+                            return Some(value);
                         }
                         Entry::Deletion{..} => {
                             return None;
@@ -201,11 +233,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
+        #[ cfg(feature="wisckey") ]
         if let Some(vref) = vref {
             return Some(self.value_log.get_pending(vref).await);
         }
 
         for level in self.levels.iter() {
+            #[ cfg(feature="wisckey") ]
             if let Some(entry) = level.get(key).await {
                 match entry {
                     Entry::Value{value_ref, ..} => {
@@ -217,6 +251,20 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
                 }
             }
+
+            #[ cfg(not(feature="wisckey")) ]
+            if let Some(entry) = level.get(key).await {
+                match entry {
+                    Entry::Value{value, ..} => {
+                        let value = encoder.deserialize(&value).unwrap();
+                        return Some(value);
+                    }
+                    Entry::Deletion{..} => {
+                        return None;
+                    }
+                }
+            }
+
         }
 
         None
@@ -238,10 +286,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         for op in write_batch.writes.drain(..) {
             match op {
+                #[ cfg(feature="wisckey") ]
                 crate::WriteOp::Put(key, value) => {
                     log::trace!("Storing new value for key `{:?}`", key);
                     let (value_pos, value_len) = self.value_log.add_value(value).await;
                     mem_inner.put(key, value_pos, value_len);
+                }
+                #[ cfg(not(feature="wisckey")) ]
+                crate::WriteOp::Put(key, value) => {
+                    log::trace!("Storing new value for key `{:?}`", key);
+                    mem_inner.put(key, value);
                 }
                 crate::WriteOp::Delete(key) => {
                     log::trace!("Storing deletion for key `{:?}`", key);
@@ -262,7 +316,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 imm_mems = self.imm_cond.wait(imm_mems, &self.imm_memtables).await;
             }
 
+            #[ cfg(feature="wisckey") ]
             self.value_log.next_pending().await;
+
             imm_mems.push_back(imm);
 
             Ok(true)
@@ -283,6 +339,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             if let Some(mem) = imm_mems.pop_front() {
+                #[ cfg(feature="wisckey") ]
                 self.value_log.flush_pending().await;
 
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
