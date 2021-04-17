@@ -201,7 +201,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone())
+        #[ cfg(feature="wisckey") ]
+        return DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone());
+
+        #[ cfg(not(feature="wisckey")) ]
+        return DbIterator::new(tokio_rt, mem_iters, table_iters);
     }
 
     #[cfg(not(feature="sync"))]
