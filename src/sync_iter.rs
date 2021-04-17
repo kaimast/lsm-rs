@@ -26,12 +26,20 @@ pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
-    #[ cfg(feature="sync") ]
-    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>,
-                      mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
-            , value_log: Arc<ValueLog>) -> Self {
+    #[ cfg(all(feature="sync", feature="wisckey")) ]
+    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>, mem_iters: Vec<MemtableIterator>,
+            table_iters: Vec<TableIterator>, value_log: Arc<ValueLog>) -> Self {
         Self{
             mem_iters, table_iters, value_log, tokio_rt,
+            last_key: None, _marker: PhantomData
+        }
+    }
+
+    #[ cfg(all(feature="sync", not(feature="wisckey"))) ]
+    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>, mem_iters: Vec<MemtableIterator>,
+            table_iters: Vec<TableIterator>) -> Self {
+        Self{
+            mem_iters, table_iters, tokio_rt,
             last_key: None, _marker: PhantomData
         }
     }

@@ -20,6 +20,9 @@ no-compression-tests:
 no-wisckey-tests:
 	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression
 
+no-wisckey-sync-tests:
+	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression,sync
+
 lint: sync-lint async-lint no-wisckey-lint
 
 sync-lint:
