@@ -117,21 +117,26 @@ impl WriteAheadLog{
                     IoSlice::new(key)
                 ];
 
-                #[ cfg(not(feature="wisckey")) ]
-                {
-                    let vlen = op.get_value_length().to_le_bytes();
+                cfg_if! {
+                    if #[ cfg(not(feature="wisckey")) ] {
+                        let vlen = op.get_value_length().to_le_bytes();
 
-                    match op {
-                        WriteOp::Put(_, value) => {
-                            buffers.push(IoSlice::new(vlen.as_slice()));
-                            buffers.push(IoSlice::new(value));
-                        },
-                        WriteOp::Delete(_) => {}
+                        match op {
+                            WriteOp::Put(_, value) => {
+                                buffers.push(IoSlice::new(vlen.as_slice()));
+                                buffers.push(IoSlice::new(value));
+                            },
+                            WriteOp::Delete(_) => {}
+                        }
+
+                        self.log_file.write_all_vectored(&mut buffers)
+                            .expect("Failed to write to log file");
+                    } else {
+                        // Try doing one write syscall if possible
+                        self.log_file.write_all_vectored(&mut buffers)
+                            .expect("Failed to write to log file");
                     }
                 }
-
-                // Try doing one write syscall if possible
-                self.log_file.write_all_vectored(&mut buffers).expect("Failed to write to log file");
             }
         }
     }

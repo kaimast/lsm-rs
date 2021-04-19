@@ -21,21 +21,24 @@ jobs:
          toolchain: nightly
          override: true
          components: cargo, rustc, clippy
-    - name: Basic tests (Async)
+    - name: Tests (Async)
       run: make async-tests
-    - name: Basic tests (Async I/O)
+    - name: Tests (Async I/O)
       run: make async-io-tests
-    - name: Basic tests (Sync)
+    - name: Tests (Sync)
       run: make sync-tests
-    - name: Basic tests (No compression)
+    - name: Tests (No compression)
       run: make no-compression-tests
-    - name: Basic tests (No wisckey)
+    - name: Tests (No wisckey)
       run: make no-wisckey-tests
-    - name: Basic tests (No wisckey + sync)
+    - name: Tests (No wisckey + sync)
       run: make no-wisckey-tests
+
     #Do liniting last because it is most likely to fail
     - name: Linting (Async)
       run: make async-lint
+    - name: Linting (Async I/O)
+      run: make async-io-lint
     - name: Linting (Sync)
       run: make sync-lint
     - name: Linting (No WiscKey)
