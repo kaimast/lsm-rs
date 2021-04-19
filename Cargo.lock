@@ -270,6 +270,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bincode",
+ "cfg-if",
  "env_logger",
  "futures",
  "log",

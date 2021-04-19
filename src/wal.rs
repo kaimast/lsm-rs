@@ -5,8 +5,19 @@ use crate::sorted_table::Value;
 
 use std::path::Path;
 
+#[ cfg(feature="async-io") ]
 use tokio::fs::File;
+
+#[ cfg(feature="async-io") ]
 use tokio::io::AsyncWriteExt;
+
+#[ cfg(not(feature="async-io")) ]
+use std::fs::File;
+
+#[ cfg(not(feature="async-io")) ]
+use std::io::{IoSlice, Write};
+
+use cfg_if::cfg_if;
 
 pub struct WriteAheadLog{
     #[ allow(dead_code) ]
@@ -55,7 +66,14 @@ impl WriteOp {
 impl WriteAheadLog{
     pub async fn new(params: Arc<Params>) -> Self {
         let fpath = params.db_path.join(Path::new("LOG"));
-        let log_file = File::create(fpath).await.expect("Failed to open log file");
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                let log_file = File::create(fpath).await.expect("Failed to open log file");
+            } else {
+                let log_file = File::create(fpath).expect("Failed to open log file");
+            }
+        }
 
         Self{ params, log_file }
     }
@@ -68,55 +86,64 @@ impl WriteAheadLog{
         let key = op.get_key();
         let klen = op.get_key_length().to_le_bytes();
 
-        /* not supported by stable tokio yet
-        let mut write_vector = match op {
-            WriteOp::Put(key, value) => {
-                vec![
-                    IoSlice::new(op_type.as_slice()),
-                    IoSlice::new(klen.as_slice()),
-                    IoSlice::new(key),
-                ]
-            }
-            WriteOp::Delete(key) => {
-                vec![
+        cfg_if! {
+            if #[ cfg(feature="async-io") ] {
+                cfg_if! {
+                    if #[ cfg(feature="wisckey") ] {
+                        // Value will be stored in the vlog, so no need to store it here as well
+                        self.log_file.write_all(op_type.as_slice()).await.unwrap();
+                        self.log_file.write_all(klen.as_slice()).await.unwrap();
+                        self.log_file.write_all(key).await.unwrap();
+                    } else {
+                        let vlen = op.get_value_length().to_le_bytes();
+
+                        self.log_file.write_all(op_type.as_slice()).await.unwrap();
+                        self.log_file.write_all(klen.as_slice()).await.unwrap();
+                        self.log_file.write_all(key).await.unwrap();
+
+                        match op {
+                            WriteOp::Put(_, value) => {
+                                self.log_file.write_all(vlen.as_slice()).await.unwrap();
+                                self.log_file.write_all(value).await.unwrap();
+                            },
+                            WriteOp::Delete(_) => {}
+                        }
+                    }
+                }
+            } else {
+                let mut buffers = vec![
                     IoSlice::new(op_type.as_slice()),
                     IoSlice::new(klen.as_slice()),
                     IoSlice::new(key)
-                ]
-            }
-        };
+                ];
 
-        // Try doing one write syscall if possible
-        self.log_file.write_all_vectored(&mut write_vector[..]).expect("Failed to write to log file");*/
+                #[ cfg(not(feature="wisckey")) ]
+                {
+                    let vlen = op.get_value_length().to_le_bytes();
 
-        #[ cfg(feature="wisckey") ]
-        {
-            // Value will be stored in the vlog, so no need to store it here as well
-            self.log_file.write_all(op_type.as_slice()).await.unwrap();
-            self.log_file.write_all(klen.as_slice()).await.unwrap();
-            self.log_file.write_all(key).await.unwrap();
-        }
+                    match op {
+                        WriteOp::Put(_, value) => {
+                            buffers.push(IoSlice::new(vlen.as_slice()));
+                            buffers.push(IoSlice::new(value));
+                        },
+                        WriteOp::Delete(_) => {}
+                    }
+                }
 
-        #[ cfg(not(feature="wisckey")) ]
-        {
-            let vlen = op.get_value_length().to_le_bytes();
-
-            self.log_file.write_all(op_type.as_slice()).await.unwrap();
-            self.log_file.write_all(klen.as_slice()).await.unwrap();
-            self.log_file.write_all(key).await.unwrap();
-
-            match op {
-                WriteOp::Put(_, value) => {
-                    self.log_file.write_all(vlen.as_slice()).await.unwrap();
-                    self.log_file.write_all(value).await.unwrap();
-                },
-                WriteOp::Delete(_) => {}
+                // Try doing one write syscall if possible
+                self.log_file.write_all_vectored(&mut buffers).expect("Failed to write to log file");
             }
         }
     }
 
     pub async fn sync(&mut self) {
-        self.log_file.sync_data().await.expect("Failed to sync log file!");
+        cfg_if! {
+            if #[cfg(feature="async-io") ] {
+                self.log_file.sync_data().await.expect("Failed to sync log file!");
+            } else {
+                self.log_file.sync_data().expect("Failed to sync log file!");
+            }
+        }
     }
 
     /// Once the memtable has been flushed we can remove all log entries

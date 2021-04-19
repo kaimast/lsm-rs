@@ -23,6 +23,8 @@ jobs:
          components: cargo, rustc, clippy
     - name: Basic tests (Async)
       run: make async-tests
+    - name: Basic tests (Async I/O)
+      run: make async-io-tests
     - name: Basic tests (Sync)
       run: make sync-tests
     - name: Basic tests (No compression)

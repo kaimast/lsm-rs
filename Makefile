@@ -14,6 +14,9 @@ sync-tests:
 async-tests:
 	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test
 
+async-io-tests:
+	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async-io
+
 no-compression-tests:
 	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=wisckey
 
