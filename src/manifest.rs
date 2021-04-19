@@ -4,7 +4,12 @@ use std::io::SeekFrom;
 use std::sync::Arc;
 use std::collections::HashSet;
 
+#[ cfg(feature="async-io") ]
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+#[ cfg(not(feature="async-io")) ]
+use std::io::{Seek, Write};
+
 use tokio::sync::Mutex;
 
 use crate::Params;
@@ -14,6 +19,8 @@ use crate::data_blocks::DataBlockId;
 
 #[ cfg(feature="wisckey") ]
 use crate::values::ValueBatchId;
+
+use cfg_if::cfg_if;
 
 #[ derive(Debug, Default, Serialize, Deserialize) ]
 struct MetaData {
@@ -113,27 +120,55 @@ impl Manifest {
 
         let header_len = bincode::serialized_size(&MetaData::default()).unwrap();
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .read(true).write(true).create(false).truncate(false)
-            .open(manifest_path).await.expect("Failed to open MANIFEST file");
+        cfg_if! {
+            if #[cfg(feature="async-io") ] {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(manifest_path).await.expect("Failed to open MANIFEST file");
 
-        // Truncate old table list
-        file.set_len(header_len).await.unwrap();
-        file.seek(SeekFrom::Start(header_len)).await.unwrap();
+                // Truncate old table list
+                file.set_len(header_len).await.unwrap();
+                file.seek(SeekFrom::Start(header_len)).await.unwrap();
 
-        file.write_all(&data).await.unwrap();
+                file.write_all(&data).await.unwrap();
+            } else {
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(manifest_path).expect("Failed to open MANIFEST file");
+
+                // Truncate old table list
+                file.set_len(header_len).unwrap();
+                file.seek(SeekFrom::Start(header_len)).unwrap();
+
+                file.write_all(&data).unwrap();
+            }
+        }
     }
 
     async fn sync_header(&self, meta: &MetaData) {
         let data = bincode::serialize(&*meta).unwrap();
         let manifest_path = self.params.db_path.join(std::path::Path::new("MANIFEST"));
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .read(true).write(true).create(true).truncate(false)
-            .open(manifest_path).await.expect("Failed to open or create MANIFEST file");
+        cfg_if! {
+            if #[cfg(feature="async-io") ] {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .read(true).write(true).create(true).truncate(false)
+                    .open(manifest_path).await
+                    .expect("Failed to open or create MANIFEST file");
 
-       file.seek(SeekFrom::Start(0)).await.unwrap();
-       file.write_all(&data).await.unwrap();
+                file.seek(SeekFrom::Start(0)).await.unwrap();
+                file.write_all(&data).await.unwrap();
+
+            } else {
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true).write(true).create(true).truncate(false)
+                    .open(manifest_path)
+                    .expect("Failed to open or create MANIFEST file");
+
+                file.seek(SeekFrom::Start(0)).unwrap();
+                file.write_all(&data).unwrap();
+            }
+        }
     }
 }
 

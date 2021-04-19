@@ -15,7 +15,12 @@ use std::marker::PhantomData;
 use std::collections::VecDeque;
 use std::sync::{Arc, atomic};
 
+#[ cfg(feature="async-io") ]
 use tokio::fs;
+
+#[ cfg(not(feature="async-io")) ]
+use std::fs;
+
 use tokio::sync::{RwLock, Mutex};
 
 use crate::cond_var::Condvar;
@@ -73,7 +78,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             StartMode::CreateOrOverride => {
                 if params.db_path.exists() {
                     log::info!("Removing old data at \"{}\"", params.db_path.to_str().unwrap());
+
+                    #[ cfg(feature="async-io") ]
                     fs::remove_dir_all(&params.db_path).await.expect("Failed to remove existing database");
+
+                    #[ cfg(not(feature="async-io")) ]
+                    fs::remove_dir_all(&params.db_path).expect("Failed to remove existing database");
                 }
 
                 create = true;
@@ -81,10 +91,18 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         if create {
+            #[ cfg(feature="async-io") ]
             match fs::create_dir(&params.db_path).await {
                 Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
                 Err(e) => panic!("Failed to create DB folder: {}", e)
             }
+
+            #[ cfg(not(feature="async-io")) ]
+            match fs::create_dir(&params.db_path) {
+                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
+                Err(e) => panic!("Failed to create DB folder: {}", e)
+            }
+ 
         }
 
         let params = Arc::new(params);

@@ -4,8 +4,18 @@ use std::collections::{BTreeSet, HashSet};
 use std::convert::TryInto;
 
 use tokio::sync::{Mutex, RwLock};
+
+#[ cfg(feature="async-io") ]
 use tokio::fs::File;
+
+#[ cfg(not(feature="async-io")) ]
+use std::fs::File;
+
+#[ cfg(feature="async-io") ]
 use tokio::io::AsyncWriteExt;
+
+#[ cfg(not(feature="async-io")) ]
+use std::io::{IoSlice, Write};
 
 use crate::sorted_table::{Key, Value};
 use crate::cond_var::Condvar;
@@ -16,6 +26,8 @@ use lru::LruCache;
 
 use crate::Params;
 use crate::manifest::Manifest;
+
+use cfg_if::cfg_if;
 
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
@@ -51,7 +63,14 @@ impl ValueLog {
 
         let pending_batch_file = {
             let fpath = params.db_path.join(Path::new("pending.lld"));
-            let file = File::create(&fpath).await.unwrap();
+
+            cfg_if! {
+                if #[ cfg(feature="async-io") ] {
+                    let file = File::create(&fpath).await.unwrap();
+                } else {
+                    let file = File::create(&fpath).unwrap();
+                }
+            };
 
             Mutex::new(file)
         };
@@ -77,7 +96,14 @@ impl ValueLog {
 
     pub async fn sync(&self) {
         let file = self.pending_batch_file.lock().await;
-        file.sync_data().await.unwrap();
+
+        cfg_if! {
+            if #[ cfg(feature="async-io") ] {
+                file.sync_data().await.unwrap();
+            } else {
+                file.sync_data().unwrap();
+            }
+        }
     }
 
     pub async fn get_oldest_batch_id(&self) -> ValueBatchId {
@@ -104,7 +130,14 @@ impl ValueLog {
         }
 
         let fpath = self.get_file_path(&bid);
-        tokio::fs::remove_file(&fpath).await.unwrap();
+
+        cfg_if! {
+            if #[ cfg(feature="async-io") ] {
+                tokio::fs::remove_file(&fpath).await.unwrap();
+            } else {
+                std::fs::remove_file(&fpath).unwrap();
+            }
+        }
     }
 
     pub async fn get_keys(&self, bid: ValueBatchId) -> HashSet<Key> {
@@ -164,8 +197,15 @@ impl ValueLog {
         log::trace!("Sealed value batch #{}", last_id);
 
         // Now we can reset the pending file
-        file.set_len(0).await.unwrap();
-        file.sync_data().await.unwrap();
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                file.set_len(0).await.unwrap();
+                file.sync_data().await.unwrap();
+            } else {
+                file.set_len(0).unwrap();
+                file.sync_data().unwrap();
+            }
+        }
     }
 
     pub async fn add_value(&self, key: &[u8], mut val: Value) -> (ValueId, usize) {
@@ -178,10 +218,23 @@ impl ValueLog {
 
         let start_pos = pending_values.data.len() as u32;
 
-        file.write_all(&key_len).await.unwrap();
-        file.write_all(&val_len).await.unwrap();
-        file.write_all(&key).await.unwrap();
-        file.write_all(&val).await.unwrap();
+        cfg_if! {
+            if #[cfg(feature="async-io") ] {
+                file.write_all(&key_len).await.unwrap();
+                file.write_all(&val_len).await.unwrap();
+                file.write_all(&key).await.unwrap();
+                file.write_all(&val).await.unwrap();
+            } else {
+                let buffers = &mut [
+                    IoSlice::new(&key_len),
+                    IoSlice::new(&val_len),
+                    IoSlice::new(&key),
+                    IoSlice::new(&val),
+                ];
+
+                file.write_all_vectored(buffers).unwrap();
+            }
+        }
 
         pending_values.data.extend_from_slice(&key_len);
         pending_values.data.extend_from_slice(&val_len);
