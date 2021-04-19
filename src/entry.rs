@@ -22,6 +22,7 @@ pub enum Entry {
 pub enum Entry {
     Value {
         seq_number: u64,
+        #[ serde(with="serde_bytes") ]
         value: Vec<u8>,
     },
     Deletion {
