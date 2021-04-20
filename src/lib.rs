@@ -146,6 +146,8 @@ pub struct Params {
     /// How often should the full key be stored in a data block?
     /// Larger numbers result in smaller on-disk files, but seeks will be slower
     pub block_restart_interval: usize,
+    /// How many tokio threads should do background compaction?
+    pub num_compaction_threads: usize
 }
 
 impl Default for Params {
@@ -157,6 +159,7 @@ impl Default for Params {
             max_open_files: 1000,
             max_key_block_size: 1024,
             block_restart_interval: 16,
+            num_compaction_threads: 4,
         }
     }
 }

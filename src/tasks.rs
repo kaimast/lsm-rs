@@ -32,7 +32,29 @@ impl<K: KV_Trait, V: KV_Trait>TaskManager<K, V> {
         self.sc_condition.notify_one();
     }
 
-    pub async fn work_loop(tasks: Arc<TaskManager<K, V>>) {
+    pub async fn run(tasks: Arc<TaskManager<K, V>>, num_threads: usize) {
+        if num_threads == 0 {
+            panic!("Need at least one compaction thread!");
+        }
+
+        let mut threads = vec![];
+
+        for _ in 0..num_threads {
+            let tasks = tasks.clone();
+
+            let thread = tokio::spawn(async move {
+                Self::work_loop(tasks).await;
+            });
+
+            threads.push(thread);
+        }
+
+        for thread in threads.drain(..) {
+            thread.await.unwrap();
+        }
+    }
+
+    async fn work_loop(tasks: Arc<TaskManager<K, V>>) {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
         let mut idle = false;

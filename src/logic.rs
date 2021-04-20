@@ -23,6 +23,8 @@ use std::fs;
 
 use tokio::sync::{RwLock, Mutex};
 
+use cfg_if::cfg_if;
+
 use crate::cond_var::Condvar;
 
 #[ cfg(not(feature="wisckey")) ]
@@ -79,11 +81,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if params.db_path.exists() {
                     log::info!("Removing old data at \"{}\"", params.db_path.to_str().unwrap());
 
-                    #[ cfg(feature="async-io") ]
-                    fs::remove_dir_all(&params.db_path).await.expect("Failed to remove existing database");
-
-                    #[ cfg(not(feature="async-io")) ]
-                    fs::remove_dir_all(&params.db_path).expect("Failed to remove existing database");
+                    cfg_if!{
+                        if #[ cfg(feature="async-io") ] {
+                            fs::remove_dir_all(&params.db_path).await.expect("Failed to remove existing database");
+                        } else {
+                            fs::remove_dir_all(&params.db_path).expect("Failed to remove existing database");
+                        }
+                    }
                 }
 
                 create = true;
@@ -91,18 +95,19 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         if create {
-            #[ cfg(feature="async-io") ]
-            match fs::create_dir(&params.db_path).await {
-                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => panic!("Failed to create DB folder: {}", e)
+            cfg_if! {
+                if #[ cfg(feature="async-io") ] {
+                    match fs::create_dir(&params.db_path).await {
+                        Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
+                        Err(e) => panic!("Failed to create DB folder: {}", e)
+                    }
+                } else {
+                    match fs::create_dir(&params.db_path) {
+                        Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
+                        Err(e) => panic!("Failed to create DB folder: {}", e)
+                    }
+                }
             }
-
-            #[ cfg(not(feature="async-io")) ]
-            match fs::create_dir(&params.db_path) {
-                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => panic!("Failed to create DB folder: {}", e)
-            }
- 
         }
 
         let params = Arc::new(params);
@@ -219,11 +224,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        #[ cfg(feature="wisckey") ]
-        return DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone());
-
-        #[ cfg(not(feature="wisckey")) ]
-        return DbIterator::new(tokio_rt, mem_iters, table_iters);
+        cfg_if! {
+            if #[ cfg(feature="wisckey") ] {
+                DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone())
+            } else {
+                DbIterator::new(tokio_rt, mem_iters, table_iters)
+            }
+        }
     }
 
     #[cfg(not(feature="sync"))]
@@ -254,11 +261,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        #[ cfg(feature="wisckey") ]
-        return DbIterator::new(mem_iters, table_iters, self.value_log.clone());
-
-        #[ cfg(not(feature="wisckey")) ]
-        return DbIterator::new(mem_iters, table_iters);
+        cfg_if! {
+            if #[ cfg(feature="wisckey") ] {
+                DbIterator::new(mem_iters, table_iters, self.value_log.clone())
+            } else {
+                DbIterator::new(mem_iters, table_iters)
+            }
+        }
     }
 
     #[ cfg(feature="wisckey") ]

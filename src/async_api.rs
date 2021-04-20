@@ -24,14 +24,15 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Self {
+        let num_threads = params.num_compaction_threads;
+
         let inner = Arc::new( DbLogic::new(mode, params).await );
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
         {
             let tasks = tasks.clone();
-
             tokio::spawn(async move {
-                TaskManager::work_loop(tasks).await;
+                TaskManager::run(tasks, num_threads).await;
             });
         }
 

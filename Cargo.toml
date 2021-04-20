@@ -20,6 +20,7 @@ futures = "0.3"
 snap = { version="1", optional=true }
 async-trait = "0.1"
 cfg-if = "1"
+num_cpus = { version="1", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -36,6 +37,6 @@ path = "src/lib.rs"
 [features]
 default = ["wisckey", "snappy-compression"]
 snappy-compression = ["snap"]
-sync = []
+sync = ["num_cpus"]
 wisckey = []
 async-io = ["tokio/fs"]

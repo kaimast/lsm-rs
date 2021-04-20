@@ -22,7 +22,13 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     }
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Self {
-        let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
+        let num_threads = params.num_compaction_threads;
+
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads((num_cpus::get()*2).max(num_threads*2))
+            .build().expect("Failed to start tokio");
+
+        let tokio_rt = Arc::new(tokio_rt);
         let inner = tokio_rt.block_on(async move {
             Arc::new( DbLogic::new(mode, params).await )
         });
@@ -32,7 +38,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         {
             let tasks = tasks.clone();
             tokio_rt.spawn(async move {
-                TaskManager::work_loop(tasks).await;
+                TaskManager::run(tasks, num_threads).await;
             });
         }
 
