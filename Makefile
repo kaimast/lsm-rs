@@ -9,22 +9,22 @@ all: test lint
 test: sync-tests async-tests no-wisckey-tests no-compression-tests async-io-tests
 
 sync-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=sync
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=sync
 
 async-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test
 
 async-io-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async-io
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async-io
 
 no-compression-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=wisckey
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=wisckey
 
 no-wisckey-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression
 
 no-wisckey-sync-tests:
-	env RUST_TEST_THREADS=1 RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression,sync
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression,sync
 
 lint: sync-lint async-lint no-wisckey-lint async-io-lint
 

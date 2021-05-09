@@ -2,6 +2,7 @@ use serde::{Serialize, Deserialize};
 
 use std::io::SeekFrom;
 use std::sync::Arc;
+use std::path::Path;
 use std::collections::HashSet;
 
 #[ cfg(feature="async-io") ]
@@ -39,6 +40,8 @@ pub struct Manifest {
     meta: Mutex<MetaData>,
     tables: Mutex<Vec<LevelData>>,
 }
+
+const MANIFEST_NAME: &str = "MANIFEST";
 
 impl Manifest {
     /// Create new manifest for an empty database
@@ -147,23 +150,28 @@ impl Manifest {
 
     async fn sync_header(&self, meta: &MetaData) {
         let data = bincode::serialize(&*meta).unwrap();
-        let manifest_path = self.params.db_path.join(std::path::Path::new("MANIFEST"));
+        let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
                 let mut file = tokio::fs::OpenOptions::new()
                     .read(true).write(true).create(true).truncate(false)
                     .open(manifest_path).await
-                    .expect("Failed to open or create MANIFEST file");
+                    .expect("Failed to create or open MANIFEST file");
 
                 file.seek(SeekFrom::Start(0)).await.unwrap();
                 file.write_all(&data).await.unwrap();
 
             } else {
-                let mut file = std::fs::OpenOptions::new()
-                    .read(true).write(true).create(true).truncate(false)
-                    .open(manifest_path)
-                    .expect("Failed to open or create MANIFEST file");
+                let mut file = match std::fs::OpenOptions::new()
+                        .read(true).write(true).create(true).truncate(false)
+                        .open(manifest_path) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
+                        panic!("Failed to create or open MANIFEST file at {}: {}", manifest_path.as_os_str().to_str().unwrap(), err);
+                    }
+                };
 
                 file.seek(SeekFrom::Start(0)).unwrap();
                 file.write_all(&data).unwrap();

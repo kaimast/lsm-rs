@@ -46,7 +46,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         Self{ inner, tasks }
     }
 
-    /// Will deserialize V from the raw data (avoids an additional copy)
+    /// Will deserialize V from the raw data (avoidatabase an additional copy)
     #[inline]
     pub async fn get(&self, key: &K)-> Option<V> {
         let key_data = get_encoder().serialize(key).unwrap();
@@ -108,8 +108,8 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         let result = self.inner.write_opts(write_batch, opts).await;
 
         match result {
-            Ok(needs_compaction) => {
-                if needs_compaction {
+            Ok(needatabase_compaction) => {
+                if needatabase_compaction {
                     self.tasks.wake_up().await;
                 }
 
@@ -131,40 +131,49 @@ mod tests {
     use super::*;
     use futures::stream::StreamExt;
 
+    use tempfile::{Builder, TempDir};
+
     const SM: StartMode = StartMode::CreateOrOverride;
 
-    fn test_init() {
-         let _ = env_logger::builder().is_test(true).try_init();
+    async fn test_init<K: KV_Trait, V: KV_Trait>() -> (TempDir, Database<K, V>) {
+        let tmp_dir = Builder::new().prefix("lsm-sync-test-").tempdir().unwrap();
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db_path = tmp_dir.path().to_path_buf();
+        db_path.push("storage.lsm");
+
+        let params = Params{ db_path, ..Default::default() };
+        let database = Database::new_with_params(SM, params).await;
+
+        (tmp_dir, database)
     }
 
     #[tokio::test]
     async fn get_put() {
-        test_init();
-        let ds = Database::<String, String>::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         let key1 = String::from("Foo");
         let key2 = String::from("Foz");
         let value = String::from("Bar");
         let value2 = String::from("Baz");
 
-        assert_eq!(ds.get(&key1).await, None);
-        assert_eq!(ds.get(&key2).await, None);
+        assert_eq!(database.get(&key1).await, None);
+        assert_eq!(database.get(&key2).await, None);
 
-        ds.put(&key1, &value).await.unwrap();
+        database.put(&key1, &value).await.unwrap();
 
-        assert_eq!(ds.get(&key1).await, Some(value.clone()));
-        assert_eq!(ds.get(&key2).await, None);
+        assert_eq!(database.get(&key1).await, Some(value.clone()));
+        assert_eq!(database.get(&key2).await, None);
 
-        ds.put(&key1, &value2).await.unwrap();
-        assert_eq!(ds.get(&key1).await, Some(value2.clone()));
+        database.put(&key1, &value2).await.unwrap();
+        assert_eq!(database.get(&key1).await, Some(value2.clone()));
     }
 
     #[tokio::test]
     async fn iterate() {
         const COUNT: u64 = 25_000;
 
-        test_init();
-        let ds = Database::<u64, String>::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -173,11 +182,11 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         let mut pos = 0;
-        let mut iter = ds.iter().await;
+        let mut iter = database.iter().await;
 
         while let Some((key, val)) = iter.next().await {
             assert_eq!(pos as u64, key);
@@ -193,8 +202,7 @@ mod tests {
     async fn get_put_many() {
         const COUNT: u64 = 100_000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -203,11 +211,11 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get(&pos).await, Some(format!("some_string_{}", pos)));
+            assert_eq!(database.get(&pos).await, Some(format!("some_string_{}", pos)));
         }
     }
 
@@ -216,8 +224,7 @@ mod tests {
     async fn get_put_delete_large_entry() {
         const SIZE: usize = 1_000_000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         let mut options = WriteOptions::default();
         options.sync = true;
@@ -229,13 +236,13 @@ mod tests {
             let value = String::from_utf8(value).unwrap();
             let key: u64 = 424245;
 
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
 
-            assert_eq!(ds.get(&key).await, Some(value));
+            assert_eq!(database.get(&key).await, Some(value));
 
-            ds.delete(&key).await;
+            database.delete(&key).await;
 
-            assert_eq!(ds.get(&key).await, None);
+            assert_eq!(database.get(&key).await, None);
         }
     }
 
@@ -243,8 +250,7 @@ mod tests {
     async fn get_put_delete_many() {
         const COUNT: u64 = 10_000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -253,16 +259,16 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
             let key = pos;
-            ds.delete(&key).await;
+            database.delete(&key).await;
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get(&pos).await, None);
+            assert_eq!(database.get(&pos).await, None);
         }
     }
 
@@ -270,8 +276,7 @@ mod tests {
     async fn override_some() {
         const COUNT: u64 = 10_000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -280,17 +285,17 @@ mod tests {
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_other_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get(&pos).await, Some(format!("some_other_string_{}", pos)));
+            assert_eq!(database.get(&pos).await, Some(format!("some_other_string_{}", pos)));
         }
     }
 
@@ -300,8 +305,7 @@ mod tests {
         const NCOUNT: u64 = 200_000;
         const COUNT: u64 = 50_000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
 
         // Write without fsync to speed up tests
         let mut options = WriteOptions::default();
@@ -310,21 +314,21 @@ mod tests {
         for pos in 0..NCOUNT {
             let key = pos;
             let value = format!("some_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
             let key = pos;
             let value = format!("some_other_string_{}", pos);
-            ds.put_opts(&key, &value, &options).await.unwrap();
+            database.put_opts(&key, &value, &options).await.unwrap();
         }
 
         for pos in 0..COUNT {
-            assert_eq!(ds.get(&pos).await, Some(format!("some_other_string_{}", pos)));
+            assert_eq!(database.get(&pos).await, Some(format!("some_other_string_{}", pos)));
         }
 
         for pos in COUNT..NCOUNT {
-            assert_eq!(ds.get(&pos).await, Some(format!("some_string_{}", pos)));
+            assert_eq!(database.get(&pos).await, Some(format!("some_string_{}", pos)));
         }
     }
 
@@ -332,8 +336,7 @@ mod tests {
     async fn batched_write() {
         const COUNT: u64 = 1000;
 
-        test_init();
-        let ds = Database::new(SM).await;
+        let (_tmpdir, database) = test_init().await;
         let mut batch = WriteBatch::new();
 
         for pos in 0..COUNT {
@@ -341,11 +344,11 @@ mod tests {
             batch.put(&key, &pos);
         }
 
-        ds.write(batch).await.unwrap();
+        database.write(batch).await.unwrap();
 
         for pos in 0..COUNT {
             let key = format!("key{}", pos);
-            assert_eq!(ds.get(&key).await, Some(pos));
+            assert_eq!(database.get(&key).await, Some(pos));
         }
     }
 }
