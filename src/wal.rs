@@ -2,20 +2,23 @@ use std::sync::Arc;
 
 use crate::{Key, Params};
 use crate::sorted_table::Value;
+use crate::memtable::Memtable;
 
 use std::path::Path;
 
 #[ cfg(feature="async-io") ]
-use tokio::fs::File;
+use tokio::fs::{OpenOptions, File};
 
 #[ cfg(feature="async-io") ]
 use tokio::io::AsyncWriteExt;
 
-#[ cfg(not(feature="async-io")) ]
-use std::fs::File;
+use std::convert::TryInto;
 
 #[ cfg(not(feature="async-io")) ]
-use std::io::{IoSlice, Write};
+use std::fs::{OpenOptions, File};
+
+#[ cfg(not(feature="async-io")) ]
+use std::io::{IoSlice, Read, Write};
 
 use cfg_if::cfg_if;
 
@@ -64,18 +67,105 @@ impl WriteOp {
 }
 
 impl WriteAheadLog{
-    pub async fn new(params: Arc<Params>) -> Self {
+    pub async fn new(params: Arc<Params>) -> Result<Self, String> {
         let fpath = params.db_path.join(Path::new("LOG"));
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let log_file = File::create(fpath).await.expect("Failed to open log file");
+                let log_file = match File::create(fpath) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        return Err(format!("Failed to create log file: {}", err));
+                    }
+                };
             } else {
-                let log_file = File::create(fpath).expect("Failed to open log file");
+                let log_file = match File::create(fpath) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        return Err(format!("Failed to create log file: {}", err));
+                    }
+                };
             }
         }
 
-        Self{ params, log_file }
+        Ok( Self{ params, log_file } )
+    }
+
+    pub async fn open(params: Arc<Params>, memtable: &mut Memtable) -> Result<Self, String> {
+        let fpath = params.db_path.join(Path::new("LOG"));
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                let mut log_file = match OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false).open(fpath).await {
+                    Ok(file) => file,
+                    Err(err) => {
+                        return Err(format!("Failed to open log file: {}", err));
+                    }
+                };
+            } else {
+                let mut log_file = match OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false).open(fpath) {
+                    Ok(log_file) => log_file,
+                    Err(err) => {
+                        return Err(format!("Failed to open log file: {}", err));
+                    }
+                };
+            }
+        }
+
+        // Re-insert ops into memtable
+        let mut count = 0;
+
+        loop {
+            let mut op_header = [0u8; 9];
+            let op_type;
+            let key_len;
+
+            match log_file.read_exact(&mut op_header[..]) {
+                Ok(()) => {
+                    op_type = op_header[0];
+
+                    let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
+                    key_len = u64::from_le_bytes(*key_data);
+                },
+                Err(_) => break,
+            }
+
+            let mut key = vec![0; key_len as usize];
+            log_file.read_exact(&mut key).unwrap();
+
+            #[ cfg(feature="wisckey") ]
+            {
+                todo!();
+            }
+
+            #[ cfg(not(feature="wisckey")) ]
+            {
+                if op_type == WriteOp::PUT_OP {
+                    let mut val_len = [0u8; 8];
+                    log_file.read_exact(&mut val_len).unwrap();
+
+                    let val_len = u64::from_le_bytes(val_len);
+                    let mut value = vec![0; val_len as usize];
+
+                    log_file.read_exact(&mut value).unwrap();
+
+                    memtable.put(key, value);
+
+                } else if op_type == WriteOp::DELETE_OP {
+                    memtable.delete(key);
+                } else {
+                    panic!("Unexpected op type!");
+                }
+            }
+
+            count += 1;
+        }
+
+        log::debug!("Found {} entries in Write-Ahead-Log", count);
+
+        Ok( Self{ params, log_file } )
     }
 
     pub async fn store(&mut self, op: &WriteOp) {

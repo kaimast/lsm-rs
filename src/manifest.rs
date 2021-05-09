@@ -23,9 +23,12 @@ use crate::values::ValueBatchId;
 
 use cfg_if::cfg_if;
 
+pub type SeqNumber = u64;
+
 #[ derive(Debug, Default, Serialize, Deserialize) ]
 struct MetaData {
     next_table_id: TableId,
+    seq_number_offset: SeqNumber,
     next_data_block_id: DataBlockId,
     #[ cfg(feature="wisckey") ]
     next_value_batch_id: ValueBatchId,
@@ -48,6 +51,7 @@ impl Manifest {
     pub async fn new(params: Arc<Params>) -> Self {
         let meta = MetaData{
             next_table_id: 1,
+            seq_number_offset: 1,
             next_data_block_id: 1,
             #[ cfg(feature="wisckey") ]
             next_value_batch_id: 1,
@@ -114,12 +118,14 @@ impl Manifest {
             }
         };
 
-        let tables = match bincode::deserialize(&data[header_len..]) {
+        let tables: Vec<LevelData> = match bincode::deserialize(&data[header_len..]) {
             Ok(tables) => tables,
             Err(err) => {
                 return Err(format!("Failed to parse table list in MANIFEST: {}", err));
             }
         };
+
+        log::debug!("Found {} tables", tables.len());
 
         Ok(Self{
             meta: Mutex::new(meta), tables: Mutex::new(tables), params
@@ -139,11 +145,22 @@ impl Manifest {
     pub async fn next_table_id(&self) -> TableId {
         let mut meta = self.meta.lock().await;
         let id = meta.next_table_id;
+
         meta.next_table_id += 1;
 
         self.sync_header(&*meta).await;
 
         id
+    }
+
+    pub async fn get_seq_number_offset(&self) -> SeqNumber {
+        let meta = self.meta.lock().await;
+        meta.seq_number_offset
+    }
+
+    pub async fn set_seq_number_offset(&self, offset: SeqNumber) {
+        let mut meta = self.meta.lock().await;
+        meta.seq_number_offset = offset;
     }
 
     #[ cfg(feature="wisckey") ]

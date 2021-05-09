@@ -21,23 +21,27 @@ fn get_put() {
     let (_tmpdir, params, database) = test_init();
 
     let key1 = String::from("Foo");
-    let key2 = String::from("Foz");
-    let value = String::from("Bar");
+    let value1 = String::from("Bar");
     let value2 = String::from("Baz");
 
     assert_eq!(database.get(&key1), None);
-    assert_eq!(database.get(&key2), None);
 
-    database.put(&key1, &value).unwrap();
+    database.put(&key1, &value1).unwrap();
+    drop(database);
+
+    // Reopen
+    let database = Database::new_with_params(StartMode::Open, params.clone())
+        .expect("Failed to create database instance");
+
+    assert_eq!(database.get(&key1), Some(value1.clone()));
     database.put(&key1, &value2).unwrap();
 
     drop(database);
 
-    // Reopen
+    // Reopen again
     let database = Database::new_with_params(StartMode::Open, params)
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1), Some(value.clone()));
     assert_eq!(database.get(&key1), Some(value2.clone()));
 }
 

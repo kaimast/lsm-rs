@@ -1,6 +1,7 @@
 use crate::sorted_table::{InternalIterator, Key};
 use crate::entry::Entry;
 use crate::Params;
+use crate::manifest::SeqNumber;
 
 #[ cfg(feature="wisckey") ]
 use crate::values::ValueId;
@@ -120,13 +121,11 @@ pub struct Memtable {
     // Sorted upadtes
     entries: Vec<(Key, Entry)>,
     size: usize,
-
-    //TODO move this somewhere else
-    next_seq_number: u64
+    next_seq_number: SeqNumber,
 }
 
 impl Memtable {
-    pub fn new(next_seq_number: u64) -> Self {
+    pub fn new(next_seq_number: SeqNumber) -> Self {
         let entries = Vec::new();
         let size = 0;
 

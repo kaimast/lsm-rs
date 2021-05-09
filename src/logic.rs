@@ -92,6 +92,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let params = Arc::new(params);
         let manifest;
+        let memtable;
+        let wal;
 
         if create {
             #[ cfg(feature="async-io") ]
@@ -109,18 +111,23 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
+            memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
+            wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
+
         } else {
             log::info!("Opening database folder at \"{}\"", params.db_path.to_str().unwrap());
 
             manifest = Arc::new(Manifest::open(params.clone()).await?);
+
+            let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
+            wal = Mutex::new(WriteAheadLog::open(params.clone(), &mut mtable).await?);
+            memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
 
-        let memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
         let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
-        let wal = Mutex::new(WriteAheadLog::new(params.clone()).await);
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
@@ -486,6 +493,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();
+            self.manifest.set_seq_number_offset(next_seq_num).await;
             let imm = memtable.take(next_seq_num);
 
             #[ cfg(feature="wisckey") ]
@@ -513,7 +521,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     /// Do compaction if necessary
     /// Returns true if any work was done
     pub async fn do_compaction(&self) -> bool {
-        // memtable to immutable memtable compaction
+        // immutable memtable to level compaction
         {
             let mut imm_mems = self.imm_memtables.lock().await;
 
