@@ -115,7 +115,7 @@ impl ValueLog {
             bid = bid_lock.first();
         }
 
-        return *bid.unwrap();
+        *bid.unwrap()
     }
 
     pub async fn delete_batch(&self, bid: ValueBatchId) {

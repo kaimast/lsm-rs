@@ -6,10 +6,10 @@ use std::path::Path;
 use std::collections::HashSet;
 
 #[ cfg(feature="async-io") ]
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncSeekExt, AsyncReadExt, AsyncWriteExt};
 
 #[ cfg(not(feature="async-io")) ]
-use std::io::{Seek, Write};
+use std::io::{Seek, Read, Write};
 
 use tokio::sync::Mutex;
 
@@ -65,9 +65,65 @@ impl Manifest {
             // set all levels to empty initially
             let mut tables = obj.tables.lock().await;
             tables.resize(obj.params.num_levels, HashSet::default());
+
+            obj.write_table_set(&*tables).await;
         }
 
         obj
+    }
+
+    pub async fn open(params: Arc<Params>) -> Result<Self, String> {
+        let header_len = bincode::serialized_size(&MetaData::default()).unwrap() as usize;
+        let mut data = Vec::new();
+        let manifest_path = params.db_path.join(Path::new(MANIFEST_NAME));
+
+        cfg_if! {
+            if #[cfg(feature="async-io") ] {
+                let mut file = match tokio::fs::OpenOptions::new()
+                    .read(true).write(false).create(false).truncate(false)
+                    .open(manifest_path).await {
+                    Ok(file) => { file },
+                    Err(err) => {
+                        return Err(format!("Failed to open MANIFEST file: {}", err));
+                    }
+                };
+
+                file.read_to_end(&mut data).await.unwrap();
+            } else {
+                let mut file = match std::fs::OpenOptions::new()
+                    .read(true).write(false).create(false).truncate(false)
+                    .open(manifest_path) {
+                    Ok(file) => { file },
+                    Err(err) => {
+                        return Err(format!("Failed to open MANIFEST file: {}", err));
+                    }
+                };
+
+                file.read_to_end(&mut data).unwrap();
+            }
+        };
+
+        if data.len() < header_len {
+            return Err("Invalid MANIFEST file".to_string());
+        }
+
+        let meta = match bincode::deserialize(&data[..header_len]) {
+            Ok(meta) => meta,
+            Err(err) => {
+                return Err(format!("Failed to parse MANIFEST header: {}", err));
+            }
+        };
+
+        let tables = match bincode::deserialize(&data[header_len..]) {
+            Ok(tables) => tables,
+            Err(err) => {
+                return Err(format!("Failed to parse table list in MANIFEST: {}", err));
+            }
+        };
+
+        Ok(Self{
+            meta: Mutex::new(meta), tables: Mutex::new(tables), params
+        })
     }
 
     pub async fn next_data_block_id(&self) -> DataBlockId {
@@ -119,7 +175,7 @@ impl Manifest {
 
     async fn write_table_set(&self, tables: &[LevelData]) {
         let data = bincode::serialize(tables).unwrap();
-        let manifest_path = self.params.db_path.join(std::path::Path::new("MANIFEST"));
+        let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
 
         let header_len = bincode::serialized_size(&MetaData::default()).unwrap();
 

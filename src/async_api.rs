@@ -17,14 +17,14 @@ pub struct Database<K: KV_Trait, V: KV_Trait> {
 
 impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Create a new database instance with default parameters
-    pub async fn new(mode: StartMode) -> Self {
+    pub async fn new(mode: StartMode) -> Result<Self, String> {
         let params = Params::default();
         Self::new_with_params(mode, params).await
     }
 
     /// Create a new database instance with specific parameters
-    pub async fn new_with_params(mode: StartMode, params: Params) -> Self {
-        let inner = Arc::new( DbLogic::new(mode, params).await );
+    pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, String> {
+        let inner = Arc::new( DbLogic::new(mode, params).await? );
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
         {
@@ -43,7 +43,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
             });
         }
 
-        Self{ inner, tasks }
+        Ok( Self{ inner, tasks } )
     }
 
     /// Will deserialize V from the raw data (avoidatabase an additional copy)
@@ -126,6 +126,7 @@ impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
     }
 }
 
+//TODO move this to an integration tests once Cargo has mutually-exclusive features
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +144,8 @@ mod tests {
         db_path.push("storage.lsm");
 
         let params = Params{ db_path, ..Default::default() };
-        let database = Database::new_with_params(SM, params).await;
+        let database = Database::new_with_params(SM, params).await
+            .expect("Failed to create database instance");
 
         (tmp_dir, database)
     }

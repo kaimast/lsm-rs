@@ -16,16 +16,16 @@ pub struct Database<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
-    pub fn new(mode: StartMode) -> Self {
+    pub fn new(mode: StartMode) -> Result<Self, String> {
         let params = Params::default();
         Self::new_with_params(mode, params)
     }
 
-    pub fn new_with_params(mode: StartMode, params: Params) -> Self {
+    pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, String> {
         let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
-        let inner = tokio_rt.block_on(async move {
-            Arc::new( DbLogic::new(mode, params).await )
-        });
+        let inner = Arc::new(tokio_rt.block_on(async move {
+            DbLogic::new(mode, params).await
+        })?);
 
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
@@ -44,7 +44,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
             });
         }
 
-        Self{ inner, tasks, tokio_rt }
+        Ok( Self{ inner, tasks, tokio_rt } )
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)

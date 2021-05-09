@@ -54,15 +54,15 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
-    pub async fn new(start_mode: StartMode, params: Params) -> Self {
+    pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, String> {
         let create;
 
         if params.db_path.components().next().is_none() {
-            panic!("DB path must not be empty!");
+            return Err("DB path must not be empty!".to_string());
         }
 
         if params.db_path.exists() && !params.db_path.is_dir() {
-            panic!("DB path must be a folder!");
+            return Err("DB path must be a folder!".to_string());
         }
 
         match start_mode {
@@ -71,7 +71,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             },
             StartMode::Open => {
                 if !params.db_path.exists() {
-                    panic!("DB does not exist");
+                    return Err("DB does not exist".to_string());
                 }
                 create = false;
             },
@@ -90,24 +90,30 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
+        let params = Arc::new(params);
+        let manifest;
+
         if create {
             #[ cfg(feature="async-io") ]
             match fs::create_dir(&params.db_path).await {
                 Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => panic!("Failed to create DB folder: {}", e)
+                Err(e) => return Err("Failed to create DB folder: {}", e)
             }
 
             #[ cfg(not(feature="async-io")) ]
             match fs::create_dir(&params.db_path) {
                 Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => panic!("Failed to create DB folder: {}", e)
+                Err(e) => {
+                    return Err(format!("Failed to create DB folder: {}", e));
+                }
             }
- 
+
+            manifest = Arc::new(Manifest::new(params.clone()).await);
+        } else {
+            log::info!("Opening database folder at \"{}\"", params.db_path.to_str().unwrap());
+
+            manifest = Arc::new(Manifest::open(params.clone()).await?);
         }
-
-        let params = Arc::new(params);
-
-        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         let memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
         let imm_memtables = Mutex::new( VecDeque::new() );
@@ -138,13 +144,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let _marker = PhantomData;
 
-        Self {
+        Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
             wal, levels, next_table_id, running, data_blocks,
             #[ cfg(feature="wisckey") ] value_log,
             #[ cfg(feature="wisckey") ] watched_key,
             #[ cfg(feature="wisckey") ] watched_key_cond,
-        }
+        })
     }
 
     #[cfg(feature="wisckey")]

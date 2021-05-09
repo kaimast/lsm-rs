@@ -11,7 +11,8 @@ fn test_init<K: KV_Trait, V: KV_Trait>() -> (TempDir, Database<K, V>) {
     db_path.push("storage.lsm");
 
     let params = Params{ db_path, ..Default::default() };
-    let database = Database::new_with_params(SM, params);
+    let database = Database::new_with_params(SM, params)
+        .expect("Failed to create database instance");
 
     (tmp_dir, database)
 }

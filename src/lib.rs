@@ -121,6 +121,7 @@ impl Default for WriteOptions {
 }
 
 /// Allow specifying how the datastore behaves during startup
+#[ derive(Debug, Clone) ]
 pub enum StartMode {
     /// Reuse existing database, or create if non-existent
     CreateOrOpen,
@@ -131,6 +132,7 @@ pub enum StartMode {
 }
 
 /// Parameters to customize the creation of the database
+#[ derive(Debug, Clone) ]
 pub struct Params {
     /// Where in the filesystem should the databasse be stored?
     pub db_path: PathBuf,
