@@ -29,6 +29,7 @@ pub type SeqNumber = u64;
 struct MetaData {
     next_table_id: TableId,
     seq_number_offset: SeqNumber,
+    wal_offset: u64,
     next_data_block_id: DataBlockId,
     #[ cfg(feature="wisckey") ]
     next_value_batch_id: ValueBatchId,
@@ -44,7 +45,7 @@ pub struct Manifest {
     tables: Mutex<Vec<LevelData>>,
 }
 
-const MANIFEST_NAME: &str = "MANIFEST";
+const MANIFEST_NAME: &str = "Manifest";
 
 impl Manifest {
     /// Create new manifest for an empty database
@@ -52,6 +53,7 @@ impl Manifest {
         let meta = MetaData{
             next_table_id: 1,
             seq_number_offset: 1,
+            wal_offset: 0,
             next_data_block_id: 1,
             #[ cfg(feature="wisckey") ]
             next_value_batch_id: 1,
@@ -151,6 +153,18 @@ impl Manifest {
         self.sync_header(&*meta).await;
 
         id
+    }
+
+    pub async fn get_wal_offset(&self) -> u64 {
+        let meta = self.meta.lock().await;
+        meta.wal_offset
+    }
+
+    pub async fn set_wal_offset(&self, offset: u64) {
+        let mut meta = self.meta.lock().await;
+        assert!(meta.wal_offset < offset);
+
+        meta.wal_offset = offset;
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {

@@ -5,6 +5,7 @@
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 #![ feature(get_mut_unchecked) ]
+#![ feature(io_slice_advance) ]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};

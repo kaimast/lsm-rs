@@ -28,6 +28,7 @@ use crate::cond_var::Condvar;
 #[ cfg(not(feature="wisckey")) ]
 use bincode::Options;
 
+/// The main database logic
 pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
@@ -120,7 +121,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(WriteAheadLog::open(params.clone(), &mut mtable).await?);
+            wal = Mutex::new(WriteAheadLog::open(params.clone(), &mut mtable, manifest.get_wal_offset()).await?);
             memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
 
@@ -493,7 +494,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();
-            self.manifest.set_seq_number_offset(next_seq_num).await;
             let imm = memtable.take(next_seq_num);
 
             #[ cfg(feature="wisckey") ]
@@ -521,15 +521,21 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     /// Do compaction if necessary
     /// Returns true if any work was done
     pub async fn do_compaction(&self) -> bool {
-        // immutable memtable to level compaction
+        // (immutable) memtable to level compaction
         {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             if let Some(mem) = imm_mems.pop_front() {
                 let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
 
+                // First create table
                 let l0 = self.levels.get(0).unwrap();
                 l0.create_l0_table(table_id, mem.get().get_entries()).await;
+
+                // Then update manifest and flush WAL
+                let seq_offset = mem.get_next_seq_number().await;
+                self.manifest.set_seq_number_offset(seq_offset).await;
+
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();

@@ -1,4 +1,4 @@
-use lsm::{Database, StartMode, KV_Trait, Params};
+use lsm::{Database, StartMode, KV_Trait, Params, WriteOptions};
 use tempfile::{Builder, TempDir};
 
 fn test_init<K: KV_Trait, V: KV_Trait>() -> (TempDir, Params, Database<K, V>) {
@@ -44,4 +44,33 @@ fn get_put() {
 
     assert_eq!(database.get(&key1), Some(value2.clone()));
 }
+
+#[test]
+fn get_put_many() {
+    const COUNT: u64 = 100_000;
+
+    let (_tmpdir, params, database) = test_init();
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{}", pos);
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    drop(database);
+
+    // Reopen
+    let database = Database::new_with_params(StartMode::Open, params.clone())
+        .expect("Failed to create database instance");
+
+    for pos in 0..COUNT {
+        assert_eq!(database.get(&pos), Some(format!("some_string_{}", pos)));
+    }
+}
+
+
 
