@@ -2,7 +2,6 @@ use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 use crate::entry::Entry;
 use crate::{Params, StartMode, KV_Trait, WriteBatch, WriteError, WriteOptions};
 use crate::data_blocks::DataBlocks;
-use crate::index_blocks::IndexBlocks;
 use crate::memtable::{Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
 
@@ -45,7 +44,6 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     imm_cond: Condvar,
     levels: Vec<Level>,
     running: atomic::AtomicBool,
-    index_blocks: Arc<IndexBlocks>,
     data_blocks: Arc<DataBlocks>,
 
     #[ cfg(not(feature="wisckey")) ]
@@ -152,9 +150,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
     cfg_if! {
                 if #[cfg(feature="wisckey")] {
-                    value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
+                    value_log = Arc::new( ValueLog::open(params.clone(), manifest.clone(), &mut mtable).await );
                 } else {
-                    wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_wal_offset().await, &mut mtable).await?);
+                    wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?);
                 }
             }
 
@@ -164,7 +162,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
         let running = atomic::AtomicBool::new(true);
-        let index_blocks = Arc::new( IndexBlocks::new(params.clone()) );
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
@@ -181,7 +178,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut levels = Vec::new();
         for index in 0..params.num_levels {
-            let level = Level::new(index as LevelId, index_blocks.clone(), data_blocks.clone(), params.clone(), manifest.clone());
+            let level = Level::new(index as LevelId, data_blocks.clone(), params.clone(), manifest.clone());
             levels.push(level);
         }
 
@@ -197,7 +194,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            levels, running, index_blocks, data_blocks,
+            levels, running, data_blocks,
             #[ cfg(not(feature="wisckey")) ] wal,
             #[ cfg(feature="wisckey") ] value_log,
             #[ cfg(feature="wisckey") ] watched_key,
@@ -579,7 +576,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         {
             let mut imm_mems = self.imm_memtables.lock().await;
 
-            if let Some((wal_offset, mem)) = imm_mems.pop_front() {
+            if let Some((log_offset, mem)) = imm_mems.pop_front() {
                 // First create table
                 let l0 = self.levels.get(0).unwrap();
                 let table_id = self.manifest.next_table_id().await;
@@ -591,8 +588,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
                 #[ cfg(not(feature="wisckey")) ] {
                     let mut wal = self.wal.lock().await;
-                    wal.set_offset(wal_offset).await;
-                    self.manifest.set_wal_offset(wal_offset).await;
+                    wal.set_offset(log_offset).await;
+                    self.manifest.set_log_offset(log_offset).await;
                 }
 
                 log::debug!("Created new L0 table");
@@ -756,7 +753,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let id = self.manifest.next_table_id().await;
 
-        let new_table = SortedTable::new(id, entries, min, max, &*self.index_blocks, self.data_blocks.clone(), &*self.params).await;
+        let new_table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
 
         let add_set = vec![(level_pos+1, id)];
         let mut remove_set = vec![];

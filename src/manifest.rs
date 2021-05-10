@@ -30,8 +30,7 @@ pub type LevelId = u32;
 struct MetaData {
     next_table_id: TableId,
     seq_number_offset: SeqNumber,
-    #[ cfg(not(feature="wisckey")) ]
-    wal_offset: u64,
+    log_offset: u64,
     next_data_block_id: DataBlockId,
     #[ cfg(feature="wisckey") ]
     next_value_batch_id: ValueBatchId,
@@ -55,8 +54,7 @@ impl Manifest {
         let meta = MetaData{
             next_table_id: 1,
             seq_number_offset: 1,
-            #[ cfg(not(feature="wisckey")) ]
-            wal_offset: 0,
+            log_offset: 0,
             next_data_block_id: 1,
             #[ cfg(feature="wisckey") ]
             next_value_batch_id: 1,
@@ -158,18 +156,16 @@ impl Manifest {
         id
     }
 
-    #[ cfg(not(feature="wisckey")) ]
-    pub async fn get_wal_offset(&self) -> u64 {
+    pub async fn get_log_offset(&self) -> u64 {
         let meta = self.meta.lock().await;
-        meta.wal_offset
+        meta.log_offset
     }
 
-    #[ cfg(not(feature="wisckey")) ]
-    pub async fn set_wal_offset(&self, offset: u64) {
+    pub async fn set_log_offset(&self, offset: u64) {
         let mut meta = self.meta.lock().await;
-        assert!(meta.wal_offset < offset);
+        assert!(meta.log_offset < offset);
 
-        meta.wal_offset = offset;
+        meta.log_offset = offset;
         self.sync_header(&*meta).await;
     }
 

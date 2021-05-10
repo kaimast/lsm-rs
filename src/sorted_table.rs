@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::Params;
 use crate::entry::Entry;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
-use crate::index_blocks::{IndexBlocks, IndexBlock};
+use crate::index_blocks::IndexBlock;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
@@ -11,7 +11,7 @@ pub type Value = Vec<u8>;
 
 pub struct SortedTable {
     identifier: TableId,
-    index: Arc<IndexBlock>,
+    index: IndexBlock,
     data_blocks: Arc<DataBlocks>
 }
 
@@ -91,7 +91,7 @@ impl InternalIterator for TableIterator {
 
 impl SortedTable {
     pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, 
-                     index_blocks: &IndexBlocks, data_blocks: Arc<DataBlocks>, params: &Params)
+                     data_blocks: Arc<DataBlocks>, params: &Params)
             -> Self {
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
@@ -150,13 +150,13 @@ impl SortedTable {
 
         log::debug!("Created new table with {} blocks", block_index.len());
 
-        let index = index_blocks.make_block(identifier, block_index, size, min, max).await;
+        let index = IndexBlock::new(&params, identifier, block_index, size, min, max).await;
         Self{ identifier, index, data_blocks }
     }
 
-    pub async fn load(identifier: TableId, index_blocks: &IndexBlocks, data_blocks: Arc<DataBlocks>)
+    pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
             -> Self {
-        let index = index_blocks.get_block(&identifier).await;
+        let index = IndexBlock::load(&params, identifier).await;
         Self{ identifier, index, data_blocks }
     }
 

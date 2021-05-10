@@ -1,5 +1,4 @@
-use crate::{Key, Params};
-use crate::sorted_table::Value;
+use crate::Params;
 use crate::memtable::Memtable;
 use crate::WriteOp;
 

@@ -2,7 +2,6 @@ use crate::Params;
 use crate::sorted_table::{SortedTable, TableId, Key};
 use crate::entry::Entry;
 use crate::manifest::{LevelId, Manifest};
-use crate::index_blocks::IndexBlocks;
 use crate::data_blocks::DataBlocks;
 
 use std::sync::Arc;
@@ -17,7 +16,6 @@ pub struct Level {
     index: LevelId,
     #[ allow(clippy::mutex_atomic) ]
     next_compaction: Mutex<usize>,
-    index_blocks: Arc<IndexBlocks>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
@@ -25,18 +23,18 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(index: LevelId,  index_blocks: Arc<IndexBlocks>,data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+    pub fn new(index: LevelId,  data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
         #[ allow(clippy::mutex_atomic) ]
         Self {
             index, params, manifest,
             next_compaction: Mutex::new(0),
-            index_blocks, data_blocks,
+            data_blocks,
             tables: RwLock::new(Vec::new())
         }
     }
 
     pub async fn load_table(&self, id: TableId) {
-        let table = SortedTable::load(id, &*self.index_blocks, self.data_blocks.clone()).await;
+        let table = SortedTable::load(id, self.data_blocks.clone(), &*self.params).await;
 
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
@@ -48,7 +46,7 @@ impl Level {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
-        let table = SortedTable::new(id, entries, min, max, &*self.index_blocks, self.data_blocks.clone(), &*self.params).await;
+        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
 
         self.manifest.update_table_set(vec![(self.index, id)], vec![]).await;
 
