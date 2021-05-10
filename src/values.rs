@@ -162,7 +162,7 @@ impl ValueLog {
 
     #[inline]
     fn get_file_path(&self, batch_id: &ValueBatchId) -> std::path::PathBuf {
-        let fname = format!("values{:08}.lld", batch_id);
+        let fname = format!("val{:08}.data", batch_id);
         self.params.db_path.join(Path::new(&fname))
     }
 

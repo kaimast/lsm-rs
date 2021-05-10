@@ -76,84 +76,13 @@ impl WriteOp {
 
 impl WriteAheadLog{
     pub async fn new(params: Arc<Params>) -> Result<Self, String> {
-        let log_file = Self::create_file(&*params, 1).await;
+        let log_file = Self::create_file(&*params, 0).await;
         Ok( Self{ params, log_file, offset: 0, position: 0 } )
     }
 
-    async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, String> {
-        let mut position = 0;
-
-        while position < out.len() {
-            let file_offset = position % PAGE_SIZE;
-            let file_size = PAGE_SIZE - file_offset;
-
-            let read_len = file_size.min(out.len() - position);
-            let read_slice = out[position..read_len+position];
-
-            match self.log_file.read_exact(&read_slice) {
-                Ok(()) => {
-                    position += read_len;
-                }
-                Err(err) => {
-                    if maybe {
-                        return Ok(false);
-                    } else {
-                        return Err(format!("Failed to read log file data: {}", err));
-                    }
-                }
-            }
-
-            if file_offset >= PAGE_SIZE {
-                // Try open next file
-                let fpos = position / PAGE_SIZE;
-                self.log_file = match Self::open_file(fpos).await {
-                    Ok(file) => file,
-                    Err(_) => {
-                        self.log_file = Self::create_file(fpos).await;
-                        let success = position == out.len();
-
-                        if maybe {
-                            break;
-                        } else {
-                            return Err("Failed to read log file data: file is missing");
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(true)
-    }
-
-    async fn open_file(params: &Params, fpos: u64) -> Result<File, String> {
-        let fpath = params.db_path.join(Path::new(format!("{:08}.log", fpos)));
-        log::trace!("Opening file at {:?}", fpath);
-
-        cfg_if! {
-            if #[cfg(feature="async-io")] {
-                match OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false).open(fpath).await {
-                    Ok(log_file) => Ok(log_file),
-                    Err(err) => {
-                        return Err(format!("Failed to open log file: {}", err));
-                    }
-                }
-            } else {
-                 match OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false).open(fpath) {
-                    Ok(log_file) => Ok(log_file),
-                    Err(err) => {
-                        return Err(format!("Failed to open log file: {}", err));
-                    }
-                }
-            }
-        }
-    }
-
     pub async fn open(params: Arc<Params>, offset: u64, memtable: &mut Memtable) -> Result<Self, String> {
-        let mut position = offset;
+        let position = offset;
         let mut count: usize = 0;
-        let mut remaining = Vec::new();
 
         let fpos = position % PAGE_SIZE;
         let log_file = Self::open_file(&*params, fpos).await?;
@@ -220,8 +149,6 @@ impl WriteAheadLog{
             IoSlice::new(key)
         ].into();
 
-        let vlen = op.get_value_length().to_le_bytes();
-
         match op {
             WriteOp::Put(_, value) => {
                 buffers.push_back(IoSlice::new(vlen.as_slice()));
@@ -234,68 +161,157 @@ impl WriteAheadLog{
         self.position
     }
 
+    async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, String> {
+        let start_pos = self.position;
+        let buffer_len = out.len() as u64;
+        let mut buffer_pos = 0;
+
+        while buffer_pos < buffer_len {
+            let mut file_offset = self.position % PAGE_SIZE;
+            let file_remaining = PAGE_SIZE - file_offset;
+
+            assert!(file_remaining > 0);
+
+            let read_len = file_remaining.min(buffer_len - buffer_pos);
+
+            let read_start = buffer_pos as usize;
+            let read_end = (read_len+buffer_pos) as usize;
+
+            let read_slice = &mut out[read_start..read_end];
+
+            match self.log_file.read_exact(read_slice) {
+                Ok(()) => {
+                    self.position += read_len;
+                    file_offset += read_len;
+                }
+                Err(err) => {
+                    if maybe {
+                        return Ok(false);
+                    } else {
+                        return Err(format!("Failed to read log file data: {}", err));
+                    }
+                }
+            }
+
+            assert!(file_offset <= PAGE_SIZE);
+            buffer_pos = self.position - start_pos;
+
+            if file_offset == PAGE_SIZE {
+                // Try open next file
+                let fpos = self.position / PAGE_SIZE;
+                self.log_file = match Self::open_file(&*self.params, fpos).await {
+                    Ok(file) => file,
+                    Err(_) => {
+                        if maybe {
+                            self.log_file = Self::create_file(&*self.params, fpos).await;
+                            return Ok(buffer_pos == buffer_len);
+                        } else {
+                            return Err("Failed to read log file data: file is missing".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) {
         while !buffers.is_empty() {
-            let file_pos = self.position / PAGE_SIZE;
-            let file_offset = self.position % PAGE_SIZE;
-
+            let mut file_offset = self.position % PAGE_SIZE;
             let mut to_write = vec![];
             let mut advance_by = None;
 
             // Figure out how much we can fit into the current file
             while let Some(buffer) = buffers.pop_front() {
-                assert!(file_offset <= PAGE_SIZE);
+                assert!(!buffer.is_empty());
+                assert!(file_offset < PAGE_SIZE);
+
                 let remaining = PAGE_SIZE - file_offset;
 
-                if remaining == 0 {
-                    break;
-                }
-
-                if buffer.len() <= (remaining as usize) {
+                if buffer.len() < (remaining as usize) {
                     to_write.push(buffer);
+
                     self.position += buffer.len() as u64;
+                    file_offset += buffer.len() as u64;
+
+                } else if buffer.len() == (remaining as usize) {
+                    to_write.push(buffer);
+
+                    self.position += buffer.len() as u64;
+                    file_offset += buffer.len() as u64;
+                    break;
+
                 } else {
-                    self.position += remaining;
-                    let remaining = remaining as usize;
-
-                    IoSlice::advance(&mut [buffer], remaining);
                     buffers.push_front(buffer);
-                    to_write.push(IoSlice::new(&buffers[0][..remaining]));
+                    to_write.push(IoSlice::new(&buffers[0][..(remaining as usize)]));
 
-                    advance_by = Some(remaining);
+                    advance_by = Some(remaining as usize);
+
+                    self.position += remaining;
+                    file_offset += remaining;
                     break;
                 }
             }
 
-            assert!(!to_write.is_empty());
+            if !to_write.is_empty() {
+                cfg_if! {
+                    if #[ cfg(feature="async-io") ] {
+                        // Try doing one write syscall if possible
+                        self.log_file.write_all_vectored(&mut to_write)
+                            .await.expect("Failed to write to log file");
+                    } else {
+                        // Try doing one write syscall if possible
+                        self.log_file.write_all_vectored(&mut to_write)
+                            .expect("Failed to write to log file");
+                    }
+                }
 
-            cfg_if! {
-                if #[ cfg(feature="async-io") ] {
-                    // Try doing one write syscall if possible
-                    self.log_file.write_all_vectored(&mut to_write)
-                        .await.expect("Failed to write to log file");
-                } else {
-                    // Try doing one write syscall if possible
-                    self.log_file.write_all_vectored(&mut to_write)
-                        .expect("Failed to write to log file");
+                if let Some(offset) = advance_by.take() {
+                    buffers[0] = IoSlice::advance(&mut [buffers[0]], offset)[0];
                 }
             }
 
-            if let Some(offset) = advance_by.take() {
-                IoSlice::advance(&mut [buffers[0]], offset);
-            }
+            assert!(advance_by.is_none());
+            assert!(file_offset <= PAGE_SIZE);
 
             // Create a new file?
-            if file_offset >= PAGE_SIZE {
-                let file_pos = file_pos + 1;
+            if file_offset == PAGE_SIZE {
+                let file_pos = self.position / PAGE_SIZE;
                 self.log_file = Self::create_file(&*self.params, file_pos).await;
             }
         }
     }
 
     async fn create_file(params: &Params, file_pos: u64) -> File {
-        let fpath = params.db_path.join(Path::new(format!("{:08}.log", file_pos)));
-        File::create(fpath)
+        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", file_pos+1)));
+        log::trace!("Creating new log file at {:?}", fpath);
+        File::create(fpath).unwrap()
+    }
+
+    async fn open_file(params: &Params, fpos: u64) -> Result<File, String> {
+        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+        log::trace!("Opening file at {:?}", fpath);
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                match OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false).open(fpath).await {
+                    Ok(log_file) => Ok(log_file),
+                    Err(err) => {
+                        return Err(format!("Failed to open log file: {}", err));
+                    }
+                }
+            } else {
+                 match OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false).open(fpath) {
+                    Ok(log_file) => Ok(log_file),
+                    Err(err) => {
+                        return Err(format!("Failed to open log file: {}", err));
+                    }
+                }
+            }
+        }
     }
 
     pub async fn sync(&mut self) {

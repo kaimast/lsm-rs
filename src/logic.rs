@@ -121,7 +121,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(WriteAheadLog::open(params.clone(), &mut mtable, manifest.get_wal_offset()).await?);
+            wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_wal_offset().await, &mut mtable).await?);
             memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
 
@@ -533,9 +533,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 l0.create_l0_table(table_id, mem.get().get_entries()).await;
 
                 // Then update manifest and flush WAL
-                let seq_offset = mem.get_next_seq_number().await;
+                let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
-
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();
