@@ -2,10 +2,11 @@ use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 use crate::entry::Entry;
 use crate::{Params, StartMode, KV_Trait, WriteBatch, WriteError, WriteOptions};
 use crate::data_blocks::DataBlocks;
+use crate::index_blocks::IndexBlocks;
 use crate::memtable::{Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
 use crate::wal::WriteAheadLog;
-use crate::manifest::Manifest;
+use crate::manifest::{LevelId, Manifest};
 use crate::iterate::DbIterator;
 
 #[ cfg(feature="wisckey") ]
@@ -28,20 +29,21 @@ use crate::cond_var::Condvar;
 #[ cfg(not(feature="wisckey")) ]
 use bincode::Options;
 
+use cfg_if::cfg_if;
+
 /// The main database logic
 pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
-    #[allow(dead_code)]
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
-    imm_memtables: Mutex<VecDeque<ImmMemtableRef>>,
+    imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
     wal: Mutex<WriteAheadLog>,
     levels: Vec<Level>,
-    next_table_id: atomic::AtomicUsize,
     running: atomic::AtomicBool,
+    index_blocks: Arc<IndexBlocks>,
     data_blocks: Arc<DataBlocks>,
 
     #[ cfg(feature="wisckey") ]
@@ -97,17 +99,26 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let wal;
 
         if create {
-            #[ cfg(feature="async-io") ]
-            match fs::create_dir(&params.db_path).await {
-                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => return Err("Failed to create DB folder: {}", e)
-            }
-
-            #[ cfg(not(feature="async-io")) ]
-            match fs::create_dir(&params.db_path) {
-                Ok(()) => log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap()),
-                Err(e) => {
-                    return Err(format!("Failed to create DB folder: {}", e));
+            cfg_if! {
+                if #[ cfg(feature="async-io") ] {
+                    match fs::create_dir(&params.db_path).await {
+                        Ok(()) => {
+                            log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to create DB folder: {}", e));
+                        }
+                    }
+                } else {
+                    #[ cfg(not(feature="async-io")) ]
+                    match fs::create_dir(&params.db_path) {
+                        Ok(()) => {
+                            log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to create DB folder: {}", e));
+                        }
+                    }
                 }
             }
 
@@ -127,8 +138,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
-        let next_table_id = atomic::AtomicUsize::new(1);
         let running = atomic::AtomicBool::new(true);
+        let index_blocks = Arc::new( IndexBlocks::new(params.clone()) );
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
@@ -146,15 +157,23 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut levels = Vec::new();
         for index in 0..params.num_levels {
-            let level = Level::new(index, data_blocks.clone(), params.clone(), manifest.clone());
+            let level = Level::new(index as LevelId, index_blocks.clone(), data_blocks.clone(), params.clone(), manifest.clone());
             levels.push(level);
+        }
+
+        if !create {
+            for (level_id, tables) in manifest.get_table_set().await.iter().enumerate() {
+                for table_id in tables {
+                    levels[level_id].load_table(*table_id).await;
+                }
+            }
         }
 
         let _marker = PhantomData;
 
         Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            wal, levels, next_table_id, running, data_blocks,
+            wal, levels, running, index_blocks, data_blocks,
             #[ cfg(feature="wisckey") ] value_log,
             #[ cfg(feature="wisckey") ] watched_key,
             #[ cfg(feature="wisckey") ] watched_key_cond,
@@ -219,7 +238,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             mem_iters.push(iter);
         }
 
-        for imm in self.imm_memtables.lock().await.iter() {
+        for (_, imm) in self.imm_memtables.lock().await.iter() {
             let iter = imm.clone().into_iter().await;
             mem_iters.push(iter);
         }
@@ -253,7 +272,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                memtable.clone_immutable().into_iter().await
             );
 
-            for imm in imm_mems.iter() {
+            for (_, imm) in imm_mems.iter() {
                 let iter = imm.clone().into_iter().await;
                 mem_iters.push(iter);
             }
@@ -268,11 +287,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        #[ cfg(feature="wisckey") ]
-        return DbIterator::new(mem_iters, table_iters, self.value_log.clone());
-
-        #[ cfg(not(feature="wisckey")) ]
-        return DbIterator::new(mem_iters, table_iters);
+        cfg_if! {
+            if #[ cfg(feature="wisckey") ] {
+                DbIterator::new(mem_iters, table_iters, self.value_log.clone())
+            } else {
+                DbIterator::new(mem_iters, table_iters)
+            }
+        }
     }
 
     #[ cfg(feature="wisckey") ]
@@ -308,7 +329,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         {
             let imm_mems = self.imm_memtables.lock().await;
 
-            for imm in imm_mems.iter().rev() {
+            for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         Entry::Value{ value_ref, ..} => {
@@ -393,7 +414,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         {
             let imm_mems = self.imm_memtables.lock().await;
 
-            for imm in imm_mems.iter().rev() {
+            for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         Entry::Value{ value, ..} => {
@@ -462,7 +483,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             #[cfg(feature="wisckey")]
             self.value_log.sync().await;
         }
-        drop(wal);
 
         #[ cfg(feature="wisckey") ]
         for (key, vref) in vlog_info.drain(..) {
@@ -494,11 +514,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();
+            let wal_offset = wal.get_log_position();
             let imm = memtable.take(next_seq_num);
 
             #[ cfg(feature="wisckey") ]
             self.value_log.next_pending().await;
 
+            drop(wal);
             drop(memtable);
 
             // Currently only one immutable memtable is supported
@@ -506,7 +528,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 imm_mems = self.imm_cond.wait(imm_mems, &self.imm_memtables).await;
             }
 
-            imm_mems.push_back(imm);
+            imm_mems.push_back((wal_offset, imm));
 
             Ok(true)
         } else {
@@ -525,16 +547,19 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         {
             let mut imm_mems = self.imm_memtables.lock().await;
 
-            if let Some(mem) = imm_mems.pop_front() {
-                let table_id = self.next_table_id.fetch_add(1, atomic::Ordering::SeqCst);
-
+            if let Some((wal_offset, mem)) = imm_mems.pop_front() {
                 // First create table
                 let l0 = self.levels.get(0).unwrap();
+                let table_id = self.manifest.next_table_id().await;
                 l0.create_l0_table(table_id, mem.get().get_entries()).await;
 
                 // Then update manifest and flush WAL
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
+
+                let mut wal = self.wal.lock().await;
+                wal.set_offset(wal_offset).await;
+                self.manifest.set_wal_offset(wal_offset).await;
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();
@@ -546,7 +571,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels-1 && level.needs_compaction().await {
-                self.compact(level_pos, level).await;
+                self.compact(level_pos as LevelId, level).await;
                 return true;
             }
         }
@@ -554,7 +579,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         false
     }
 
-    async fn compact(&self, level_pos: usize, level: &Level) {
+    async fn compact(&self, level_pos: LevelId, level: &Level) {
         let (offsets, mut tables) = level.start_compaction().await;
         assert!(!tables.is_empty());
 
@@ -568,12 +593,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        let overlaps = self.levels[level_pos+1].get_overlaps(&min, &max).await;
+        let parent_level = &self.levels[level_pos as usize];
+        let child_level = &self.levels[(level_pos+1) as usize];
+
+        let overlaps = child_level.get_overlaps(&min, &max).await;
 
         // Fast path
         if tables.len() == 1 && overlaps.is_empty() {
             let mut parent_tables = level.get_tables().await;
-            let mut child_tables = self.levels[level_pos+1].get_tables().await;
+            let mut child_tables = child_level.get_tables().await;
 
             log::debug!("Moving table from level {} to level {}", level_pos, level_pos+1);
             let table = tables.remove(0);
@@ -694,19 +722,19 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let id = self.manifest.next_table_id().await;
 
-        let new_table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
+        let new_table = SortedTable::new(id, entries, min, max, &*self.index_blocks, self.data_blocks.clone(), &*self.params).await;
 
         let add_set = vec![(level_pos+1, id)];
         let mut remove_set = vec![];
 
         // Install new tables atomically
-        let mut parent_tables = level.get_tables().await;
-        let mut child_tables = self.levels[level_pos+1].get_tables().await;
+        let mut parent_tables = parent_level.get_tables().await;
+        let mut child_tables = child_level.get_tables().await;
 
         // iterate backwards to ensure oldest entries are removed first
         for (offset, _) in overlaps.iter().rev() {
             let id = child_tables.remove(*offset).get_id();
-            remove_set.push((level_pos+1, id));
+            remove_set.push((level_pos+1 as LevelId, id));
         }
 
         let mut new_pos = child_tables.len(); // insert at the end by default

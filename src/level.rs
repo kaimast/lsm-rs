@@ -1,7 +1,8 @@
 use crate::Params;
-use crate::sorted_table::{SortedTable, Key};
+use crate::sorted_table::{SortedTable, TableId, Key};
 use crate::entry::Entry;
-use crate::manifest::Manifest;
+use crate::manifest::{LevelId, Manifest};
+use crate::index_blocks::IndexBlocks;
 use crate::data_blocks::DataBlocks;
 
 use std::sync::Arc;
@@ -13,9 +14,10 @@ const L0_COMPACTION_TRIGGER: usize = 4;
 pub type TableVec = Vec<Arc<SortedTable>>;
 
 pub struct Level {
-    index: usize,
+    index: LevelId,
     #[ allow(clippy::mutex_atomic) ]
     next_compaction: Mutex<usize>,
+    index_blocks: Arc<IndexBlocks>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
@@ -23,27 +25,33 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(index: usize, data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+    pub fn new(index: LevelId,  index_blocks: Arc<IndexBlocks>,data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
         #[ allow(clippy::mutex_atomic) ]
         Self {
             index, params, manifest,
             next_compaction: Mutex::new(0),
-            data_blocks,
+            index_blocks, data_blocks,
             tables: RwLock::new(Vec::new())
         }
     }
 
-    pub async fn create_l0_table(&self, _id: usize, entries: Vec<(Key, Entry)>) {
+    pub async fn load_table(&self, id: TableId) {
+        let table = SortedTable::load(id, &*self.index_blocks, self.data_blocks.clone()).await;
+
+        let mut tables = self.tables.write().await;
+        tables.push(Arc::new(table));
+
+        log::trace!("Loaded table {} on level {}", id, self.index);
+    }
+
+    pub async fn create_l0_table(&self, id: TableId, entries: Vec<(Key, Entry)>) {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
-        let id = self.manifest.next_table_id().await;
-
-        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
+        let table = SortedTable::new(id, entries, min, max, &*self.index_blocks, self.data_blocks.clone(), &*self.params).await;
 
         self.manifest.update_table_set(vec![(self.index, id)], vec![]).await;
 
-        //TODO update manifest
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
     }

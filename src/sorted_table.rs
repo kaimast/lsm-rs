@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::Params;
 use crate::entry::Entry;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
-use crate::index_blocks::IndexBlock;
+use crate::index_blocks::{IndexBlocks, IndexBlock};
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
@@ -11,7 +11,7 @@ pub type Value = Vec<u8>;
 
 pub struct SortedTable {
     identifier: TableId,
-    index: Box<IndexBlock>,
+    index: Arc<IndexBlock>,
     data_blocks: Arc<DataBlocks>
 }
 
@@ -90,13 +90,14 @@ impl InternalIterator for TableIterator {
 }
 
 impl SortedTable {
-    pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, data_blocks: Arc<DataBlocks>, params: &Params)
+    pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, 
+                     index_blocks: &IndexBlocks, data_blocks: Arc<DataBlocks>, params: &Params)
             -> Self {
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_key= vec![];
         let mut block_entry_count = 0;
-        let mut size = 0;
+        let mut size: u64 = 0;
         let mut restart_count = 0;
         let mut index_key = None;
 
@@ -121,7 +122,7 @@ impl SortedTable {
 
             let suffix = key[prefix_len..].to_vec();
             let this_size = std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>() + prefix_len;
-            size += this_size;
+            size += this_size as u64;
             block_entry_count += 1;
             restart_count += 1;
 
@@ -149,7 +150,13 @@ impl SortedTable {
 
         log::debug!("Created new table with {} blocks", block_index.len());
 
-        let index = Box::new(IndexBlock::new(block_index, size, min, max));
+        let index = index_blocks.make_block(identifier, block_index, size, min, max).await;
+        Self{ identifier, index, data_blocks }
+    }
+
+    pub async fn load(identifier: TableId, index_blocks: &IndexBlocks, data_blocks: Arc<DataBlocks>)
+            -> Self {
+        let index = index_blocks.get_block(&identifier).await;
         Self{ identifier, index, data_blocks }
     }
 

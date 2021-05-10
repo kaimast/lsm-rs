@@ -5,20 +5,21 @@ use crate::memtable::Memtable;
 use std::path::Path;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::io::IoSlice;
 
 #[ cfg(feature="async-io") ]
-use tokio::fs::{OpenOptions, File};
+use tokio::fs::{OpenOptions, File, remove_file};
 
 #[ cfg(feature="async-io") ]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use std::convert::TryInto;
 
 #[ cfg(not(feature="async-io")) ]
-use std::fs::{OpenOptions, File};
+use std::fs::{OpenOptions, File, remove_file};
 
 #[ cfg(not(feature="async-io")) ]
-use std::io::{IoSlice, Read, Write};
+use std::io::{Read, Seek, Write};
 
 use cfg_if::cfg_if;
 
@@ -84,8 +85,18 @@ impl WriteAheadLog{
         let position = offset;
         let mut count: usize = 0;
 
-        let fpos = position % PAGE_SIZE;
-        let log_file = Self::open_file(&*params, fpos).await?;
+        let fpos = position / PAGE_SIZE;
+        let file_offset = position % PAGE_SIZE;
+
+        let mut log_file = Self::open_file(&*params, fpos).await?;
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                log_file.seek(futures::io::SeekFrom::Start(file_offset)).await.unwrap();
+            } else {
+                log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
+            }
+        }
 
         let mut obj = Self{ position, offset, log_file, params };
 
@@ -179,8 +190,16 @@ impl WriteAheadLog{
 
             let read_slice = &mut out[read_start..read_end];
 
-            match self.log_file.read_exact(read_slice) {
-                Ok(()) => {
+            cfg_if! {
+                if #[cfg(feature="async-io")] {
+                    let read_result = self.log_file.read_exact(read_slice).await;
+                } else {
+                    let read_result = self.log_file.read_exact(read_slice);
+                }
+            }
+
+            match read_result {
+                Ok(_) => {
                     self.position += read_len;
                     file_offset += read_len;
                 }
@@ -192,6 +211,7 @@ impl WriteAheadLog{
                     }
                 }
             }
+
 
             assert!(file_offset <= PAGE_SIZE);
             buffer_pos = self.position - start_pos;
@@ -257,9 +277,14 @@ impl WriteAheadLog{
             if !to_write.is_empty() {
                 cfg_if! {
                     if #[ cfg(feature="async-io") ] {
-                        // Try doing one write syscall if possible
-                        self.log_file.write_all_vectored(&mut to_write)
-                            .await.expect("Failed to write to log file");
+                        // TODO Not supported yet by tokio...
+                        // self.log_file.write_all_vectored(&mut to_write)
+                        //   .await.expect("Failed to write to log file");
+
+                        for slice in to_write.drain(..) {
+                            self.log_file.write_all(&slice[..]).await
+                                .expect("Failed to write to log file");
+                        }
                     } else {
                         // Try doing one write syscall if possible
                         self.log_file.write_all_vectored(&mut to_write)
@@ -286,7 +311,14 @@ impl WriteAheadLog{
     async fn create_file(params: &Params, file_pos: u64) -> File {
         let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", file_pos+1)));
         log::trace!("Creating new log file at {:?}", fpath);
-        File::create(fpath).unwrap()
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                File::create(fpath).await.unwrap()
+            } else {
+                File::create(fpath).unwrap()
+            }
+        }
     }
 
     async fn open_file(params: &Params, fpos: u64) -> Result<File, String> {
@@ -324,9 +356,32 @@ impl WriteAheadLog{
         }
     }
 
-    /// Once the memtable has been flushed we can remove all log entries
-    #[ allow(dead_code)]
-    pub fn clear(&mut self) {
-        todo!();
+    pub fn get_log_position(&self) -> u64 {
+        self.position
+    }
+
+    /// Once the memtable has been flushed we can remove old log entries
+    pub async fn set_offset(&mut self, new_offset: u64) {
+        if new_offset <= self.offset {
+            panic!("Not a valid offset");
+        }
+
+        let old_file_pos = self.offset / PAGE_SIZE;
+        let new_file_pos = new_offset / PAGE_SIZE;
+
+        for fpos in old_file_pos..new_file_pos {
+            let fpath = self.params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+            log::trace!("Removing file {:?}", fpath);
+
+            cfg_if! {
+                if #[cfg(feature="async-io") ] {
+                    remove_file(fpath).await.expect("Failed to remove log file");
+                } else {
+                    remove_file(fpath).expect("Failed to remove log file");
+                }
+            }
+        }
+
+        self.offset = new_offset;
     }
 }

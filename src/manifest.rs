@@ -11,7 +11,7 @@ use tokio::io::{AsyncSeekExt, AsyncReadExt, AsyncWriteExt};
 #[ cfg(not(feature="async-io")) ]
 use std::io::{Seek, Read, Write};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::Params;
 
@@ -24,6 +24,7 @@ use crate::values::ValueBatchId;
 use cfg_if::cfg_if;
 
 pub type SeqNumber = u64;
+pub type LevelId = u32;
 
 #[ derive(Debug, Default, Serialize, Deserialize) ]
 struct MetaData {
@@ -165,6 +166,7 @@ impl Manifest {
         assert!(meta.wal_offset < offset);
 
         meta.wal_offset = offset;
+        self.sync_header(&*meta).await;
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
@@ -188,16 +190,20 @@ impl Manifest {
         id
     }
 
-    pub async fn update_table_set(&self, mut add: Vec<(usize, TableId)>, mut remove: Vec<(usize, TableId)>) {
+    pub async fn get_table_set(&self) -> MutexGuard<'_, Vec<LevelData>> {
+        self.tables.lock().await
+    }
+
+    pub async fn update_table_set(&self, mut add: Vec<(LevelId, TableId)>, mut remove: Vec<(LevelId, TableId)>) {
         let mut tables = self.tables.lock().await;
 
         for (level, id) in add.drain(..) {
-            tables.get_mut(level).expect("No such level")
+            tables.get_mut(level as usize).expect("No such level")
                 .insert(id);
         }
 
         for (level, id) in remove.drain(..) {
-            tables.get_mut(level).expect("No such level")
+            tables.get_mut(level as usize).expect("No such level")
                 .remove(&id);
         }
 
