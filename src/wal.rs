@@ -60,7 +60,7 @@ impl WriteAheadLog{
             }
         }
 
-        let mut obj = Self{ position, offset, log_file, params };
+        let mut obj = Self{ params, log_file, offset, position };
 
         // Re-insert ops into memtable
         loop {
@@ -198,7 +198,10 @@ impl WriteAheadLog{
         Ok(true)
     }
 
+    #[ allow(clippy::needless_lifetimes) ] //clippy bug?
     async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) {
+        use std::cmp::Ordering;
+
         while !buffers.is_empty() {
             let mut file_offset = self.position % PAGE_SIZE;
             let mut to_write = vec![];
@@ -211,28 +214,30 @@ impl WriteAheadLog{
 
                 let remaining = PAGE_SIZE - file_offset;
 
-                if buffer.len() < (remaining as usize) {
-                    to_write.push(buffer);
+                match buffer.len().cmp(&(remaining as usize)) {
+                    Ordering::Less => {
+                        to_write.push(buffer);
 
-                    self.position += buffer.len() as u64;
-                    file_offset += buffer.len() as u64;
+                        self.position += buffer.len() as u64;
+                        file_offset += buffer.len() as u64;
+                    }
+                    Ordering::Equal => {
+                        to_write.push(buffer);
 
-                } else if buffer.len() == (remaining as usize) {
-                    to_write.push(buffer);
+                        self.position += buffer.len() as u64;
+                        file_offset += buffer.len() as u64;
+                        break;
+                    }
+                    Ordering::Greater => {
+                        buffers.push_front(buffer);
+                        to_write.push(IoSlice::new(&buffers[0][..(remaining as usize)]));
 
-                    self.position += buffer.len() as u64;
-                    file_offset += buffer.len() as u64;
-                    break;
+                        advance_by = Some(remaining as usize);
 
-                } else {
-                    buffers.push_front(buffer);
-                    to_write.push(IoSlice::new(&buffers[0][..(remaining as usize)]));
-
-                    advance_by = Some(remaining as usize);
-
-                    self.position += remaining;
-                    file_offset += remaining;
-                    break;
+                        self.position += remaining;
+                        file_offset += remaining;
+                        break;
+                    }
                 }
             }
 

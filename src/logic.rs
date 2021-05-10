@@ -765,7 +765,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         // iterate backwards to ensure oldest entries are removed first
         for (offset, _) in overlaps.iter().rev() {
             let id = child_tables.remove(*offset).get_id();
-            remove_set.push((level_pos+1 as LevelId, id));
+            remove_set.push((level_pos+1_u32, id));
         }
 
         let mut new_pos = child_tables.len(); // insert at the end by default
