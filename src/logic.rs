@@ -5,7 +5,10 @@ use crate::data_blocks::DataBlocks;
 use crate::index_blocks::IndexBlocks;
 use crate::memtable::{Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
+
+#[ cfg(not(feature="wisckey")) ]
 use crate::wal::WriteAheadLog;
+
 use crate::manifest::{LevelId, Manifest};
 use crate::iterate::DbIterator;
 
@@ -40,11 +43,13 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
-    wal: Mutex<WriteAheadLog>,
     levels: Vec<Level>,
     running: atomic::AtomicBool,
     index_blocks: Arc<IndexBlocks>,
     data_blocks: Arc<DataBlocks>,
+
+    #[ cfg(not(feature="wisckey")) ]
+    wal: Mutex<WriteAheadLog>,
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
@@ -96,6 +101,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let params = Arc::new(params);
         let manifest;
         let memtable;
+
+        #[ cfg(feature="wisckey") ]
+        let value_log;
+
+        #[ cfg(not(feature="wisckey")) ]
         let wal;
 
         if create {
@@ -124,7 +134,14 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
-            wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
+
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
+                } else {
+                    wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
+                }
+            }
 
         } else {
             log::info!("Opening database folder at \"{}\"", params.db_path.to_str().unwrap());
@@ -132,7 +149,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_wal_offset().await, &mut mtable).await?);
+
+    cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
+                } else {
+                    wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_wal_offset().await, &mut mtable).await?);
+                }
+            }
+
             memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
 
@@ -143,7 +168,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         #[cfg(feature="wisckey") ]
-        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         #[cfg(feature="wisckey")]
         let watched_key = Mutex::new( None );
@@ -173,7 +197,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            wal, levels, running, index_blocks, data_blocks,
+            levels, running, index_blocks, data_blocks,
+            #[ cfg(not(feature="wisckey")) ] wal,
             #[ cfg(feature="wisckey") ] value_log,
             #[ cfg(feature="wisckey") ] watched_key,
             #[ cfg(feature="wisckey") ] watched_key_cond,
@@ -368,7 +393,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         {
             let imm_mems = self.imm_memtables.lock().await;
 
-            for imm in imm_mems.iter().rev() {
+            for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         Entry::Value{ value_ref, ..} => {
@@ -451,61 +476,61 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe{ memtable.get_mut() };
 
+        #[ cfg(not(feature="wisckey")) ]
         let mut wal = self.wal.lock().await;
 
         #[cfg(feature="wisckey")]
         let mut vlog_info = Vec::new();
 
-        #[cfg(feature="wisckey")]
-        {
-             for op in write_batch.writes.drain(..) {
-                wal.store(&op).await;
-
-                match op {
-                    crate::WriteOp::Put(key, value) => {
-                        let vinfo = self.value_log.add_value(&key, value).await;
-                        vlog_info.push((key, Some(vinfo)));
-                    }
-                    crate::WriteOp::Delete(key) => {
-                        vlog_info.push((key, None));
+        cfg_if! {
+            if #[cfg(feature="wisckey")] {
+                for op in write_batch.writes.drain(..) {
+                    match op {
+                        crate::WriteOp::Put(key, value) => {
+                            let vinfo = self.value_log.add_value(&key, value).await;
+                            vlog_info.push((key, Some(vinfo)));
+                        }
+                        crate::WriteOp::Delete(key) => {
+                            vlog_info.push((key, None));
+                        }
                     }
                 }
-            }
-        }
 
-        #[ cfg(not(feature="wisckey")) ]
-        for op in write_batch.writes.iter() {
-            wal.store(op).await;
-        }
+                if opt.sync {
+                    self.value_log.sync().await;
+                }
 
-        if opt.sync {
-            wal.sync().await;
-            #[cfg(feature="wisckey")]
-            self.value_log.sync().await;
-        }
+                for (key, vref) in vlog_info.drain(..) {
+                    if let Some(vinfo) = vref {
+                        log::trace!("Storing new value for key `{:?}`", key);
+                        let (value_pos, value_len) = vinfo;
+                        mem_inner.put(key, value_pos, value_len);
+                    } else {
+                        log::trace!("Storing deletion for key `{:?}`", key);
+                        mem_inner.delete(key);
+                    }
+                }
 
-        #[ cfg(feature="wisckey") ]
-        for (key, vref) in vlog_info.drain(..) {
-            if let Some(vinfo) = vref {
-                log::trace!("Storing new value for key `{:?}`", key);
-                let (value_pos, value_len) = vinfo;
-                mem_inner.put(key, value_pos, value_len);
             } else {
-                log::trace!("Storing deletion for key `{:?}`", key);
-                mem_inner.delete(key);
-            }
-        }
-
-        #[ cfg(not(feature="wisckey")) ]
-        for op in write_batch.writes.drain(..) {
-            match op {
-                crate::WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{:?}`", key);
-                    mem_inner.put(key, value);
+                for op in write_batch.writes.drain(..) {
+                    wal.store(&op).await;
                 }
-                crate::WriteOp::Delete(key) => {
-                    log::trace!("Storing deletion for key `{:?}`", key);
-                    mem_inner.delete(key);
+
+                if opt.sync {
+                    wal.sync().await;
+                }
+
+                for op in write_batch.writes.drain(..) {
+                    match op {
+                        crate::WriteOp::Put(key, value) => {
+                            log::trace!("Storing new value for key `{:?}`", key);
+                            mem_inner.put(key, value);
+                        }
+                        crate::WriteOp::Delete(key) => {
+                            log::trace!("Storing deletion for key `{:?}`", key);
+                            mem_inner.delete(key);
+                        }
+                    }
                 }
             }
         }
@@ -514,13 +539,20 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();
-            let wal_offset = wal.get_log_position();
             let imm = memtable.take(next_seq_num);
 
-            #[ cfg(feature="wisckey") ]
-            self.value_log.next_pending().await;
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    todo!();
 
-            drop(wal);
+                    self.value_log.next_pending().await;
+                    let wal_offset = 0;
+                } else {
+                    let wal_offset = wal.get_log_position();
+                    drop(wal);
+                }
+            }
+
             drop(memtable);
 
             // Currently only one immutable memtable is supported
@@ -557,9 +589,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
 
-                let mut wal = self.wal.lock().await;
-                wal.set_offset(wal_offset).await;
-                self.manifest.set_wal_offset(wal_offset).await;
+                #[ cfg(not(feature="wisckey")) ] {
+                    let mut wal = self.wal.lock().await;
+                    wal.set_offset(wal_offset).await;
+                    self.manifest.set_wal_offset(wal_offset).await;
+                }
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();

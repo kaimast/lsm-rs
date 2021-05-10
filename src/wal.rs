@@ -1,6 +1,7 @@
 use crate::{Key, Params};
 use crate::sorted_table::Value;
 use crate::memtable::Memtable;
+use crate::WriteOp;
 
 use std::path::Path;
 use std::collections::VecDeque;
@@ -35,44 +36,6 @@ pub struct WriteAheadLog{
     // The absolute position of the log we are at
     // (must be >= offset)
     position: u64,
-}
-
-pub enum WriteOp {
-    Put(Key, Value),
-    Delete(Key)
-}
-
-impl WriteOp {
-    const PUT_OP: u8 = 1;
-    const DELETE_OP: u8 = 2;
-
-    pub fn get_key(&self) -> &[u8] {
-        match self {
-            Self::Put(key, _) => key,
-            Self::Delete(key) => key
-        }
-    }
-
-    pub fn get_type(&self) -> u8 {
-        match self {
-            Self::Put(_, _) => Self::PUT_OP,
-            Self::Delete(_) => Self::DELETE_OP
-        }
-    }
-
-    fn get_key_length(&self) -> u64 {
-        match self {
-            Self::Put(key, _) | Self::Delete(key) => key.len() as u64
-        }
-    }
-
-    #[ allow(dead_code) ]
-    fn get_value_length(&self) -> u64 {
-        match self {
-            Self::Put(_, value) => value.len() as u64,
-            Self::Delete(_) => 0u64
-        }
-    }
 }
 
 impl WriteAheadLog{

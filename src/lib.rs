@@ -27,7 +27,7 @@ pub use async_iter as iterate;
 mod values;
 
 mod sorted_table;
-use sorted_table::Key;
+use sorted_table::{Key, Value};
 
 mod tasks;
 mod memtable;
@@ -37,15 +37,52 @@ use logic::DbLogic;
 
 mod disk;
 mod level;
-mod wal;
 mod manifest;
 mod cond_var;
 mod entry;
 mod data_blocks;
 mod index_blocks;
 
-use wal::WriteOp;
+#[ cfg(not(feature="wisckey")) ]
+mod wal;
 
+pub enum WriteOp {
+    Put(Key, Value),
+    Delete(Key)
+}
+
+impl WriteOp {
+    const PUT_OP: u8 = 1;
+    const DELETE_OP: u8 = 2;
+
+    pub fn get_key(&self) -> &[u8] {
+        match self {
+            Self::Put(key, _) => key,
+            Self::Delete(key) => key
+        }
+    }
+
+    pub fn get_type(&self) -> u8 {
+        match self {
+            Self::Put(_, _) => Self::PUT_OP,
+            Self::Delete(_) => Self::DELETE_OP
+        }
+    }
+
+    fn get_key_length(&self) -> u64 {
+        match self {
+            Self::Put(key, _) | Self::Delete(key) => key.len() as u64
+        }
+    }
+
+    #[ allow(dead_code) ]
+    fn get_value_length(&self) -> u64 {
+        match self {
+            Self::Put(_, value) => value.len() as u64,
+            Self::Delete(_) => 0u64
+        }
+    }
+}
 #[ cfg(not(feature="sync")) ]
 mod async_api;
 #[ cfg(not(feature="sync")) ]

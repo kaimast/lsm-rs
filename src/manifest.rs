@@ -30,6 +30,7 @@ pub type LevelId = u32;
 struct MetaData {
     next_table_id: TableId,
     seq_number_offset: SeqNumber,
+    #[ cfg(not(feature="wisckey")) ]
     wal_offset: u64,
     next_data_block_id: DataBlockId,
     #[ cfg(feature="wisckey") ]
@@ -54,6 +55,7 @@ impl Manifest {
         let meta = MetaData{
             next_table_id: 1,
             seq_number_offset: 1,
+            #[ cfg(not(feature="wisckey")) ]
             wal_offset: 0,
             next_data_block_id: 1,
             #[ cfg(feature="wisckey") ]
@@ -156,11 +158,13 @@ impl Manifest {
         id
     }
 
+    #[ cfg(not(feature="wisckey")) ]
     pub async fn get_wal_offset(&self) -> u64 {
         let meta = self.meta.lock().await;
         meta.wal_offset
     }
 
+    #[ cfg(not(feature="wisckey")) ]
     pub async fn set_wal_offset(&self, offset: u64) {
         let mut meta = self.meta.lock().await;
         assert!(meta.wal_offset < offset);
