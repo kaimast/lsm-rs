@@ -34,7 +34,7 @@ pub trait InternalIterator: Send  {
     fn get_seq_number(&self) -> SeqNumber;
 
     #[ cfg(feature="wisckey") ]
-    fn get_value<'a>(&'a self) -> ValueResult<'a>;
+    fn get_value(&self) -> ValueResult;
 
     #[ cfg(not(feature="wisckey")) ]
     fn get_value(&self) -> Option<&[u8]>;

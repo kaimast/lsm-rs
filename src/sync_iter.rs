@@ -1,7 +1,9 @@
 #[ cfg(feature="wisckey") ]
 use crate::values::ValueLog;
 
-use crate::entry::Entry;
+#[ cfg(feature="wisckey") ]
+use crate::sorted_table::ValueResult;
+
 use crate::sorted_table::{Key, TableIterator, InternalIterator};
 use crate::memtable::MemtableIterator;
 use crate::KV_Trait;
@@ -79,14 +81,22 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
         }
     }
 
-    fn next_entry(&mut self) -> Option<(bool, K, Entry)> {
-        let (result, last_key, mem_iters, table_iters) = {
-            let mut mem_iters = std::mem::take(&mut self.mem_iters);
-            let mut table_iters = std::mem::take(&mut self.table_iters);
-            let mut last_key = self.last_key.clone();
+}
 
-            self.tokio_rt.block_on(async move {
-                let mut is_pending = true;
+impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut mem_iters = std::mem::take(&mut self.mem_iters);
+        let mut table_iters = std::mem::take(&mut self.table_iters);
+        let mut last_key = self.last_key.clone();
+        let mut result = None;
+
+        while result.is_none() {
+            #[cfg(feature="wisckey")]
+            let value_log = self.value_log.clone();
+
+            let (out_result, out_last_key, out_mem_iters, out_table_iters) = self.tokio_rt.block_on(async move {
                 let mut min_kv = None;
 
                 for iter in mem_iters.iter_mut() {
@@ -101,86 +111,59 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
                     let (change, kv) = Self::parse_iter(&last_key, iter, min_kv).await;
 
                     if change {
-                        is_pending = false;
                         min_kv = kv;
                     }
                 }
 
                 let result = if let Some((key, iter)) = min_kv.take() {
                     let res_key = super::get_encoder().deserialize(&key).unwrap();
-                    let entry = iter.clone_entry().unwrap();
-
                     last_key = Some(key.clone());
-                    Some((is_pending, res_key, entry))//TODO can we avoid cloning here?
+
+                    #[ cfg(feature="wisckey") ]
+                    match iter.get_value() {
+                        ValueResult::Value(value) => {
+                            let encoder = crate::get_encoder();
+                            Some(Some((res_key, encoder.deserialize(value).unwrap())))
+                        }
+                        ValueResult::Reference(value_ref) => {
+                            let res_val = value_log.get(value_ref).await;
+                            Some(Some((res_key, res_val)))
+                        }
+                        ValueResult::NoValue => {
+                            // this is a deletion... skip
+                            None
+                        }
+                    }
+                    #[ cfg(not(feature="wisckey")) ]
+                    match iter.get_value() {
+                        Some(value) => {
+                            let encoder = crate::get_encoder();
+                            let res_val = encoder.deserialize(value).unwrap();
+                            Some(Some((res_key, res_val)))
+                        }
+                        None => {
+                            // this is a deletion... skip
+                            None
+                        }
+                    }
                 } else {
-                    None
+                    Some(None)
                 };
 
                 (result, last_key, mem_iters, table_iters)
-            })
-        };
+            });
+
+            result = out_result;
+            last_key = out_last_key;
+            mem_iters = out_mem_iters;
+            table_iters = out_table_iters;
+        }
 
         self.last_key = last_key;
         self.mem_iters = mem_iters;
         self.table_iters = table_iters;
 
-        result
-    }
-}
-
-impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
-    type Item = (K, V);
-
-    #[ cfg(feature="wisckey") ]
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let result = self.next_entry();
-            let value_log = &*self.value_log;
-
-            if let Some((is_pending, key, entry)) = result {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
-                        return self.tokio_rt.block_on(async move {
-                            let res_val = if is_pending {
-                                value_log.get_pending(value_ref).await
-                            } else {
-                                value_log.get(value_ref).await
-                            };
-
-                            Some((key, res_val))
-                        });
-                    }
-                    Entry::Deletion{..} => {
-                        // this is a deletion... skip
-                    }
-                }
-            } else {
-                return None;
-            }
-        }
-    }
-
-    #[ cfg(not(feature="wisckey")) ]
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let result = self.next_entry();
-
-            if let Some((_, key, entry)) = result {
-                match entry {
-                    Entry::Value{value, ..} => {
-                        let encoder = crate::get_encoder();
-                        let res_val = encoder.deserialize(&value).unwrap();
-                        return Some((key, res_val));
-                    }
-                    Entry::Deletion{..} => {
-                        // this is a deletion... skip
-                    }
-                }
-            } else {
-                return None;
-            }
-
-        }
+        result.unwrap()
     }
 }
 

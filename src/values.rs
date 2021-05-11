@@ -1,23 +1,11 @@
 use std::sync::Arc;
 use std::path::Path;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::convert::TryInto;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
-#[ cfg(feature="async-io") ]
-use tokio::fs::File;
-
-#[ cfg(not(feature="async-io")) ]
-use std::fs::File;
-
-#[ cfg(feature="async-io") ]
-use tokio::io::AsyncWriteExt;
-
-#[ cfg(not(feature="async-io")) ]
-use std::io::{IoSlice, Write};
-
-use crate::sorted_table::{Key, Value};
+use crate::sorted_table::Value;
 use crate::cond_var::Condvar;
 
 use bincode::Options;
@@ -42,9 +30,6 @@ pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
 
-    pending_batch: RwLock<ValueBatch>,
-    pending_batch_file: Mutex<File>,
-
     batch_caches: Vec<Mutex<BatchShard>>,
 
     batch_ids: Mutex<BTreeSet<ValueBatchId>>,
@@ -52,29 +37,56 @@ pub struct ValueLog {
 }
 
 pub struct ValueBatch {
-    identifier: ValueBatchId,
     data: Vec<u8>
+}
+
+pub struct ValueBatchBuilder<'a> {
+    vlog: &'a ValueLog,
+    identifier: ValueBatchId,
+    data: Vec<u8>,
+}
+
+impl<'a> ValueBatchBuilder<'a> {
+    pub async fn finish(self) {
+        let fpath = self.vlog.get_file_path(&self.identifier);
+        crate::disk::write(&fpath, &self.data).await;
+
+        let batch = ValueBatch{ data: self.data };
+
+        // Rewrite to disk
+        // (Because the pending file is uncompressed)
+
+        // Store in the cache so we don't have to load immediately 
+        {
+            let shard_id = ValueLog::batch_to_shard_id(self.identifier);
+            let mut shard = self.vlog.batch_caches[shard_id].lock().await;
+            shard.put(self.identifier, Arc::new(batch));
+        }
+
+        {
+            let mut batch_ids = self.vlog.batch_ids.lock().await;
+            batch_ids.insert(self.identifier);
+            self.vlog.batch_ids_cond.notify_all();
+        }
+
+        log::trace!("Created value batch #{}", self.identifier);
+    }
+
+    pub async fn add_value(&mut self, mut val: Value) -> ValueId {
+        let val_len = (val.len() as u32).to_le_bytes();
+
+        let offset = self.data.len() as u32;
+
+        self.data.extend_from_slice(&[0u8]);
+        self.data.extend_from_slice(&val_len);
+        self.data.append(&mut val);
+
+        (self.identifier, offset)
+    }
 }
 
 impl ValueLog {
     pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let id = manifest.next_value_batch_id().await;
-        let pending_batch = RwLock::new( ValueBatch{ identifier: id, data: vec![] } );
-
-        let pending_batch_file = {
-            let fpath = params.db_path.join(Path::new("pending.lld"));
-
-            cfg_if! {
-                if #[ cfg(feature="async-io") ] {
-                    let file = File::create(&fpath).await.unwrap();
-                } else {
-                    let file = File::create(&fpath).unwrap();
-                }
-            };
-
-            Mutex::new(file)
-        };
-
         let mut batch_caches = Vec::new();
         let max_value_files = params.max_open_files / 2;
         let shard_size = max_value_files / NUM_SHARDS;
@@ -89,20 +101,7 @@ impl ValueLog {
         }
 
         Self{
-            params, manifest, pending_batch, pending_batch_file,
-            batch_caches, batch_ids, batch_ids_cond,
-        }
-    }
-
-    pub async fn sync(&self) {
-        let file = self.pending_batch_file.lock().await;
-
-        cfg_if! {
-            if #[ cfg(feature="async-io") ] {
-                file.sync_data().await.unwrap();
-            } else {
-                file.sync_data().unwrap();
-            }
+            params, manifest, batch_caches, batch_ids, batch_ids_cond,
         }
     }
 
@@ -140,21 +139,6 @@ impl ValueLog {
         }
     }
 
-    pub async fn get_keys(&self, bid: ValueBatchId) -> HashSet<Key> {
-        let mut result = HashSet::new();
-        let batch = self.get_batch(bid).await;
-        let mut pos = 0u32;
-
-        while (pos as usize) < batch.data.len() {
-            let (key, new_pos) = batch.get_key(pos);
-
-            result.insert(key.to_vec());
-            pos = new_pos;
-        }
-
-        result
-    }
-
     #[inline]
     fn batch_to_shard_id(batch_id: ValueBatchId) -> usize {
         (batch_id as usize) % NUM_SHARDS
@@ -166,83 +150,10 @@ impl ValueLog {
         self.params.db_path.join(Path::new(&fname))
     }
 
-    pub async fn next_pending(&self) {
-        let id = self.manifest.next_value_batch_id().await;
-        let file = self.pending_batch_file.lock().await;
-        let mut pending_batch = self.pending_batch.write().await;
-        let last_id = pending_batch.identifier;
-
-        let mut batch = ValueBatch{ identifier: id, data: vec![] };
-        std::mem::swap(&mut *pending_batch, &mut batch);
-
-        // Rewrite to disk
-        // (Because the pending file is uncompressed)
-        let fpath = self.get_file_path(&last_id);
-        crate::disk::write(&fpath, &batch.data).await;
-
-        // Store in the cache so we don't have to load immediately 
-        {
-            let shard_id = Self::batch_to_shard_id(last_id);
-            let mut shard = self.batch_caches[shard_id].lock().await;
-            shard.put(last_id, Arc::new(batch));
-        }
-
-        {
-            let mut batch_ids = self.batch_ids.lock().await;
-            batch_ids.insert(last_id);
-
-            self.batch_ids_cond.notify_all();
-        }
-
-        log::trace!("Sealed value batch #{}", last_id);
-
-        // Now we can reset the pending file
-        cfg_if! {
-            if #[cfg(feature="async-io")] {
-                file.set_len(0).await.unwrap();
-                file.sync_data().await.unwrap();
-            } else {
-                file.set_len(0).unwrap();
-                file.sync_data().unwrap();
-            }
-        }
-    }
-
-    pub async fn add_value(&self, key: &[u8], mut val: Value) -> (ValueId, usize) {
-        let mut file = self.pending_batch_file.lock().await;
-        let mut pending_values = self.pending_batch.write().await;
-
-        let key_len = (key.len() as u32).to_le_bytes();
-        let val_len = (val.len() as u32).to_le_bytes();
-        let out_len = val.len();
-
-        let start_pos = pending_values.data.len() as u32;
-
-        cfg_if! {
-            if #[cfg(feature="async-io") ] {
-                file.write_all(&key_len).await.unwrap();
-                file.write_all(&val_len).await.unwrap();
-                file.write_all(&key).await.unwrap();
-                file.write_all(&val).await.unwrap();
-            } else {
-                let buffers = &mut [
-                    IoSlice::new(&key_len),
-                    IoSlice::new(&val_len),
-                    IoSlice::new(&key),
-                    IoSlice::new(&val),
-                ];
-
-                file.write_all_vectored(buffers).unwrap();
-            }
-        }
-
-        pending_values.data.extend_from_slice(&key_len);
-        pending_values.data.extend_from_slice(&val_len);
-        pending_values.data.extend_from_slice(key);
-        pending_values.data.append(&mut val);
-
-        let id = (pending_values.identifier, start_pos);
-        (id, out_len)
+    #[ allow(clippy::needless_lifetimes) ] //clippy bug
+    pub async fn make_batch<'a>(&'a self) -> ValueBatchBuilder<'a> {
+        let identifier = self.manifest.next_value_batch_id().await;
+        ValueBatchBuilder{ identifier, vlog: &self, data: vec![] }
     }
 
     #[inline]
@@ -257,7 +168,7 @@ impl ValueLog {
             let fpath = self.get_file_path(&id);
             let data = crate::disk::read(&fpath).await;
 
-            let batch = Arc::new( ValueBatch{ identifier: id, data } );
+            let batch = Arc::new( ValueBatch{ data } );
 
             cache.put(id, batch.clone());
             batch
@@ -274,51 +185,19 @@ impl ValueLog {
         super::get_encoder().deserialize(val)
             .expect("Failed to decode value")
     }
-
-    pub async fn get_pending<V: serde::de::DeserializeOwned>(&self, value_ref: ValueId) -> V {
-        log::trace!("Getting pending value at {:?}", value_ref);
-
-        let pending_values = self.pending_batch.read().await;
-        let (batch_id, offset) = value_ref;
-
-        assert!(pending_values.identifier == batch_id);
-
-        let val = pending_values.get_value(offset);
-        super::get_encoder().deserialize(val)
-            .expect("Failed to decode value")
-    }
 }
 
 impl ValueBatch {
-    pub fn get_key(&self, pos: ValueOffset) -> (&[u8], ValueOffset) {
-        let mut offset = pos as usize;
-
-        let len_len = std::mem::size_of::<u32>();
-
-        let klen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
-        offset += len_len;
-
-        let vlen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
-        offset += len_len;
-
-        let key_ref = &self.data[offset..offset+(klen as usize)];
-        offset += (klen+vlen) as usize;
-
-        (key_ref, offset as u32)
-    }
-
     pub fn get_value(&self, pos: ValueOffset) -> &[u8] {
         let mut offset = pos as usize;
 
-        let len_len = std::mem::size_of::<u32>();
+        // Deletion flag
+        offset += 1;
 
-        let klen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
-        offset += len_len;
+        let len_len = std::mem::size_of::<u32>();
 
         let vlen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
         offset += len_len;
-
-        offset += klen as usize;
 
         &self.data[offset..offset+(vlen as usize)]
     }
@@ -342,20 +221,22 @@ mod tests {
         let e = crate::get_encoder();
         let values = ValueLog::new(params, manifest).await;
 
-        let mut refs = vec![];
+        let mut vids = vec![];
+        let mut builder = values.make_batch().await;
 
         for pos in 0..1000u32 {
-            let key = vec![5,2,3];
             let value = format!("Number {}", pos);
 
-            let (val_ref, _) = values.add_value(&key, e.serialize(&value).unwrap()).await;
-            refs.push(val_ref);
+            let vid = builder.add_value(e.serialize(&value).unwrap()).await;
+            vids.push(vid);
         }
 
-        for (pos, val_ref) in refs.iter().enumerate() {
+        builder.finish();
+
+        for (pos, vid) in vids.iter().enumerate() {
             let value = format!("Number {}", pos);
 
-            let result = values.get_pending::<String>(*val_ref).await;
+            let result = values.get::<String>(*vid).await;
             assert_eq!(result, value);
         }
     }
@@ -372,8 +253,7 @@ mod tests {
         let manifest = Arc::new( Manifest::new(params.clone()).await );
 
         let values = ValueLog::new(params, manifest).await;
-
-        let key = vec![5,2,3];
+        let mut builder = values.make_batch().await;
 
         let mut data = vec![];
         data.resize(SIZE, 'a' as u8);
@@ -381,9 +261,11 @@ mod tests {
         let value = String::from_utf8(data).unwrap();
 
         let e = crate::get_encoder();
-        let (val_ref, _) = values.add_value(&key, e.serialize(&value).unwrap()).await;
+        let vid = builder.add_value(e.serialize(&value).unwrap()).await;
 
-        let result = values.get_pending::<String>(val_ref).await;
+        builder.finish();
+
+        let result = values.get::<String>(vid).await;
 
         assert_eq!(result, value);
     }

@@ -159,7 +159,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut levels = Vec::new();
         for index in 0..params.num_levels {
-            let level = Level::new(index as LevelId, data_blocks.clone(), params.clone(), manifest.clone());
+            let index = index as LevelId;
+            let level = Level::new(index, data_blocks.clone(), params.clone(), manifest.clone());
             levels.push(level);
         }
 
@@ -338,22 +339,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
 
-        if let Some(value_ref) = self.get_value_ref(key).await {
-            Some( self.value_log.get(value_ref).await )
-        } else {
-            None
-        }
-    }
-
-    /// Get the most recent value reference for a specific key
-    /// - This does *not* include pending values
-    #[ cfg(feature="wisckey") ]
-    async fn get_value_ref(&self, key: &[u8]) -> Option<crate::values::ValueId> {
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
                 match entry {
                     Entry::Value{value_ref, ..} => {
-                        return Some(value_ref);
+                        return Some( self.value_log.get(value_ref).await );
                     }
                     Entry::Deletion{..} => {
                         return None;
@@ -362,44 +352,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
+        // Does not exist
         None
     }
-
-    /*
-    /// Get all values associated for a specific key
-    /// - This does *not* include pending values
-    #[ cfg(feature="wisckey") ]
-    pub async fn get_value_refs(&self, key: &[u8]) -> Vec<crate::values::ValueId> {
-        let mut result = vec![];
-
-        {
-            let imm_mems = self.imm_memtables.lock().await;
-
-            for (_, imm) in imm_mems.iter().rev() {
-                if let Some(entry) = imm.get().get(key) {
-                    match entry {
-                        MemtableEntry::Value{ valu_ref, ..} => {
-                            result.push(value_ref);
-                        }
-                        MemtableEntry::Deletion{..} => {}
-                    }
-                }
-            }
-        }
-
-        for level in self.levels.iter() {
-            if let Some(entry) = level.get(key).await {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
-                        result.push(value_ref);
-                    }
-                    Entry::Deletion{..} => {}
-                }
-            }
-        }
-
-        result
-    }*/
 
     #[ cfg(not(feature="wisckey")) ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
@@ -458,61 +413,25 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe{ memtable.get_mut() };
 
-        #[ cfg(not(feature="wisckey")) ]
         let mut wal = self.wal.lock().await;
 
-        #[cfg(feature="wisckey")]
-        let mut vlog_info = Vec::new();
+        for op in write_batch.writes.drain(..) {
+            wal.store(&op).await;
+        }
 
-        cfg_if! {
-            if #[cfg(feature="wisckey")] {
-                for op in write_batch.writes.drain(..) {
-                    match op {
-                        crate::WriteOp::Put(key, value) => {
-                            let vinfo = self.value_log.add_value(&key, value).await;
-                            vlog_info.push((key, Some(vinfo)));
-                        }
-                        crate::WriteOp::Delete(key) => {
-                            vlog_info.push((key, None));
-                        }
-                    }
+        if opt.sync {
+            wal.sync().await;
+        }
+
+        for op in write_batch.writes.drain(..) {
+            match op {
+                crate::WriteOp::Put(key, value) => {
+                    log::trace!("Storing new value for key `{:?}`", key);
+                    mem_inner.put(key, value);
                 }
-
-                if opt.sync {
-                    self.value_log.sync().await;
-                }
-
-                for (key, vref) in vlog_info.drain(..) {
-                    if let Some(vinfo) = vref {
-                        log::trace!("Storing new value for key `{:?}`", key);
-                        let (value_pos, value_len) = vinfo;
-                        mem_inner.put(key, value_pos, value_len);
-                    } else {
-                        log::trace!("Storing deletion for key `{:?}`", key);
-                        mem_inner.delete(key);
-                    }
-                }
-
-            } else {
-                for op in write_batch.writes.drain(..) {
-                    wal.store(&op).await;
-                }
-
-                if opt.sync {
-                    wal.sync().await;
-                }
-
-                for op in write_batch.writes.drain(..) {
-                    match op {
-                        crate::WriteOp::Put(key, value) => {
-                            log::trace!("Storing new value for key `{:?}`", key);
-                            mem_inner.put(key, value);
-                        }
-                        crate::WriteOp::Delete(key) => {
-                            log::trace!("Storing deletion for key `{:?}`", key);
-                            mem_inner.delete(key);
-                        }
-                    }
+                crate::WriteOp::Delete(key) => {
+                    log::trace!("Storing deletion for key `{:?}`", key);
+                    mem_inner.delete(key);
                 }
             }
         }
@@ -523,18 +442,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
 
-            cfg_if! {
-                if #[cfg(feature="wisckey")] {
-                    todo!();
-
-                    self.value_log.next_pending().await;
-                    let wal_offset = 0;
-                } else {
-                    let wal_offset = wal.get_log_position();
-                    drop(wal);
-                }
-            }
-
+            let wal_offset = wal.get_log_position();
+            drop(wal);
             drop(memtable);
 
             // Currently only one immutable memtable is supported
@@ -570,8 +479,23 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 let mut entries = vec![];
 
                 #[cfg(feature="wisckey")]
-                for mem_entry in memtable_entries.drain(..) {
-                    //TODO
+                {
+                    let mut vbuilder = self.value_log.make_batch().await;
+
+                    for (key, mem_entry) in memtable_entries.drain(..) {
+                        match mem_entry {
+                            MemtableEntry::Value{seq_number, value} => {
+                                let value_ref = vbuilder.add_value(value).await;
+                                entries.push((key, Entry::Value{seq_number, value_ref}));
+                            }
+                            MemtableEntry::Deletion{seq_number} => {
+                                let _value_ref = Default::default();
+                                entries.push((key, Entry::Deletion{seq_number, _value_ref }));
+                            }
+                        }
+                    }
+
+                    vbuilder.finish().await;
                 }
 
                 #[cfg(not(feature="wisckey"))]
