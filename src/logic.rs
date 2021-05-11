@@ -2,10 +2,9 @@ use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 use crate::entry::Entry;
 use crate::{Params, StartMode, KV_Trait, WriteBatch, WriteError, WriteOptions};
 use crate::data_blocks::DataBlocks;
-use crate::memtable::{Memtable, MemtableRef, ImmMemtableRef};
+use crate::memtable::{MemtableEntry, Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
 
-#[ cfg(not(feature="wisckey")) ]
 use crate::wal::WriteAheadLog;
 
 use crate::manifest::{LevelId, Manifest};
@@ -45,8 +44,6 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     levels: Vec<Level>,
     running: atomic::AtomicBool,
     data_blocks: Arc<DataBlocks>,
-
-    #[ cfg(not(feature="wisckey")) ]
     wal: Mutex<WriteAheadLog>,
 
     #[ cfg(feature="wisckey") ]
@@ -99,11 +96,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let params = Arc::new(params);
         let manifest;
         let memtable;
-
-        #[ cfg(feature="wisckey") ]
-        let value_log;
-
-        #[ cfg(not(feature="wisckey")) ]
         let wal;
 
         if create {
@@ -132,14 +124,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new( MemtableRef::wrap( Memtable::new(1) ) );
-
-            cfg_if! {
-                if #[cfg(feature="wisckey")] {
-                    value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
-                } else {
-                    wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
-                }
-            }
+            wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
 
         } else {
             log::info!("Opening database folder at \"{}\"", params.db_path.to_str().unwrap());
@@ -147,17 +132,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-
-    cfg_if! {
-                if #[cfg(feature="wisckey")] {
-                    value_log = Arc::new( ValueLog::open(params.clone(), manifest.clone(), &mut mtable).await );
-                } else {
-                    wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?);
-                }
-            }
+            wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?);
 
             memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
+
+        #[cfg(feature="wisckey")]
+        let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
@@ -194,8 +175,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            levels, running, data_blocks,
-            #[ cfg(not(feature="wisckey")) ] wal,
+            levels, running, data_blocks, wal,
             #[ cfg(feature="wisckey") ] value_log,
             #[ cfg(feature="wisckey") ] watched_key,
             #[ cfg(feature="wisckey") ] watched_key_cond,
@@ -203,7 +183,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     }
 
     #[cfg(feature="wisckey")]
-    pub async fn garbage_collect(&self) {
+    pub async fn garbage_collect(&self) {}
+
+    /* TODO
         loop {
             let batch_id = self.value_log.get_oldest_batch_id().await;
             let keys = self.value_log.get_keys(batch_id).await;
@@ -247,7 +229,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             self.value_log.delete_batch(batch_id).await;
             *watch_lock = None;
         }
-    }
+    }*/
 
     #[cfg(feature="sync")]
     pub async fn iter(&self, tokio_rt: Arc<tokio::runtime::Runtime>) -> DbIterator<K, V> {
@@ -321,21 +303,40 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     #[ cfg(feature="wisckey") ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
+        use bincode::Options;
 
-        // special case for memtable to avoid race conditions
         {
             let memtable = self.memtable.read().await;
 
             if let Some(entry) = memtable.get().get(key) {
                 match entry {
-                    Entry::Value{value_ref, ..} => {
-                        let val = self.value_log.get_pending(value_ref).await;
+                    MemtableEntry::Value{value, ..} => {
+                        let val = crate::get_encoder().deserialize(&value).unwrap();
                         return Some(val);
                     }
-                    Entry::Deletion{..} => { return None; }
+                    MemtableEntry::Deletion{..} => { return None; }
                 }
             };
         }
+
+        {
+            let imm_mems = self.imm_memtables.lock().await;
+
+            for (_, imm) in imm_mems.iter().rev() {
+                if let Some(entry) = imm.get().get(key) {
+                    match entry {
+                        MemtableEntry::Value{ value, ..} => {
+                            let val = crate::get_encoder().deserialize(&value).unwrap();
+                            return Some(val);
+                        }
+                        MemtableEntry::Deletion{..} => {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+
 
         if let Some(value_ref) = self.get_value_ref(key).await {
             Some( self.value_log.get(value_ref).await )
@@ -347,24 +348,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     /// Get the most recent value reference for a specific key
     /// - This does *not* include pending values
     #[ cfg(feature="wisckey") ]
-    pub async fn get_value_ref(&self, key: &[u8]) -> Option<crate::values::ValueId> {
-        {
-            let imm_mems = self.imm_memtables.lock().await;
-
-            for (_, imm) in imm_mems.iter().rev() {
-                if let Some(entry) = imm.get().get(key) {
-                    match entry {
-                        Entry::Value{ value_ref, ..} => {
-                            return Some(value_ref);
-                        }
-                        Entry::Deletion{..} => {
-                            return None;
-                        }
-                    }
-                }
-            }
-        }
-
+    async fn get_value_ref(&self, key: &[u8]) -> Option<crate::values::ValueId> {
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
                 match entry {
@@ -381,6 +365,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         None
     }
 
+    /*
     /// Get all values associated for a specific key
     /// - This does *not* include pending values
     #[ cfg(feature="wisckey") ]
@@ -393,10 +378,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
-                        Entry::Value{ value_ref, ..} => {
+                        MemtableEntry::Value{ valu_ref, ..} => {
                             result.push(value_ref);
                         }
-                        Entry::Deletion{..} => {}
+                        MemtableEntry::Deletion{..} => {}
                     }
                 }
             }
@@ -414,7 +399,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         }
 
         result
-    }
+    }*/
 
     #[ cfg(not(feature="wisckey")) ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
@@ -425,11 +410,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         if let Some(entry) = memtable.get().get(key) {
             match entry {
-                Entry::Value{value, ..} => {
+                MemtableEntry::Value{value, ..} => {
                     let value = encoder.deserialize(&value).unwrap();
                     return Some(value);
                 }
-                Entry::Deletion{..} => { return None; }
+                MemtableEntry::Deletion{..} => { return None; }
             }
         };
 
@@ -439,11 +424,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
-                        Entry::Value{ value, ..} => {
+                        MemtableEntry::Value{ value, ..} => {
                             let value = encoder.deserialize(&value).unwrap();
                             return Some(value);
                         }
-                        Entry::Deletion{..} => {
+                        MemtableEntry::Deletion{..} => {
                             return None;
                         }
                     }
@@ -580,17 +565,30 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 // First create table
                 let l0 = self.levels.get(0).unwrap();
                 let table_id = self.manifest.next_table_id().await;
-                l0.create_l0_table(table_id, mem.get().get_entries()).await;
+
+                let mut memtable_entries = mem.get().get_entries();
+                let mut entries = vec![];
+
+                #[cfg(feature="wisckey")]
+                for mem_entry in memtable_entries.drain(..) {
+                    //TODO
+                }
+
+                #[cfg(not(feature="wisckey"))]
+                for (key, mem_entry) in memtable_entries.drain(..) {
+                    let entry = mem_entry.into_entry();
+                    entries.push((key, entry));
+                }
+
+                l0.create_l0_table(table_id, entries).await;
 
                 // Then update manifest and flush WAL
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
 
-                #[ cfg(not(feature="wisckey")) ] {
-                    let mut wal = self.wal.lock().await;
-                    wal.set_offset(log_offset).await;
-                    self.manifest.set_log_offset(log_offset).await;
-                }
+                let mut wal = self.wal.lock().await;
+                wal.set_offset(log_offset).await;
+                self.manifest.set_log_offset(log_offset).await;
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();
@@ -710,7 +708,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 break;
             }
 
-            let mut min_entry: Option<&Entry> = None;
+            let mut min_iter: Option<&dyn InternalIterator> = None;
             let min_key = min_key.unwrap().clone();
 
             for table_iter in table_iters.iter_mut() {
@@ -720,17 +718,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
                 // Figure out if this table's entry is more recent
                 let key = table_iter.get_key();
-                let entry = table_iter.get_entry();
 
                 if key != &min_key {
                     continue;
                 }
 
-                if let Some(other_entry) = min_entry {
-                    if entry.get_sequence_number() > other_entry.get_sequence_number() {
-                        log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, entry.get_sequence_number(), other_entry.get_sequence_number());
+                if let Some(other_iter) = min_iter {
+                    if table_iter.get_seq_number() > other_iter.get_seq_number() {
+                        log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, table_iter.get_seq_number(), other_iter.get_seq_number());
 
-                        min_entry = Some(entry);
+                        min_iter = Some(table_iter);
 
                         // Check whether we overwrote a key that is about to
                         // be garbage collected
@@ -743,11 +740,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
                 } else {
                     log::trace!("Found new key {:?}", key);
-                    min_entry = Some(entry);
+                    min_iter = Some(table_iter);
                 }
             }
 
-            entries.push((min_key.clone(), min_entry.unwrap().clone()));
+            //FIXME don't clone entry here
+            let entry = min_iter.unwrap().clone_entry().unwrap();
+            entries.push((min_key.clone(), entry));
             last_key = Some(min_key);
         }
 

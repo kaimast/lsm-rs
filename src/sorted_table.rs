@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use crate::Params;
+use crate::{KV_Trait, Params};
 use crate::entry::Entry;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
 use crate::index_blocks::IndexBlock;
+use crate::manifest::SeqNumber;
+
+#[ cfg(feature="wisckey") ]
+use crate::values::ValueId;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
@@ -15,12 +19,27 @@ pub struct SortedTable {
     data_blocks: Arc<DataBlocks>
 }
 
+#[ cfg(feature="wisckey") ]
+pub enum ValueResult<'a> {
+    Reference(ValueId),
+    Value(&'a [u8]),
+    NoValue,
+}
+
 #[async_trait::async_trait]
-pub trait InternalIterator: Send {
+pub trait InternalIterator: Send  {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
     fn get_key(&self) -> &Key;
-    fn get_entry(&self) -> &Entry;
+    fn get_seq_number(&self) -> SeqNumber;
+
+    #[ cfg(feature="wisckey") ]
+    fn get_value<'a>(&'a self) -> ValueResult<'a>;
+
+    #[ cfg(not(feature="wisckey")) ]
+    fn get_value(&self) -> Option<&[u8]>;
+
+    fn clone_entry(&self) -> Option<Entry>;
 }
 
 pub struct TableIterator {
@@ -28,7 +47,7 @@ pub struct TableIterator {
     block_offset: u32,
     key: Key,
     entry: Entry,
-    table: Arc<SortedTable>
+    table: Arc<SortedTable>,
 }
 
 impl TableIterator {
@@ -45,7 +64,9 @@ impl TableIterator {
             (0, entry_len)
         };
 
-        Self{ block_pos, block_offset, key, entry, table }
+        Self{
+            block_pos, block_offset, key, entry, table,
+        }
     }
 }
 
@@ -59,8 +80,26 @@ impl InternalIterator for TableIterator {
         &self.key
     }
 
-    fn get_entry(&self) -> &Entry {
-        &self.entry
+    fn get_seq_number(&self) -> SeqNumber {
+        self.entry.get_sequence_number()
+    }
+
+    #[ cfg(feature="wisckey") ]
+    fn get_value(&self) -> ValueResult {
+        if let Some(value_ref) = self.entry.get_value_ref() {
+            ValueResult::Reference(*value_ref)
+        } else {
+            ValueResult::NoValue
+        }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    fn get_value(&self) -> Option<&[u8]> {
+        if let Some(value) = &self.entry.get_value() {
+            Some(&value)
+        } else {
+            None
+        }
     }
 
     async fn step(&mut self) {
@@ -86,6 +125,10 @@ impl InternalIterator for TableIterator {
         } else {
             self.block_offset = new_offset;
         }
+    }
+
+    fn clone_entry(&self) -> Option<Entry> {
+        Some(self.entry.clone())
     }
 }
 

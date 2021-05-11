@@ -42,8 +42,6 @@ mod cond_var;
 mod entry;
 mod data_blocks;
 mod index_blocks;
-
-#[ cfg(not(feature="wisckey")) ]
 mod wal;
 
 pub enum WriteOp {

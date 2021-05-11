@@ -46,7 +46,8 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
 
     #[inline]
     pub(crate) async fn parse_iter<'a>(last_key: &Option<Key>, iter: &'a mut dyn InternalIterator,
-            min_kv: Option<(&'a Key, &'a Entry)>) -> (bool, Option<(&'a Key, &'a Entry)>) {
+            min_kv: Option<(&'a Key, &'a dyn InternalIterator)>)
+             -> (bool, Option<(&'a Key, &'a dyn InternalIterator)>) {
         if let Some(last_key) = last_key {
             while !iter.at_end() && iter.get_key() <= last_key {
                 iter.step().await;
@@ -58,16 +59,15 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
         }
 
         let key = iter.get_key();
-        let entry = iter.get_entry();
 
-        if let Some((min_key, min_entry)) = min_kv {
+        if let Some((min_key, min_iter)) = min_kv {
             match key.cmp(min_key) {
                 Ordering::Less => {
-                    (true, Some((key, entry)))
+                    (true, Some((key, iter)))
                 }
                 Ordering::Equal => {
-                    if entry.get_sequence_number() > min_entry.get_sequence_number() {
-                        (true, Some((key, entry)))
+                    if iter.get_seq_number() > min_iter.get_seq_number() {
+                        (true, Some((key, iter)))
                     } else {
                         (false, min_kv)
                     }
@@ -75,7 +75,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
                 Ordering::Greater => (false, min_kv)
             }
         } else {
-            (true, Some((key, entry)))
+            (true, Some((key, iter)))
         }
     }
 
@@ -106,9 +106,9 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
                     }
                 }
 
-                let result = if let Some((key, entry)) = min_kv.take() {
+                let result = if let Some((key, iter)) = min_kv.take() {
                     let res_key = super::get_encoder().deserialize(&key).unwrap();
-                    let entry = entry.clone();
+                    let entry = iter.clone_entry().unwrap();
 
                     last_key = Some(key.clone());
                     Some((is_pending, res_key, entry))//TODO can we avoid cloning here?
