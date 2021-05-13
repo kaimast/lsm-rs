@@ -4,24 +4,24 @@ use crate::values::{ValueLog, ValueId};
 #[ cfg(feature="wisckey") ]
 use crate::sorted_table::ValueResult;
 
-use crate::sorted_table::TableIterator;
+use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::memtable::MemtableIterator;
 use crate::KV_Trait;
-use crate::sync_iter::DbIterator as SyncIter;
 
 use bincode::Options;
 
 use std::future::Future;
-use futures::stream::Stream;
 use std::task::{Context, Poll};
-
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::cmp::Ordering;
 
 #[ cfg(feature="wisckey") ]
 use std::sync::Arc;
 
 use cfg_if::cfg_if;
+
+use futures::stream::Stream;
 
 type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
 
@@ -83,8 +83,7 @@ struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
     last_key: Option<Vec<u8>>,
-    mem_iters: Vec<MemtableIterator>,
-    table_iters: Vec<TableIterator>,
+    iterators: Vec<Box<dyn InternalIterator>>,
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
@@ -96,13 +95,22 @@ enum IterResult<V: KV_Trait> {
     ValueRef(ValueId),
 }
 
+type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
+
 impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
     #[ cfg(feature="wisckey") ]
-    fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
+    fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>
             , value_log: Arc<ValueLog>) -> Self {
+        let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
+        for iter in mem_iters.drain(..) {
+            iterators.push(Box::new(iter));
+        }
+        for iter in table_iters.drain(..) {
+            iterators.push(Box::new(iter));
+        }
+
         Self{
-            mem_iters, table_iters, value_log,
-            last_key: None, _marker: PhantomData
+            iterators, value_log, last_key: None, _marker: PhantomData
         }
     }
 
@@ -114,34 +122,68 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
     }
 
+    async fn parse_iter(&mut self, offset: usize, min_kv: MinKV) -> (bool, MinKV) {
+        // Split slices to make the borrow checker happy
+        let (prev, cur) = self.iterators[..].split_at_mut(offset);
+        let iter = &mut *cur[0];
+
+        if let Some(last_key) = &self.last_key {
+            while !iter.at_end() && iter.get_key() <= last_key {
+                iter.step().await;
+            }
+        }
+
+        if iter.at_end() {
+            return (false, min_kv);
+        }
+
+        let key = iter.get_key();
+        let seq_number = iter.get_seq_number();
+
+        if let Some((min_seq_number, min_offset)) = min_kv {
+            let min_iter = &*prev[min_offset];
+            let min_key = min_iter.get_key();
+
+            match key.cmp(min_key) {
+                Ordering::Less => {
+                    (true, Some((seq_number, offset)))
+                }
+                Ordering::Equal => {
+                    if seq_number > min_seq_number {
+                        (true, Some((seq_number, offset)))
+                    } else {
+                        (false, min_kv)
+                    }
+                }
+                Ordering::Greater => (false, min_kv)
+            }
+        } else {
+            (true, Some((seq_number, offset)))
+        }
+    }
+
+
     async fn next(mut self) -> (Self, Option<(K,V)>) {
-        let mut result = None;
+        let mut result: Option<Option<(K, IterResult<V>)>> = None;
 
         while result.is_none() {
             let mut min_kv = None;
+            let num_iterators = self.iterators.len();
 
-            let mut mem_iters = std::mem::take(&mut self.mem_iters);
-            let mut table_iters = std::mem::take(&mut self.table_iters);
-
-            for iter in mem_iters.iter_mut() {
-                let (change, kv) = SyncIter::<K,V>::parse_iter(&self.last_key, iter, min_kv).await;
+            for offset in 0..num_iterators {
+                let (change, kv) = self.parse_iter(offset, min_kv).await;
 
                 if change {
                     min_kv = kv;
                 }
             }
 
-            for iter in table_iters.iter_mut() {
-                let (change, kv) = SyncIter::<K,V>::parse_iter(&self.last_key, iter, min_kv).await;
+            if let Some((_, offset)) = min_kv.take() {
+                let encoder = crate::get_encoder();
+                let iter = &*self.iterators[offset];
 
-                if change {
-                    min_kv = kv;
-                }
-            }
-
-            if let Some((key, iter)) = min_kv.take() {
-                let res_key = super::get_encoder().deserialize(&key).unwrap();
-                self.last_key = Some(key.clone());
+                let res_key = encoder.deserialize(iter.get_key()).unwrap();
+                self.last_key = Some(iter.get_key().clone());
 
                 cfg_if! {
                     if #[ cfg(feature="wisckey") ] {
@@ -161,7 +203,6 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                     } else {
                         match iter.get_value() {
                             Some(value) => {
-                                let encoder = crate::get_encoder();
                                 let res_val = encoder.deserialize(value).unwrap();
                                 result = Some(Some((res_key, res_val)));
                             }
@@ -175,9 +216,6 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                 // at end
                 result = None;
             };
-
-            self.mem_iters = mem_iters;
-            self.table_iters = table_iters;
         }
 
         let (key, result) = match result.unwrap() {

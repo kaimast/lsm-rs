@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use bincode::Options;
 
+#[ cfg(feature="sync") ]
 pub mod sync_iter;
 
 #[ cfg(feature="sync") ]
