@@ -59,7 +59,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
     }
 
     #[inline]
-    pub(crate) async fn parse_iter(offset: usize, last_key: &Option<Key>, min_iter: Option<&dyn InternalIterator>, iter: &mut dyn InternalIterator, min_kv: MinKV) -> (bool, MinKV) {
+    async fn parse_iter(offset: usize, last_key: &Option<Key>, min_iter: Option<&dyn InternalIterator>, iter: &mut dyn InternalIterator, min_kv: MinKV) -> (bool, MinKV) {
         if let Some(last_key) = last_key {
             while !iter.at_end() && iter.get_key() <= last_key {
                 iter.step().await;
@@ -116,6 +116,7 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
                     let (prev, cur) = iterators[..].split_at_mut(offset);
 
                     let min_iter = if let Some((_,offset)) = min_kv {
+                        #[ allow(clippy::borrowed_box) ]
                         let iter: &Box<dyn InternalIterator> = &prev[offset];
                         Some(&**iter)
                     } else {
@@ -186,4 +187,3 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
         result.unwrap()
     }
 }
-

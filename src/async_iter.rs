@@ -193,7 +193,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                                 result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value).unwrap()))));
                             }
                             ValueResult::Reference(value_ref) => {
-                                let value_ref = value_ref.clone();
+                                let value_ref = value_ref;
                                 result = Some(Some((res_key, IterResult::ValueRef(value_ref))));
                                                     }
                             ValueResult::NoValue => {
@@ -214,7 +214,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                 }
             } else {
                 // at end
-                result = None;
+                result = Some(None);
             };
         }
 
