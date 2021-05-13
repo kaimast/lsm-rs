@@ -27,7 +27,6 @@ use tokio::sync::{RwLock, Mutex};
 
 use crate::cond_var::Condvar;
 
-#[ cfg(not(feature="wisckey")) ]
 use bincode::Options;
 
 use cfg_if::cfg_if;
@@ -358,7 +357,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     #[ cfg(not(feature="wisckey")) ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
-
         let encoder = crate::get_encoder();
 
         {
@@ -418,7 +416,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let mut wal = self.wal.lock().await;
 
-        for op in write_batch.writes.drain(..) {
+        for op in write_batch.writes.iter() {
             wal.store(&op).await;
         }
 
