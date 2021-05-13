@@ -20,6 +20,7 @@ pub struct SortedTable {
 }
 
 #[ cfg(feature="wisckey") ]
+#[ derive(Debug, PartialEq) ]
 pub enum ValueResult<'a> {
     Reference(ValueId),
     Value(&'a [u8]),
@@ -273,13 +274,13 @@ mod tests {
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry(), &entry1);
+        assert_eq!(iter.get_value(), ValueResult::Reference(*entry1.get_value_ref().unwrap()));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry(), &entry2);
+        assert_eq!(iter.get_value(), ValueResult::Reference(*entry2.get_value_ref().unwrap()));
 
         iter.step().await;
 
@@ -312,13 +313,13 @@ mod tests {
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry(), &entry1);
+        assert_eq!(iter.get_value(), entry1.get_value());
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry(), &entry2);
+        assert_eq!(iter.get_value(), entry2.get_value());
 
         iter.step().await;
 
@@ -360,8 +361,8 @@ mod tests {
             assert_eq!(iter.at_end(), false);
 
             assert_eq!(iter.get_key(), &(pos as u32).to_le_bytes().to_vec());
-            assert_eq!(iter.get_entry(),
-                    &Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) });
+            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)) );
+            assert_eq!(iter.get_seq_number(), 500+pos as u64);
 
             iter.step().await;
         }

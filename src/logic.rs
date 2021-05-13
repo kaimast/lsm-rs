@@ -145,8 +145,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let running = atomic::AtomicBool::new(true);
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
-        #[cfg(feature="wisckey") ]
-
         #[cfg(feature="wisckey")]
         let watched_key = Mutex::new( None );
 
@@ -257,11 +255,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             }
         }
 
-        #[ cfg(feature="wisckey") ]
-        return DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone());
-
-        #[ cfg(not(feature="wisckey")) ]
-        return DbIterator::new(tokio_rt, mem_iters, table_iters);
+        cfg_if! {
+            if #[ cfg(feature="wisckey") ] {
+                DbIterator::new(tokio_rt, mem_iters, table_iters, self.value_log.clone())
+            } else {
+                DbIterator::new(tokio_rt, mem_iters, table_iters)
+            }
+        }
     }
 
     #[cfg(not(feature="sync"))]
@@ -304,7 +304,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     #[ cfg(feature="wisckey") ]
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
-        use bincode::Options;
+        let encoder = crate::get_encoder();
 
         {
             let memtable = self.memtable.read().await;
@@ -312,7 +312,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(entry) = memtable.get().get(key) {
                 match entry {
                     MemtableEntry::Value{value, ..} => {
-                        let val = crate::get_encoder().deserialize(&value).unwrap();
+                        let val = encoder.deserialize(&value).unwrap();
                         return Some(val);
                     }
                     MemtableEntry::Deletion{..} => { return None; }
@@ -327,7 +327,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         MemtableEntry::Value{ value, ..} => {
-                            let val = crate::get_encoder().deserialize(&value).unwrap();
+                            let val = encoder.deserialize(&value).unwrap();
                             return Some(val);
                         }
                         MemtableEntry::Deletion{..} => {
@@ -337,7 +337,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 }
             }
         }
-
 
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
@@ -360,18 +359,23 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     pub async fn get(&self, key: &[u8]) -> Option<V> {
         log::trace!("Starting to seek for key `{:?}`", key);
 
-        let memtable = self.memtable.read().await;
         let encoder = crate::get_encoder();
 
-        if let Some(entry) = memtable.get().get(key) {
-            match entry {
-                MemtableEntry::Value{value, ..} => {
-                    let value = encoder.deserialize(&value).unwrap();
-                    return Some(value);
+        {
+            let memtable = self.memtable.read().await;
+
+            if let Some(entry) = memtable.get().get(key) {
+                match entry {
+                    MemtableEntry::Value{value, ..} => {
+                        let value = encoder.deserialize(&value).unwrap();
+                        return Some(value);
+                    }
+                    MemtableEntry::Deletion{..} => {
+                        return None;
+                    }
                 }
-                MemtableEntry::Deletion{..} => { return None; }
-            }
-        };
+            };
+        }
 
         {
             let imm_mems = self.imm_memtables.lock().await;
@@ -403,7 +407,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
                 }
             }
-
         }
 
         None
@@ -478,30 +481,30 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 let mut memtable_entries = mem.get().get_entries();
                 let mut entries = vec![];
 
-                #[cfg(feature="wisckey")]
-                {
-                    let mut vbuilder = self.value_log.make_batch().await;
+                cfg_if! {
+                    if #[cfg(feature="wisckey")] {
+                        let mut vbuilder = self.value_log.make_batch().await;
 
-                    for (key, mem_entry) in memtable_entries.drain(..) {
-                        match mem_entry {
-                            MemtableEntry::Value{seq_number, value} => {
-                                let value_ref = vbuilder.add_value(value).await;
-                                entries.push((key, Entry::Value{seq_number, value_ref}));
-                            }
-                            MemtableEntry::Deletion{seq_number} => {
-                                let _value_ref = Default::default();
-                                entries.push((key, Entry::Deletion{seq_number, _value_ref }));
+                        for (key, mem_entry) in memtable_entries.drain(..) {
+                            match mem_entry {
+                                MemtableEntry::Value{seq_number, value} => {
+                                    let value_ref = vbuilder.add_value(value).await;
+                                    entries.push((key, Entry::Value{seq_number, value_ref}));
+                                }
+                                MemtableEntry::Deletion{seq_number} => {
+                                    let _value_ref = Default::default();
+                                    entries.push((key, Entry::Deletion{seq_number, _value_ref }));
+                                }
                             }
                         }
+
+                        vbuilder.finish().await;
+                    } else {
+                        for (key, mem_entry) in memtable_entries.drain(..) {
+                            let entry = mem_entry.into_entry();
+                            entries.push((key, entry));
+                        }
                     }
-
-                    vbuilder.finish().await;
-                }
-
-                #[cfg(not(feature="wisckey"))]
-                for (key, mem_entry) in memtable_entries.drain(..) {
-                    let entry = mem_entry.into_entry();
-                    entries.push((key, entry));
                 }
 
                 l0.create_l0_table(table_id, entries).await;

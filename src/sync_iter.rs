@@ -80,7 +80,6 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
             (true, Some((key, iter)))
         }
     }
-
 }
 
 impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {

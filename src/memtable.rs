@@ -310,8 +310,8 @@ mod tests {
 
         let key1 = vec![5, 2, 4];
 
-        let val1 = (5, 1);
-        let val2 = (1, 8);
+        let val1 = vec![5, 1];
+        let val2 = vec![1, 8];
 
         mem.put(key1.clone(), val1.clone());
         mem.put(key1.clone(), val2.clone());

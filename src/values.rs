@@ -231,7 +231,7 @@ mod tests {
             vids.push(vid);
         }
 
-        builder.finish();
+        builder.finish().await;
 
         for (pos, vid) in vids.iter().enumerate() {
             let value = format!("Number {}", pos);
@@ -263,7 +263,7 @@ mod tests {
         let e = crate::get_encoder();
         let vid = builder.add_value(e.serialize(&value).unwrap()).await;
 
-        builder.finish();
+        builder.finish().await;
 
         let result = values.get::<String>(vid).await;
 

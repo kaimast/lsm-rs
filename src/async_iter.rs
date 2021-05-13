@@ -1,10 +1,12 @@
 #[ cfg(feature="wisckey") ]
-use crate::values::ValueLog;
+use crate::values::{ValueLog, ValueId};
+
+#[ cfg(feature="wisckey") ]
+use crate::sorted_table::ValueResult;
 
 use crate::sorted_table::TableIterator;
 use crate::memtable::MemtableIterator;
 use crate::KV_Trait;
-use crate::entry::Entry;
 use crate::sync_iter::DbIterator as SyncIter;
 
 use bincode::Options;
@@ -18,6 +20,8 @@ use std::pin::Pin;
 
 #[ cfg(feature="wisckey") ]
 use std::sync::Arc;
+
+use cfg_if::cfg_if;
 
 type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
 
@@ -86,6 +90,12 @@ struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
     value_log: Arc<ValueLog>,
 }
 
+#[ cfg(feature="wisckey") ]
+enum IterResult<V: KV_Trait> {
+    Value(V),
+    ValueRef(ValueId),
+}
+
 impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
     #[ cfg(feature="wisckey") ]
     fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
@@ -104,85 +114,90 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
     }
 
-   async fn next_entry(mut slf: Self) -> (Self, Option<(bool,K,Entry)>) {
-        let mut min_kv = None;
-        let mut is_pending = true;
+    async fn next(mut self) -> (Self, Option<(K,V)>) {
+        let mut result = None;
 
-        for iter in slf.mem_iters.iter_mut() {
-            let (change, kv) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
+        while result.is_none() {
+            let mut min_kv = None;
 
-            if change {
-                min_kv = kv;
+            let mut mem_iters = std::mem::take(&mut self.mem_iters);
+            let mut table_iters = std::mem::take(&mut self.table_iters);
+
+            for iter in mem_iters.iter_mut() {
+                let (change, kv) = SyncIter::<K,V>::parse_iter(&self.last_key, iter, min_kv).await;
+
+                if change {
+                    min_kv = kv;
+                }
             }
-        }
 
-        for iter in slf.table_iters.iter_mut() {
-            let (change, kv ) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
+            for iter in table_iters.iter_mut() {
+                let (change, kv) = SyncIter::<K,V>::parse_iter(&self.last_key, iter, min_kv).await;
 
-            if change {
-                min_kv = kv;
-                is_pending = false;
+                if change {
+                    min_kv = kv;
+                }
             }
-        }
-        if let Some((key, entry)) = min_kv {
-            let res_key = super::get_encoder().deserialize(&key).unwrap();
-            let entry = entry.clone();
 
-            slf.last_key = Some(key.clone());
-            (slf, Some((is_pending, res_key, entry))) //TODO can we avoid cloning here?
-        } else {
-            (slf, None)
-        }
-    }
+            if let Some((key, iter)) = min_kv.take() {
+                let res_key = super::get_encoder().deserialize(&key).unwrap();
+                self.last_key = Some(key.clone());
 
-    #[ cfg(feature="wisckey") ]
-    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
-        loop {
-            let (slf, result) = Self::next_entry(slf_).await;
-
-            if let Some((is_pending, key, entry)) = result {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
-                        let res_val = if is_pending {
-                            slf.value_log.get_pending(value_ref).await
-                        } else {
-                            slf.value_log.get(value_ref).await
-                        };
-
-                        return (slf, Some((key, res_val)));
-                    },
-                    Entry::Deletion{..} => {
-                        // This is a deletion. Skip
-                        slf_ = slf;
+                cfg_if! {
+                    if #[ cfg(feature="wisckey") ] {
+                        match iter.get_value() {
+                            ValueResult::Value(value) => {
+                                let encoder = crate::get_encoder();
+                                result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value).unwrap()))));
+                            }
+                            ValueResult::Reference(value_ref) => {
+                                let value_ref = value_ref.clone();
+                                result = Some(Some((res_key, IterResult::ValueRef(value_ref))));
+                                                    }
+                            ValueResult::NoValue => {
+                                // this is a deletion... skip
+                            }
+                        }
+                    } else {
+                        match iter.get_value() {
+                            Some(value) => {
+                                let encoder = crate::get_encoder();
+                                let res_val = encoder.deserialize(value).unwrap();
+                                result = Some(Some((res_key, res_val)));
+                            }
+                            None => {
+                                // this is a deletion... skip
+                            }
+                        }
                     }
                 }
             } else {
-                return (slf, None);
-            }
+                // at end
+                result = None;
+            };
+
+            self.mem_iters = mem_iters;
+            self.table_iters = table_iters;
         }
-    }
 
-    #[ cfg(not(feature="wisckey")) ]
-    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
-        loop {
-            let (slf, result) = Self::next_entry(slf_).await;
+        let (key, result) = match result.unwrap() {
+            Some(inner) => inner,
+            None => { return (self, None); }
+        };
 
-            if let Some((_, key, entry)) = result {
-                match entry {
-                    Entry::Value{value, ..} => {
-                        let encoder = crate::get_encoder();
-                        let res_val = encoder.deserialize(&value).unwrap();
-                        return (slf, Some((key, res_val)));
-                    },
-
-                    Entry::Deletion{..} => {
-                        // This is a deletion. Skip
-                        slf_ = slf;
+        cfg_if!{
+            if #[ cfg(feature="wisckey") ] {
+                match result {
+                    IterResult::ValueRef(value_ref) => {
+                        let res_val = self.value_log.get(value_ref).await;
+                        (self, Some((key, res_val)))
+                    }
+                    IterResult::Value(value) => {
+                        (self, Some((key, value)))
                     }
                 }
-            }
-            else {
-                return (slf, None);
+            } else {
+                (self, Some((key, value)))
             }
         }
     }
