@@ -34,9 +34,11 @@ tempfile = { version="3" }
 path = "src/lib.rs"
 
 [features]
-default = ["wisckey", "snappy-compression"]
+default = ["wisckey-fold", "snappy-compression"]
 snappy-compression = ["snap"]
 sync = []
+wisckey-reinsert = ["wisckey"]
+wisckey-fold = ["wisckey"]
 wisckey = []
 async-io = ["tokio/fs"]
 

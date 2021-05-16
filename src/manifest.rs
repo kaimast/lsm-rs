@@ -34,6 +34,8 @@ struct MetaData {
     next_data_block_id: DataBlockId,
     #[ cfg(feature="wisckey") ]
     next_value_batch_id: ValueBatchId,
+    #[ cfg(feature="wisckey") ]
+    value_log_offset: ValueBatchId,
 }
 
 pub type LevelData = HashSet<TableId>;
@@ -58,6 +60,8 @@ impl Manifest {
             next_data_block_id: 1,
             #[ cfg(feature="wisckey") ]
             next_value_batch_id: 1,
+            #[ cfg(feature="wisckey") ]
+            value_log_offset: 0,
         };
 
         let tables = Mutex::new( Vec::new() );
@@ -168,6 +172,15 @@ impl Manifest {
         meta.log_offset = offset;
         self.sync_header(&*meta).await;
     }
+
+    pub async fn set_value_log_offset(&self, offset: u64) {
+        let mut meta = self.meta.lock().await;
+        assert!(meta.value_log_offset < offset);
+
+        meta.value_log_offset = offset;
+        self.sync_header(&*meta).await;
+    }
+
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
         let meta = self.meta.lock().await;

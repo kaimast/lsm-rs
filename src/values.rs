@@ -6,13 +6,23 @@ use std::convert::TryInto;
 use tokio::sync::Mutex;
 
 use crate::sorted_table::Value;
-use crate::cond_var::Condvar;
 
 use bincode::Options;
 
 use lru::LruCache;
 
+#[ cfg(feature="async-io") ]
+use tokio::fs::File;
+#[ cfg(feature="async-io") ]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[ cfg(not(feature="async-io")) ]
+use std::fs::File;
+#[ cfg(not(feature="async-io")) ]
+use std::io::{Read, Write};
+
 use crate::Params;
+use crate::disk;
 use crate::manifest::Manifest;
 
 use cfg_if::cfg_if;
@@ -24,16 +34,15 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 
 const NUM_SHARDS: usize = 16;
 
+pub const GARBAGE_COLLECT_WINDOW: usize = 10;
+pub const GARBATE_COLLECT_THRESHOLD: f64 = 0.1;
+
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
 pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
-
     batch_caches: Vec<Mutex<BatchShard>>,
-
-    batch_ids: Mutex<BTreeSet<ValueBatchId>>,
-    batch_ids_cond: Condvar,
 }
 
 pub struct ValueBatch {
@@ -44,29 +53,40 @@ pub struct ValueBatchBuilder<'a> {
     vlog: &'a ValueLog,
     identifier: ValueBatchId,
     data: Vec<u8>,
+    num_values: u32,
 }
 
 impl<'a> ValueBatchBuilder<'a> {
     pub async fn finish(self) {
         let fpath = self.vlog.get_file_path(&self.identifier);
-        crate::disk::write(&fpath, &self.data).await;
+
+        // write file header
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                let mut file = File::create(&fpath).await.unwrap();
+                file.write_all(&self.num_values.to_le_bytes()).await.unwrap();
+
+                let delete_markers = vec![0u8; self.num_values as usize];
+                file.write_all(&delete_markers).await.unwrap();
+            } else {
+                let mut file = File::create(&fpath).unwrap();
+                file.write_all(&self.num_values.to_le_bytes()).unwrap();
+
+                let delete_markers = vec![0u8; self.num_values as usize];
+                file.write_all(&delete_markers).unwrap();
+            }
+        }
+
+        let offset = (std::mem::size_of::<u32>() as u64) + (self.num_values as u64);
+        disk::write(&fpath, &self.data, offset).await;
 
         let batch = ValueBatch{ data: self.data };
 
-        // Rewrite to disk
-        // (Because the pending file is uncompressed)
-
-        // Store in the cache so we don't have to load immediately 
+        // Store in the cache so we don't have to load immediately
         {
             let shard_id = ValueLog::batch_to_shard_id(self.identifier);
             let mut shard = self.vlog.batch_caches[shard_id].lock().await;
             shard.put(self.identifier, Arc::new(batch));
-        }
-
-        {
-            let mut batch_ids = self.vlog.batch_ids.lock().await;
-            batch_ids.insert(self.identifier);
-            self.vlog.batch_ids_cond.notify_all();
         }
 
         log::trace!("Created value batch #{}", self.identifier);
@@ -77,7 +97,8 @@ impl<'a> ValueBatchBuilder<'a> {
 
         let offset = self.data.len() as u32;
 
-        self.data.extend_from_slice(&[0u8]);
+        self.num_values += 1;
+
         self.data.extend_from_slice(&val_len);
         self.data.append(&mut val);
 
@@ -92,32 +113,23 @@ impl ValueLog {
         let shard_size = max_value_files / NUM_SHARDS;
         assert!(shard_size > 0);
 
-        let batch_ids = Mutex::new( BTreeSet::new() );
-        let batch_ids_cond = Condvar::new();
-
         for _ in 0..NUM_SHARDS {
             let cache = Mutex::new( BatchShard::new(shard_size) );
             batch_caches.push(cache);
         }
 
         Self{
-            params, manifest, batch_caches, batch_ids, batch_ids_cond,
+            params, manifest, batch_caches,
         }
     }
 
-    pub async fn get_oldest_batch_id(&self) -> ValueBatchId {
-        let mut bid = None;
-        let mut bid_lock = self.batch_ids.lock().await;
-
-        while bid.is_none() {
-            bid_lock = self.batch_ids_cond.wait(bid_lock, &self.batch_ids).await;
-            bid = bid_lock.first();
-        }
-
-        *bid.unwrap()
+    pub async fn mark_value_deleted(&self, vid: ValueId) {
+        todo!();
     }
 
-    pub async fn delete_batch(&self, bid: ValueBatchId) {
+    /*
+    pub async fn maybe_garbage_collect(&self, bid: ValueBatchId) {
+        
         log::trace!("Deleting value batch #{}", bid);
 
         {
@@ -137,7 +149,7 @@ impl ValueLog {
                 std::fs::remove_file(&fpath).unwrap();
             }
         }
-    }
+    }*/
 
     #[inline]
     fn batch_to_shard_id(batch_id: ValueBatchId) -> usize {
@@ -153,7 +165,7 @@ impl ValueLog {
     #[ allow(clippy::needless_lifetimes) ] //clippy bug
     pub async fn make_batch<'a>(&'a self) -> ValueBatchBuilder<'a> {
         let identifier = self.manifest.next_value_batch_id().await;
-        ValueBatchBuilder{ identifier, vlog: &self, data: vec![] }
+        ValueBatchBuilder{ identifier, vlog: &self, data: vec![], num_values: 0 }
     }
 
     #[inline]
@@ -165,8 +177,32 @@ impl ValueLog {
             batch.clone()
         } else {
             log::trace!("Loading value batch from disk");
+
             let fpath = self.get_file_path(&id);
-            let data = crate::disk::read(&fpath).await;
+
+            let offset = {
+                let num_values;
+
+                cfg_if!{
+                    if #[cfg(feature="async-io")] {
+                        let mut file = File::open(&fpath).await.unwrap();
+                        let mut len_data = [0u8; 4];
+
+                        file.read_exact(&mut len_data).await.unwrap();
+                        num_values = u32::from_le_bytes(len_data);
+                    } else {
+                        let mut file = File::open(&fpath).unwrap();
+                        let mut len_data = [0u8; 4];
+
+                        file.read_exact(&mut len_data).unwrap();
+                        num_values = u32::from_le_bytes(len_data);
+                    }
+                }
+
+                (num_values as u64) + (std::mem::size_of::<u32>() as u64)
+            };
+
+            let data = disk::read(&fpath, offset).await;
 
             let batch = Arc::new( ValueBatch{ data } );
 
@@ -190,9 +226,6 @@ impl ValueLog {
 impl ValueBatch {
     pub fn get_value(&self, pos: ValueOffset) -> &[u8] {
         let mut offset = pos as usize;
-
-        // Deletion flag
-        offset += 1;
 
         let len_len = std::mem::size_of::<u32>();
 

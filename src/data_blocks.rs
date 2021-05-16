@@ -69,7 +69,7 @@ impl DataBlocks {
         // Store on disk before grabbing the lock
         let block_data = &block.data;
         let fpath = self.get_file_path(&id);
-        disk::write(&fpath, block_data).await;
+        disk::write(&fpath, block_data, 0).await;
 
         let mut cache = self.block_caches[shard_id].lock().await;
         cache.put(id, block);
@@ -86,7 +86,7 @@ impl DataBlocks {
         } else {
             log::trace!("Loading data block from disk");
             let fpath = self.get_file_path(&id);
-            let data = disk::read(&fpath).await;
+            let data = disk::read(&fpath, 0).await;
             let block = Arc::new(DataBlock::new_from_data(data));
 
             cache.put(*id, block.clone());

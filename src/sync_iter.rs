@@ -110,7 +110,7 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
             let (out_result, out_last_key, out_iterators) = self.tokio_rt.block_on(async move {
                 let mut min_kv = None;
                 let num_iterators = iterators.len();
-                
+
                 for offset in 0..num_iterators {
                     // Split slices to make the borrow checker happy
                     let (prev, cur) = iterators[..].split_at_mut(offset);
