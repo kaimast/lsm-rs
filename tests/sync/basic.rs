@@ -26,16 +26,16 @@ fn get_put() {
     let value = String::from("Bar");
     let value2 = String::from("Baz");
 
-    assert_eq!(database.get(&key1), None);
-    assert_eq!(database.get(&key2), None);
+    assert_eq!(database.get(&key1).unwrap(), None);
+    assert_eq!(database.get(&key2).unwrap(), None);
 
     database.put(&key1, &value).unwrap();
 
-    assert_eq!(database.get(&key1), Some(value.clone()));
-    assert_eq!(database.get(&key2), None);
+    assert_eq!(database.get(&key1).unwrap(), Some(value.clone()));
+    assert_eq!(database.get(&key2).unwrap(), None);
 
     database.put(&key1, &value2).unwrap();
-    assert_eq!(database.get(&key1), Some(value2.clone()));
+    assert_eq!(database.get(&key1).unwrap(), Some(value2.clone()));
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn get_put_many() {
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos), Some(format!("some_string_{}", pos)));
+        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_string_{}", pos)));
     }
 }
 
@@ -105,11 +105,11 @@ fn get_put_delete_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        database.delete(&key);
+        database.delete(&key).unwrap();
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos), None);
+        assert_eq!(database.get(&pos).unwrap(), None);
     }
 }
 
@@ -136,7 +136,7 @@ fn override_many() {
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos), Some(format!("some_other_string_{}", pos)));
+        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_other_string_{}", pos)));
     }
 }
 
@@ -157,6 +157,6 @@ fn batched_write() {
 
     for pos in 0..COUNT {
         let key = format!("key{}", pos);
-        assert_eq!(database.get(&key), Some(pos));
+        assert_eq!(database.get(&key).unwrap(), Some(pos));
     }
 }

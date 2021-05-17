@@ -111,6 +111,24 @@ pub enum Error {
     Serialization(String),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::Io(msg) => {
+                fmt.write_fmt(format_args!("Io Error: {}", msg))?;
+            }
+            Self::InvalidParams(msg) => {
+                fmt.write_fmt(format_args!("Invalid Parameter: {}", msg))?;
+            }
+            Self::Serialization(msg) => {
+                fmt.write_fmt(format_args!("Serialization Error: {}", msg))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(inner: std::io::Error) -> Self {
         Self::Io(inner.to_string())

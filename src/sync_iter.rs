@@ -33,16 +33,19 @@ type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
     #[ cfg(all(feature="sync", feature="wisckey")) ]
-    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>, mut mem_iters: Vec<MemtableIterator>,
+    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>,
+            mut mem_iters: Vec<MemtableIterator>,
             mut table_iters: Vec<TableIterator>, value_log: Arc<ValueLog>) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
+
         for iter in mem_iters.drain(..) {
             iterators.push(Box::new(iter));
         }
+
         for iter in table_iters.drain(..) {
             iterators.push(Box::new(iter));
         }
- 
+
         Self{
             iterators, value_log, tokio_rt,
             last_key: None, _marker: PhantomData
@@ -147,7 +150,7 @@ impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
                                     Some(Some((res_key, encoder.deserialize(value).unwrap())))
                                 }
                                 ValueResult::Reference(value_ref) => {
-                                    let res_val = value_log.get(value_ref).await;
+                                    let res_val = value_log.get(value_ref).await.unwrap();
                                     Some(Some((res_key, res_val)))
                                 }
                                 ValueResult::NoValue => {

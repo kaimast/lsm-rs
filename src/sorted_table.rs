@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{KV_Trait, Params};
+use crate::{Error, KV_Trait, Params};
 use crate::entry::Entry;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
 use crate::index_blocks::IndexBlock;
@@ -136,7 +136,7 @@ impl InternalIterator for TableIterator {
 impl SortedTable {
     pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, 
                      data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Self {
+            -> Result<Self, Error> {
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_key= vec![];
@@ -177,7 +177,7 @@ impl SortedTable {
 
             if block_entry_count >= params.max_key_block_size {
                 let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params)
-                            .await;
+                            .await?;
 
                 block_index.push((index_key.take().unwrap(), id));
 
@@ -188,20 +188,20 @@ impl SortedTable {
         }
 
         if block_entry_count > 0 {
-            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params).await;
+            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params).await?;
             block_index.push((index_key.take().unwrap(), id));
         }
 
         log::debug!("Created new table with {} blocks", block_index.len());
 
-        let index = IndexBlock::new(&params, identifier, block_index, size, min, max).await;
-        Self{ identifier, index, data_blocks }
+        let index = IndexBlock::new(&params, identifier, block_index, size, min, max).await?;
+        Ok(Self{ identifier, index, data_blocks })
     }
 
     pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Self {
-        let index = IndexBlock::load(&params, identifier).await;
-        Self{ identifier, index, data_blocks }
+            -> Result<Self, Error> {
+        let index = IndexBlock::load(&params, identifier).await?;
+        Ok( Self{ identifier, index, data_blocks } )
     }
 
     #[inline]
@@ -268,7 +268,7 @@ mod tests {
 
         let id = 124234;
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 
@@ -307,7 +307,7 @@ mod tests {
 
         let id = 124234;
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 
@@ -353,7 +353,7 @@ mod tests {
         }
 
         let id = 1;
-        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 

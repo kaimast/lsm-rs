@@ -1,5 +1,5 @@
 use crate::data_blocks::DataBlockId;
-use crate::disk;
+use crate::{disk, Error};
 use crate::{Key, Params};
 use crate::sorted_table::TableId;
 
@@ -19,23 +19,23 @@ pub struct IndexBlock {
 }
 
 impl IndexBlock {
-    pub async fn new(params: &Params, id: TableId, index: Vec<(Key, DataBlockId)>, size: u64, min: Key, max: Key) -> Self {
+    pub async fn new(params: &Params, id: TableId, index: Vec<(Key, DataBlockId)>, size: u64, min: Key, max: Key) -> Result<Self, Error> {
         let block = Self{ index, size, min, max };
 
         // Store on disk before grabbing the lock
-        let block_data = crate::get_encoder().serialize(&block).unwrap();
+        let block_data = crate::get_encoder().serialize(&block)?;
         let fpath = Self::get_file_path(params, &id);
-        disk::write(&fpath, &block_data, 0).await.expect("Failed to write index block to disk");
+        disk::write(&fpath, &block_data, 0).await?;
 
-        block
+        Ok(block)
     }
 
-    pub async fn load(params: &Params, id: TableId) -> Self {
+    pub async fn load(params: &Params, id: TableId) -> Result<Self, Error> {
         log::trace!("Loading data block from disk");
         let fpath = Self::get_file_path(params, &id);
-        let data = disk::read(&fpath, 0).await.expect("Failed to read index block from disk");
+        let data = disk::read(&fpath, 0).await?;
 
-        crate::get_encoder().deserialize(&data).unwrap()
+        Ok( crate::get_encoder().deserialize(&data)? )
     }
 
     #[inline]

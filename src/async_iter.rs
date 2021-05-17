@@ -6,7 +6,7 @@ use crate::sorted_table::ValueResult;
 
 use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::memtable::MemtableIterator;
-use crate::KV_Trait;
+use crate::{Error, KV_Trait};
 
 use bincode::Options;
 
@@ -23,7 +23,7 @@ use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
-type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
+type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K,V>, Option<(K,V)>), Error>>+Send;
 
 pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
     state: Option<Pin<Box<IterFuture<K,V>>>>
@@ -60,7 +60,10 @@ impl<K: KV_Trait, V: KV_Trait> Stream for DbIterator<K, V> {
                     return Poll::Pending
                 }
                 // item computation complete
-                Poll::Ready((inner, res)) => (inner, res),
+                Poll::Ready(result) => {
+                    let (inner, res) = result.expect("iteration failed");
+                    (inner, res)
+                }
             }
         } else {
             // no items left
@@ -163,7 +166,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
     }
 
 
-    async fn next(mut self) -> (Self, Option<(K,V)>) {
+    async fn next(mut self) -> Result<(Self, Option<(K,V)>), Error> {
         let mut result: Option<Option<(K, IterResult<V>)>> = None;
 
         while result.is_none() {
@@ -182,7 +185,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                 let encoder = crate::get_encoder();
                 let iter = &*self.iterators[offset];
 
-                let res_key = encoder.deserialize(iter.get_key()).unwrap();
+                let res_key = encoder.deserialize(iter.get_key())?;
                 self.last_key = Some(iter.get_key().clone());
 
                 cfg_if! {
@@ -190,7 +193,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                         match iter.get_value() {
                             ValueResult::Value(value) => {
                                 let encoder = crate::get_encoder();
-                                result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value).unwrap()))));
+                                result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value)?))));
                             }
                             ValueResult::Reference(value_ref) => {
                                 let value_ref = value_ref;
@@ -203,7 +206,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                     } else {
                         match iter.get_value() {
                             Some(value) => {
-                                let res_val = encoder.deserialize(value).unwrap();
+                                let res_val = encoder.deserialize(value)?;
                                 result = Some(Some((res_key, res_val)));
                             }
                             None => {
@@ -220,22 +223,22 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
 
         let (key, result) = match result.unwrap() {
             Some(inner) => inner,
-            None => { return (self, None); }
+            None => { return Ok((self, None)); }
         };
 
         cfg_if!{
             if #[ cfg(feature="wisckey") ] {
                 match result {
                     IterResult::ValueRef(value_ref) => {
-                        let res_val = self.value_log.get(value_ref).await;
-                        (self, Some((key, res_val)))
+                        let res_val = self.value_log.get(value_ref).await?;
+                        Ok((self, Some((key, res_val))))
                     }
                     IterResult::Value(value) => {
-                        (self, Some((key, value)))
+                        Ok((self, Some((key, value))))
                     }
                 }
             } else {
-                (self, Some((key, value)))
+                Ok((self, Some((key, value))))
             }
         }
     }

@@ -24,7 +24,7 @@ fn get_put() {
     let value1 = String::from("Bar");
     let value2 = String::from("Baz");
 
-    assert_eq!(database.get(&key1), None);
+    assert_eq!(database.get(&key1).unwrap(), None);
 
     database.put(&key1, &value1).unwrap();
     drop(database);
@@ -33,7 +33,7 @@ fn get_put() {
     let database = Database::new_with_params(StartMode::Open, params.clone())
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1), Some(value1.clone()));
+    assert_eq!(database.get(&key1).unwrap(), Some(value1.clone()));
     database.put(&key1, &value2).unwrap();
 
     drop(database);
@@ -42,7 +42,7 @@ fn get_put() {
     let database = Database::new_with_params(StartMode::Open, params)
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1), Some(value2.clone()));
+    assert_eq!(database.get(&key1).unwrap(), Some(value2.clone()));
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn get_put_many() {
         .expect("Failed to create database instance");
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos), Some(format!("some_string_{}", pos)));
+        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_string_{}", pos)));
     }
 }
 

@@ -46,41 +46,42 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         Ok( Self{ inner, tasks } )
     }
 
-    /// Will deserialize V from the raw data (avoidatabase an additional copy)
+    /// Will deserialize V from the raw data (avoids an additional data copy)
     #[inline]
-    pub async fn get(&self, key: &K)-> Option<V> {
-        let key_data = get_encoder().serialize(key).unwrap();
+    pub async fn get(&self, key: &K)-> Result<Option<V>, Error> {
+        let key_data = get_encoder().serialize(key)?;
         self.inner.get(&key_data).await
     }
 
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
-    /// Instead, it will just mark the most recent (which could be the first one) as deleted
+    /// Instead, it will just mark the most recent version(which could be the first one) as deleted
     #[inline]
-    pub async fn delete(&self, key: &K) {
+    pub async fn delete(&self, key: &K) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.inner.write_opts(batch, &OPTS).await.unwrap();
+        self.write_opts(batch, &OPTS).await
     }
 
+    /// Delete an existing entry (with additional options)
     #[inline]
-    pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) {
+    pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
-
-        self.inner.write_opts(batch, opts).await.unwrap();
+        self.write_opts(batch, opts).await
     }
 
-    /// Store
+    /// Insert or update a single entry
     #[inline]
     pub async fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS).await
     }
 
+    /// Insert or update a single entry (with additional options)
     #[inline]
     pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
@@ -105,18 +106,13 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Write a batch of updates to the database
     /// This version of write allows you to specfiy options such as "synchronous"
     pub async fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), Error> {
-        let result = self.inner.write_opts(write_batch, opts).await;
+        let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
-        match result {
-            Ok(needatabase_compaction) => {
-                if needatabase_compaction {
-                    self.tasks.wake_up().await;
-                }
-
-                Ok(())
-            },
-            Err(e) => Err(e)
+        if needs_compaction {
+            self.tasks.wake_up().await;
         }
+
+        Ok(())
     }
 }
 
@@ -159,16 +155,16 @@ mod tests {
         let value = String::from("Bar");
         let value2 = String::from("Baz");
 
-        assert_eq!(database.get(&key1).await, None);
-        assert_eq!(database.get(&key2).await, None);
+        assert_eq!(database.get(&key1).await.unwrap(), None);
+        assert_eq!(database.get(&key2).await.unwrap(), None);
 
         database.put(&key1, &value).await.unwrap();
 
-        assert_eq!(database.get(&key1).await, Some(value.clone()));
-        assert_eq!(database.get(&key2).await, None);
+        assert_eq!(database.get(&key1).await.unwrap(), Some(value.clone()));
+        assert_eq!(database.get(&key2).await.unwrap(), None);
 
         database.put(&key1, &value2).await.unwrap();
-        assert_eq!(database.get(&key1).await, Some(value2.clone()));
+        assert_eq!(database.get(&key1).await.unwrap(), Some(value2.clone()));
     }
 
     #[tokio::test]
@@ -217,7 +213,7 @@ mod tests {
         }
 
         for pos in 0..COUNT {
-            assert_eq!(database.get(&pos).await, Some(format!("some_string_{}", pos)));
+            assert_eq!(database.get(&pos).await.unwrap(), Some(format!("some_string_{}", pos)));
         }
     }
 
@@ -240,11 +236,11 @@ mod tests {
 
             database.put_opts(&key, &value, &options).await.unwrap();
 
-            assert_eq!(database.get(&key).await, Some(value));
+            assert_eq!(database.get(&key).await.unwrap(), Some(value));
 
-            database.delete(&key).await;
+            database.delete(&key).await.unwrap();
 
-            assert_eq!(database.get(&key).await, None);
+            assert_eq!(database.get(&key).await.unwrap(), None);
         }
     }
 
@@ -266,11 +262,11 @@ mod tests {
 
         for pos in 0..COUNT {
             let key = pos;
-            database.delete(&key).await;
+            database.delete(&key).await.unwrap();
         }
 
         for pos in 0..COUNT {
-            assert_eq!(database.get(&pos).await, None);
+            assert_eq!(database.get(&pos).await.unwrap(), None);
         }
     }
 
@@ -297,7 +293,8 @@ mod tests {
         }
 
         for pos in 0..COUNT {
-            assert_eq!(database.get(&pos).await, Some(format!("some_other_string_{}", pos)));
+            assert_eq!(database.get(&pos).await.unwrap(),
+                Some(format!("some_other_string_{}", pos)));
         }
     }
 
@@ -326,11 +323,13 @@ mod tests {
         }
 
         for pos in 0..COUNT {
-            assert_eq!(database.get(&pos).await, Some(format!("some_other_string_{}", pos)));
+            assert_eq!(database.get(&pos).await.unwrap(),
+                Some(format!("some_other_string_{}", pos)));
         }
 
         for pos in COUNT..NCOUNT {
-            assert_eq!(database.get(&pos).await, Some(format!("some_string_{}", pos)));
+            assert_eq!(database.get(&pos).await.unwrap(),
+                Some(format!("some_string_{}", pos)));
         }
     }
 
@@ -350,7 +349,7 @@ mod tests {
 
         for pos in 0..COUNT {
             let key = format!("key{}", pos);
-            assert_eq!(database.get(&key).await, Some(pos));
+            assert_eq!(database.get(&key).await.unwrap(), Some(pos));
         }
     }
 }

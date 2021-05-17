@@ -49,8 +49,8 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
     /// Will deserialize V from the raw data (avoids an additional copy)
     #[inline]
-    pub fn get(&self, key: &K)-> Option<V> {
-        let key_data = get_encoder().serialize(key).unwrap();
+    pub fn get(&self, key: &K)-> Result<Option<V>, Error> {
+        let key_data = get_encoder().serialize(key)?;
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async move{
@@ -76,21 +76,21 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent (which could be the first one) as deleted
     #[inline]
-    pub fn delete(&self, key: &K) {
+    pub fn delete(&self, key: &K) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.write_opts(batch, &OPTS).unwrap();
+        self.write_opts(batch, &OPTS)
     }
 
     #[inline]
-    pub fn delete_opts(&self, key: &K, opts: &WriteOptions) {
+    pub fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.write_opts(batch, opts).unwrap();
+        self.write_opts(batch, opts)
     }
 
     #[inline]

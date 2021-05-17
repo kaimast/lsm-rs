@@ -1,4 +1,4 @@
-use crate::Params;
+use crate::{Error, Params};
 use crate::sorted_table::{SortedTable, TableId, Key};
 use crate::entry::Entry;
 use crate::manifest::{LevelId, Manifest};
@@ -33,25 +33,28 @@ impl Level {
         }
     }
 
-    pub async fn load_table(&self, id: TableId) {
-        let table = SortedTable::load(id, self.data_blocks.clone(), &*self.params).await;
+    pub async fn load_table(&self, id: TableId) -> Result<(), Error> {
+        let table = SortedTable::load(id, self.data_blocks.clone(), &*self.params).await?;
 
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
 
         log::trace!("Loaded table {} on level {}", id, self.index);
+        Ok(())
     }
 
-    pub async fn create_l0_table(&self, id: TableId, entries: Vec<(Key, Entry)>) {
+    pub async fn create_l0_table(&self, id: TableId, entries: Vec<(Key, Entry)>) -> Result<(), Error> {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
-        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
+        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await?;
 
         self.manifest.update_table_set(vec![(self.index, id)], vec![]).await;
 
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
+
+        Ok(())
     }
 
     pub async fn get(&self, key: &[u8]) -> Option<Entry> {

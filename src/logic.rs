@@ -12,6 +12,9 @@ use crate::iterate::DbIterator;
 #[ cfg(feature="wisckey") ]
 use crate::values::ValueLog;
 
+#[ cfg(feature="wisckey") ]
+use crate::sorted_table::ValueResult;
+
 use std::marker::PhantomData;
 use std::collections::VecDeque;
 use std::sync::{Arc, atomic};
@@ -44,12 +47,6 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
-
-    #[ cfg(feature="wisckey") ]
-    watched_key: Mutex<Option<Key>>,
-
-    #[ cfg(feature="wisckey") ]
-    watched_key_cond: Condvar,
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
@@ -146,12 +143,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let running = atomic::AtomicBool::new(true);
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
-        #[cfg(feature="wisckey")]
-        let watched_key = Mutex::new( None );
-
-        #[cfg(feature="wisckey") ]
-        let watched_key_cond = Condvar::new();
-
         if params.num_levels == 0 {
             panic!("Need at least one level!");
         }
@@ -166,7 +157,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         if !create {
             for (level_id, tables) in manifest.get_table_set().await.iter().enumerate() {
                 for table_id in tables {
-                    levels[level_id].load_table(*table_id).await;
+                    levels[level_id].load_table(*table_id).await?;
                 }
             }
         }
@@ -177,8 +168,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
             levels, running, data_blocks, wal,
             #[ cfg(feature="wisckey") ] value_log,
-            #[ cfg(feature="wisckey") ] watched_key,
-            #[ cfg(feature="wisckey") ] watched_key_cond,
         })
     }
 
@@ -303,7 +292,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     }
 
     #[ cfg(feature="wisckey") ]
-    pub async fn get(&self, key: &[u8]) -> Option<V> {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
         log::trace!("Starting to seek for key `{:?}`", key);
         let encoder = crate::get_encoder();
 
@@ -313,10 +302,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(entry) = memtable.get().get(key) {
                 match entry {
                     MemtableEntry::Value{value, ..} => {
-                        let val = encoder.deserialize(&value).unwrap();
-                        return Some(val);
+                        let val = encoder.deserialize(&value)?;
+                        return Ok(Some(val));
                     }
-                    MemtableEntry::Deletion{..} => { return None; }
+                    MemtableEntry::Deletion{..} => {
+                        return Ok(None);
+                    }
                 }
             };
         }
@@ -328,11 +319,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         MemtableEntry::Value{ value, ..} => {
-                            let val = encoder.deserialize(&value).unwrap();
-                            return Some(val);
+                            let val = encoder.deserialize(&value)?;
+                            return Ok(Some(val));
                         }
                         MemtableEntry::Deletion{..} => {
-                            return None;
+                            return Ok(None);
                         }
                     }
                 }
@@ -343,21 +334,21 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(entry) = level.get(key).await {
                 match entry {
                     Entry::Value{value_ref, ..} => {
-                        return Some( self.value_log.get(value_ref).await );
+                        return Ok(Some( self.value_log.get(value_ref).await? ));
                     }
                     Entry::Deletion{..} => {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
         }
 
         // Does not exist
-        None
+        Ok(None)
     }
 
     #[ cfg(not(feature="wisckey")) ]
-    pub async fn get(&self, key: &[u8]) -> Option<V> {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
         log::trace!("Starting to seek for key `{:?}`", key);
         let encoder = crate::get_encoder();
 
@@ -367,11 +358,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(entry) = memtable.get().get(key) {
                 match entry {
                     MemtableEntry::Value{value, ..} => {
-                        let value = encoder.deserialize(&value).unwrap();
-                        return Some(value);
+                        let value = encoder.deserialize(&value)?;
+                        return Ok(Some(value));
                     }
                     MemtableEntry::Deletion{..} => {
-                        return None;
+                        return Ok(None);
                     }
                 }
             };
@@ -384,11 +375,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if let Some(entry) = imm.get().get(key) {
                     match entry {
                         MemtableEntry::Value{ value, ..} => {
-                            let value = encoder.deserialize(&value).unwrap();
-                            return Some(value);
+                            let value = encoder.deserialize(&value)?;
+                            return Ok(Some(value));
                         }
                         MemtableEntry::Deletion{..} => {
-                            return None;
+                            return Ok(None);
                         }
                     }
                 }
@@ -399,17 +390,17 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             if let Some(entry) = level.get(key).await {
                 match entry {
                     Entry::Value{value, ..} => {
-                        let value = encoder.deserialize(&value).unwrap();
-                        return Some(value);
+                        let value = encoder.deserialize(&value)?;
+                        return Ok(Some(value));
                     }
                     Entry::Deletion{..} => {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
         }
 
-        None
+        Ok(None)
     }
 
     pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, crate::Error> {
@@ -468,7 +459,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
     /// Do compaction if necessary
     /// Returns true if any work was done
-    pub async fn do_compaction(&self) -> Result<bool, std::io::Error> {
+    pub async fn do_compaction(&self) -> Result<bool, Error> {
         // (immutable) memtable to level compaction
         {
             let mut imm_mems = self.imm_memtables.lock().await;
@@ -508,7 +499,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
                 }
 
-                l0.create_l0_table(table_id, entries).await;
+                l0.create_l0_table(table_id, entries).await?;
 
                 // Then update manifest and flush WAL
                 let seq_offset = mem.get().get_next_seq_number();
@@ -528,7 +519,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels-1 && level.needs_compaction().await {
-                self.compact(level_pos as LevelId, level).await;
+                self.compact(level_pos as LevelId, level).await?;
                 return Ok(true);
             }
         }
@@ -536,7 +527,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         Ok(false)
     }
 
-    async fn compact(&self, level_pos: LevelId, level: &Level) {
+    async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<(), Error> {
         let (offsets, mut tables) = level.start_compaction().await;
         assert!(!tables.is_empty());
 
@@ -575,7 +566,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             parent_tables.remove(offsets[0]);
 
             log::trace!("Done moving table");
-            return
+            return Ok(());
         }
 
         log::debug!("Compacting {} table(s) in level {} with {} table(s) in level {}", tables.len(), level_pos, overlaps.len(), level_pos+1);
@@ -606,10 +597,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut last_key: Option<Key> = None;
 
         #[ cfg(feature="wisckey") ]
-        let watched_key = self.watched_key.lock().await;
-
-        #[ cfg(feature="wisckey") ]
-        let mut watch_triggered = false;
+        let mut deleted_values = vec![];
 
         loop {
             log::trace!("Starting compaction for next key");
@@ -655,16 +643,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     if table_iter.get_seq_number() > other_iter.get_seq_number() {
                         log::trace!("Overriding key {:?}: new seq #{}, old seq #{}", key, table_iter.get_seq_number(), other_iter.get_seq_number());
 
-                        min_iter = Some(table_iter);
-
                         // Check whether we overwrote a key that is about to
                         // be garbage collected
                         #[ cfg(feature="wisckey") ]
-                        if let Some(wkey) = &*watched_key {
-                            if wkey == key {
-                                watch_triggered = true;
-                            }
+                        if let ValueResult::Reference(vid) = other_iter.get_value() {
+                            deleted_values.push(vid);
+                        } else {
+                            panic!("Invalid state");
                         }
+
+                        min_iter = Some(table_iter);
                     }
                 } else {
                     log::trace!("Found new key {:?}", key);
@@ -680,7 +668,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let id = self.manifest.next_table_id().await;
 
-        let new_table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
+        let new_table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await?;
 
         let add_set = vec![(level_pos+1, id)];
         let mut remove_set = vec![];
@@ -710,14 +698,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             remove_set.push((level_pos, id));
         }
 
-        self.manifest.update_table_set(add_set, remove_set).await;
-
         #[ cfg(feature="wisckey") ]
-        if watch_triggered {
-            self.watched_key_cond.notify_all();
+        for vid in deleted_values.drain(..) {
+            self.value_log.mark_value_deleted(vid).await?;
         }
 
+        self.manifest.update_table_set(add_set, remove_set).await;
+
         log::trace!("Done compacting tables");
+        Ok(())
     }
 
     #[ allow(dead_code) ]
