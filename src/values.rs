@@ -15,12 +15,14 @@ use lru::LruCache;
 #[ cfg(feature="async-io") ]
 use tokio::fs::{File, OpenOptions};
 #[ cfg(feature="async-io") ]
+use futures::io::SeekFrom;
+#[ cfg(feature="async-io") ]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[ cfg(not(feature="async-io")) ]
 use std::fs::{File, OpenOptions};
 #[ cfg(not(feature="async-io")) ]
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, Write, SeekFrom};
 
 use crate::Params;
 use crate::disk;
@@ -35,7 +37,9 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 
 const NUM_SHARDS: usize = 16;
 
+#[ allow(dead_code) ]
 pub const GARBAGE_COLLECT_WINDOW: usize = 10;
+#[ allow(dead_code) ]
 pub const GARBATE_COLLECT_THRESHOLD: f64 = 0.1;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
@@ -143,7 +147,7 @@ impl ValueLog {
                     .read(true).write(true).create(false).truncate(false)
                     .open(fpath).await?;
 
-                file.seek(futures::SeekFrom::Start(size_of::<u8>() as u64)).await?;
+                file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
                 file.read_exact(&mut data).await?;
             } else {
                 let mut file =  OpenOptions::new()
@@ -151,7 +155,7 @@ impl ValueLog {
                     .open(fpath)?;
 
 
-                file.seek(std::io::SeekFrom::Start(size_of::<u8>() as u64))?;
+                file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
                 file.read_exact(&mut data)?;
             }
         }
@@ -161,7 +165,7 @@ impl ValueLog {
         let mut pos = 0;
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                file.seek(futures::SeekFrom::Current(num_values as i64)).await?;
+                file.seek(SeekFrom::Current(num_values as i64)).await?;
 
                 loop {
                     file.read_exact(&mut data).await?;
@@ -174,10 +178,10 @@ impl ValueLog {
                     }
                 }
 
-                file.seek(std::io::SeekFrom::Start((header_len as u64) + pos)).await?;
+                file.seek(SeekFrom::Start((header_len as u64) + pos)).await?;
                 file.write_all(&[1u8]).await?;
             } else {
-                file.seek(std::io::SeekFrom::Current(num_values as i64))?;
+                file.seek(SeekFrom::Current(num_values as i64))?;
 
                 loop {
                     file.read_exact(&mut data)?;
@@ -190,7 +194,7 @@ impl ValueLog {
                     }
                 }
 
-                file.seek(std::io::SeekFrom::Start((header_len as u64) + pos))?;
+                file.seek(SeekFrom::Start((header_len as u64) + pos))?;
                 file.write_all(&[1u8])?;
             }
         }
@@ -243,7 +247,7 @@ impl ValueLog {
     async fn get_batch(&self, identifier: ValueBatchId) -> Result<Arc<ValueBatch>, Error> {
         let shard_id = Self::batch_to_shard_id(identifier);
         let mut cache = self.batch_caches[shard_id].lock().await;
-        let header_len = (std::mem::size_of::<bool>() + std::mem::size_of::<u32>()) as u64;
+        let header_len = (size_of::<bool>() + size_of::<u32>()) as u64;
 
         if let Some(batch) = cache.get(&identifier) {
             Ok(batch.clone())
@@ -302,11 +306,11 @@ impl ValueLog {
         cfg_if!{
             if #[cfg(feature="async-io")] {
                 let mut file = File::open(&fpath).await?;
-                file.seek(futures::SeekFrom::Start(size_of::<u8>() as u64)).await?;
+                file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
                 file.read_exact(&mut data).await?;
             } else {
                 let mut file = File::open(&fpath)?;
-                file.seek(std::io::SeekFrom::Start(size_of::<u8>() as u64))?;
+                file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
                 file.read_exact(&mut data)?;
             }
         }
@@ -341,11 +345,11 @@ impl ValueLog {
         cfg_if!{
             if #[cfg(feature="async-io")] {
                 let mut file = File::open(&fpath).await?;
-                file.seek(futures::SeekFrom::Start(1)).await?;
+                file.seek(SeekFrom::Start(1)).await?;
                 file.read_exact(&mut data).await?;
             } else {
                 let mut file = File::open(&fpath)?;
-                file.seek(std::io::SeekFrom::Start(1))?;
+                file.seek(SeekFrom::Start(1))?;
                 file.read_exact(&mut data)?;
             }
         }

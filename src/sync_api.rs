@@ -1,4 +1,4 @@
-use crate::tasks::TaskManager;
+use crate::tasks::{TaskType, TaskManager};
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
 use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, Error, WriteOptions};
@@ -11,7 +11,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 
 pub struct Database<K: KV_Trait, V: KV_Trait> {
     inner: Arc<DbLogic<K, V>>,
-    tasks: Arc<TaskManager<K, V>>,
+    tasks: Arc<TaskManager>,
     tokio_rt: Arc<TokioRuntime>
 }
 
@@ -23,26 +23,19 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
-        let inner = Arc::new(tokio_rt.block_on(async move {
-            DbLogic::new(mode, params).await
-        })?);
+        let (inner, tasks) = tokio_rt.block_on(async move {
+            match DbLogic::new(mode, params).await {
+                Ok(inner) => {
+                    let inner = Arc::new(inner);
+                    let tasks = Arc::new( TaskManager::new(inner.clone()).await );
 
-        let tasks = Arc::new( TaskManager::new(inner.clone()) );
-
-        {
-            let tasks = tasks.clone();
-            tokio_rt.spawn(async move {
-                TaskManager::work_loop(tasks).await;
-            });
-        }
-
-        #[ cfg(feature="wisckey") ]
-        {
-            let inner = inner.clone();
-            tokio_rt.spawn(async move {
-                inner.garbage_collect().await;
-            });
-        }
+                    Ok((inner, tasks))
+                }
+                Err(err) => {
+                    Err(err)
+                }
+            }
+        })?;
 
         Ok( Self{ inner, tasks, tokio_rt } )
     }
@@ -116,24 +109,19 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async move {
-            let result = inner.write_opts(write_batch, opts).await;
-
-            match result {
-                Ok(needs_compaction) => {
-                    if needs_compaction {
-                        self.tasks.wake_up().await;
-                    }
-
-                    Ok(())
-                },
-                Err(e) => Err(e)
+            let needs_compaction = inner.write_opts(write_batch, opts).await?;
+            if needs_compaction {
+                self.tasks.wake_up(&TaskType::Compaction).await;
             }
+
+            Ok(())
         })
     }
 }
 
 impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
     fn drop(&mut self) {
+        self.tasks.stop_all();
         self.inner.stop();
     }
 }

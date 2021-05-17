@@ -148,14 +148,6 @@ impl From<Box<bincode::ErrorKind>> for Error {
     }
 }
 
-#[ cfg(feature="async-io") ]
-impl From<futures_io::Error> for Error {
-    fn from(inner: futures_io::Error) -> Self {
-        Self::Io(inner.to_string())
-    }
-}
-
-
 impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     pub fn new() -> Self {
         Self{

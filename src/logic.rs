@@ -171,9 +171,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         })
     }
 
-    #[cfg(feature="wisckey")]
-    pub async fn garbage_collect(&self) {}
-
     /* TODO
         loop {
             let batch_id = self.value_log.get_oldest_batch_id().await;
@@ -451,10 +448,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         } else {
             Ok(false)
         }
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running.load(atomic::Ordering::SeqCst)
     }
 
     /// Do compaction if necessary

@@ -101,9 +101,9 @@ enum IterResult<V: KV_Trait> {
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
-    #[ cfg(feature="wisckey") ]
-    fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>
-            , value_log: Arc<ValueLog>) -> Self {
+    fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>,
+            #[ cfg(feature="wisckey") ]value_log: Arc<ValueLog>
+            ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
         for iter in mem_iters.drain(..) {
             iterators.push(Box::new(iter));
@@ -113,15 +113,8 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
         }
 
         Self{
-            iterators, value_log, last_key: None, _marker: PhantomData
-        }
-    }
-
-    #[ cfg(not(feature="wisckey")) ]
-    fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
-        Self{
-            mem_iters, table_iters,
-            last_key: None, _marker: PhantomData
+            iterators, last_key: None, _marker: PhantomData,
+            #[ cfg(feature="wisckey") ] value_log
         }
     }
 
@@ -167,7 +160,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
 
 
     async fn next(mut self) -> Result<(Self, Option<(K,V)>), Error> {
-        let mut result: Option<Option<(K, IterResult<V>)>> = None;
+        let mut result = None;
 
         while result.is_none() {
             let mut min_kv = None;
@@ -204,14 +197,11 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                             }
                         }
                     } else {
-                        match iter.get_value() {
-                            Some(value) => {
-                                let res_val = encoder.deserialize(value)?;
-                                result = Some(Some((res_key, res_val)));
-                            }
-                            None => {
-                                // this is a deletion... skip
-                            }
+                        if let Some(value) = iter.get_value() {
+                            let res_val = encoder.deserialize(value)?;
+                            result = Some(Some((res_key, res_val)));
+                        } else {
+                            // this is a deletion... skip
                         }
                     }
                 }
@@ -238,7 +228,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
                     }
                 }
             } else {
-                Ok((self, Some((key, value))))
+                Ok((self, Some((key, result))))
             }
         }
     }

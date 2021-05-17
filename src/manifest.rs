@@ -152,6 +152,8 @@ impl Manifest {
         self.sync_header(&*meta).await;
     }
 
+    #[ allow(dead_code) ]
+    #[ cfg(feature="wisckey") ]
     pub async fn set_value_log_offset(&self, offset: u64) {
         let mut meta = self.meta.lock().await;
         assert!(meta.value_log_offset < offset);
@@ -159,7 +161,6 @@ impl Manifest {
         meta.value_log_offset = offset;
         self.sync_header(&*meta).await;
     }
-
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
         let meta = self.meta.lock().await;

@@ -1,4 +1,4 @@
-use crate::tasks::TaskManager;
+use crate::tasks::{TaskType, TaskManager};
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
 use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, Error, WriteOptions};
@@ -12,7 +12,7 @@ use bincode::Options;
 /// never instantiate it more than once for the same on-disk files
 pub struct Database<K: KV_Trait, V: KV_Trait> {
     inner: Arc<DbLogic<K, V>>,
-    tasks: Arc<TaskManager<K, V>>
+    tasks: Arc<TaskManager>
 }
 
 impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
@@ -25,23 +25,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let inner = Arc::new( DbLogic::new(mode, params).await? );
-        let tasks = Arc::new( TaskManager::new(inner.clone()) );
-
-        {
-            let tasks = tasks.clone();
-
-            tokio::spawn(async move {
-                TaskManager::work_loop(tasks).await;
-            });
-        }
-
-        #[ cfg(feature="wisckey") ]
-        {
-            let inner = inner.clone();
-            tokio::spawn(async move {
-                inner.garbage_collect().await;
-            });
-        }
+        let tasks = Arc::new( TaskManager::new(inner.clone()).await );
 
         Ok( Self{ inner, tasks } )
     }
@@ -109,7 +93,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
         if needs_compaction {
-            self.tasks.wake_up().await;
+            self.tasks.wake_up(&TaskType::Compaction).await;
         }
 
         Ok(())
@@ -118,6 +102,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
 impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
     fn drop(&mut self) {
+        self.tasks.stop_all();
         self.inner.stop();
     }
 }
