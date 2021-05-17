@@ -38,12 +38,12 @@ pub struct WriteAheadLog{
 }
 
 impl WriteAheadLog{
-    pub async fn new(params: Arc<Params>) -> Result<Self, String> {
-        let log_file = Self::create_file(&*params, 0).await;
+    pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
+        let log_file = Self::create_file(&*params, 0).await?;
         Ok( Self{ params, log_file, offset: 0, position: 0 } )
     }
 
-    pub async fn open(params: Arc<Params>, offset: u64, memtable: &mut Memtable) -> Result<Self, String> {
+    pub async fn open(params: Arc<Params>, offset: u64, memtable: &mut Memtable) -> Result<Self, std::io::Error> {
         let position = offset;
         let mut count: usize = 0;
 
@@ -107,7 +107,7 @@ impl WriteAheadLog{
     }
 
     /// Stores an operation and returns the new position in the logfile
-    pub async fn store(&mut self, op: &WriteOp) -> u64 {
+    pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         // we do not use serde here to avoid copying data
 
         let op_type = op.get_type().to_le_bytes();
@@ -130,11 +130,11 @@ impl WriteAheadLog{
             WriteOp::Delete(_) => {}
         }
 
-        self.write_all_vectored(buffers).await;
-        self.position
+        self.write_all_vectored(buffers).await?;
+        Ok(self.position)
     }
 
-    async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, String> {
+    async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, std::io::Error> {
         let start_pos = self.position;
         let buffer_len = out.len() as u64;
         let mut buffer_pos = 0;
@@ -169,11 +169,10 @@ impl WriteAheadLog{
                     if maybe {
                         return Ok(false);
                     } else {
-                        return Err(format!("Failed to read log file data: {}", err));
+                        return Err(err);
                     }
                 }
             }
-
 
             assert!(file_offset <= PAGE_SIZE);
             buffer_pos = self.position - start_pos;
@@ -183,12 +182,12 @@ impl WriteAheadLog{
                 let fpos = self.position / PAGE_SIZE;
                 self.log_file = match Self::open_file(&*self.params, fpos).await {
                     Ok(file) => file,
-                    Err(_) => {
+                    Err(err) => {
                         if maybe {
-                            self.log_file = Self::create_file(&*self.params, fpos).await;
+                            self.log_file = Self::create_file(&*self.params, fpos).await?;
                             return Ok(buffer_pos == buffer_len);
                         } else {
-                            return Err("Failed to read log file data: file is missing".to_string());
+                            return Err(err);
                         }
                     }
                 }
@@ -199,7 +198,7 @@ impl WriteAheadLog{
     }
 
     #[ allow(clippy::needless_lifetimes) ] //clippy bug?
-    async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) {
+    async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) -> Result<(), std::io::Error> {
         use std::cmp::Ordering;
 
         while !buffers.is_empty() {
@@ -270,57 +269,55 @@ impl WriteAheadLog{
             // Create a new file?
             if file_offset == PAGE_SIZE {
                 let file_pos = self.position / PAGE_SIZE;
-                self.log_file = Self::create_file(&*self.params, file_pos).await;
+                self.log_file = Self::create_file(&*self.params, file_pos).await?;
             }
         }
+
+        Ok(())
     }
 
-    async fn create_file(params: &Params, file_pos: u64) -> File {
+    async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
         let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", file_pos+1)));
         log::trace!("Creating new log file at {:?}", fpath);
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                File::create(fpath).await.unwrap()
+                Ok(File::create(fpath).await?)
             } else {
-                File::create(fpath).unwrap()
+                Ok(File::create(fpath)?)
             }
         }
     }
 
-    async fn open_file(params: &Params, fpos: u64) -> Result<File, String> {
+    async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
         let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
         log::trace!("Opening file at {:?}", fpath);
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                match OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false).open(fpath).await {
-                    Ok(log_file) => Ok(log_file),
-                    Err(err) => {
-                        return Err(format!("Failed to open log file: {}", err));
-                    }
-                }
+                let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath).await?;
             } else {
-                 match OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false).open(fpath) {
-                    Ok(log_file) => Ok(log_file),
-                    Err(err) => {
-                        return Err(format!("Failed to open log file: {}", err));
-                    }
-                }
+                 let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath)?;
             }
         }
+
+        Ok(log_file)
     }
 
-    pub async fn sync(&mut self) {
+    pub async fn sync(&mut self) -> Result<(), std::io::Error> {
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                self.log_file.sync_data().await.expect("Failed to sync log file!");
+                self.log_file.sync_data().await?;
             } else {
-                self.log_file.sync_data().expect("Failed to sync log file!");
+                self.log_file.sync_data()?;
             }
         }
+
+        Ok(())
     }
 
     pub fn get_log_position(&self) -> u64 {

@@ -25,7 +25,7 @@ impl IndexBlock {
         // Store on disk before grabbing the lock
         let block_data = crate::get_encoder().serialize(&block).unwrap();
         let fpath = Self::get_file_path(params, &id);
-        disk::write(&fpath, &block_data, 0).await;
+        disk::write(&fpath, &block_data, 0).await.expect("Failed to write index block to disk");
 
         block
     }
@@ -33,7 +33,7 @@ impl IndexBlock {
     pub async fn load(params: &Params, id: TableId) -> Self {
         log::trace!("Loading data block from disk");
         let fpath = Self::get_file_path(params, &id);
-        let data = disk::read(&fpath, 0).await;
+        let data = disk::read(&fpath, 0).await.expect("Failed to read index block from disk");
 
         crate::get_encoder().deserialize(&data).unwrap()
     }

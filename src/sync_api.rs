@@ -1,7 +1,7 @@
 use crate::tasks::TaskManager;
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
-use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, WriteError, WriteOptions};
+use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, Error, WriteOptions};
 
 use std::sync::Arc;
 
@@ -16,12 +16,12 @@ pub struct Database<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
-    pub fn new(mode: StartMode) -> Result<Self, String> {
+    pub fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
         Self::new_with_params(mode, params)
     }
 
-    pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, String> {
+    pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
         let inner = Arc::new(tokio_rt.block_on(async move {
             DbLogic::new(mode, params).await
@@ -60,13 +60,13 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
     /// Store 
     #[inline]
-    pub fn put(&self, key: &K, value: &V) -> Result<(), WriteError> {
+    pub fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS)
     }
 
     #[inline]
-    pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), WriteError> {
+    pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts)
@@ -107,12 +107,12 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     ///
     /// If you only want to write to a single key, use `Database::put` instead
     #[inline]
-    pub fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), WriteError> {
+    pub fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS)
     }
 
-    pub fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), WriteError> {
+    pub fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), Error> {
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async move {

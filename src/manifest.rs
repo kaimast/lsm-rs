@@ -13,8 +13,7 @@ use std::io::{Seek, Read, Write};
 
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::Params;
-
+use crate::{Error, Params};
 use crate::sorted_table::TableId;
 use crate::data_blocks::DataBlockId;
 
@@ -83,54 +82,34 @@ impl Manifest {
         obj
     }
 
-    pub async fn open(params: Arc<Params>) -> Result<Self, String> {
+    pub async fn open(params: Arc<Params>) -> Result<Self, Error> {
         let header_len = bincode::serialized_size(&MetaData::default()).unwrap() as usize;
         let mut data = Vec::new();
         let manifest_path = params.db_path.join(Path::new(MANIFEST_NAME));
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = match tokio::fs::OpenOptions::new()
+                let mut file = tokio::fs::OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
-                    .open(manifest_path).await {
-                    Ok(file) => { file },
-                    Err(err) => {
-                        return Err(format!("Failed to open MANIFEST file: {}", err));
-                    }
-                };
+                    .open(manifest_path).await?;
 
-                file.read_to_end(&mut data).await.unwrap();
+                file.read_to_end(&mut data).await?;
             } else {
-                let mut file = match std::fs::OpenOptions::new()
+                let mut file = std::fs::OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
-                    .open(manifest_path) {
-                    Ok(file) => { file },
-                    Err(err) => {
-                        return Err(format!("Failed to open MANIFEST file: {}", err));
-                    }
-                };
+                    .open(manifest_path)?;
 
-                file.read_to_end(&mut data).unwrap();
+                file.read_to_end(&mut data)?;
             }
         };
 
         if data.len() < header_len {
-            return Err("Invalid MANIFEST file".to_string());
+            return Err(Error::Io("Invalid MANIFEST file".to_string()));
         }
 
-        let meta = match bincode::deserialize(&data[..header_len]) {
-            Ok(meta) => meta,
-            Err(err) => {
-                return Err(format!("Failed to parse MANIFEST header: {}", err));
-            }
-        };
+        let meta = bincode::deserialize(&data[..header_len])?;
 
-        let tables: Vec<LevelData> = match bincode::deserialize(&data[header_len..]) {
-            Ok(tables) => tables,
-            Err(err) => {
-                return Err(format!("Failed to parse table list in MANIFEST: {}", err));
-            }
-        };
+        let tables: Vec<LevelData> = bincode::deserialize(&data[header_len..])?;
 
         log::debug!("Found {} tables", tables.len());
 

@@ -45,11 +45,19 @@ impl<K: KV_Trait, V: KV_Trait>TaskManager<K, V> {
             }
             drop(lchange);
 
-            if tasks.datastore.do_compaction().await {
-                last_update = Instant::now();
-                idle = false;
-            } else {
-                idle = true;
+            match tasks.datastore.do_compaction().await {
+                Ok(did_work) => {
+                    if did_work {
+                        last_update = Instant::now();
+                        idle = false;
+                    } else {
+                        idle = true;
+                    }
+                }
+                Err(err) => {
+                    log::error!("Compaction failed: {}", err);
+                    break;
+                }
             }
         }
 

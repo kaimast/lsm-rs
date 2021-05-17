@@ -1,7 +1,7 @@
 use crate::tasks::TaskManager;
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
-use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, WriteError, WriteOptions};
+use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, Error, WriteOptions};
 
 use std::sync::Arc;
 
@@ -17,13 +17,13 @@ pub struct Database<K: KV_Trait, V: KV_Trait> {
 
 impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     /// Create a new database instance with default parameters
-    pub async fn new(mode: StartMode) -> Result<Self, String> {
+    pub async fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
         Self::new_with_params(mode, params).await
     }
 
     /// Create a new database instance with specific parameters
-    pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, String> {
+    pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let inner = Arc::new( DbLogic::new(mode, params).await? );
         let tasks = Arc::new( TaskManager::new(inner.clone()) );
 
@@ -76,13 +76,13 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
     /// Store
     #[inline]
-    pub async fn put(&self, key: &K, value: &V) -> Result<(), WriteError> {
+    pub async fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS).await
     }
 
     #[inline]
-    pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), WriteError> {
+    pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts).await
@@ -97,14 +97,14 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     ///
     /// If you only want to write to a single key, use `Database::put` instead
     #[inline]
-    pub async fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), WriteError> {
+    pub async fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS).await
     }
 
     /// Write a batch of updates to the database
     /// This version of write allows you to specfiy options such as "synchronous"
-    pub async fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), WriteError> {
+    pub async fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), Error> {
         let result = self.inner.write_opts(write_batch, opts).await;
 
         match result {

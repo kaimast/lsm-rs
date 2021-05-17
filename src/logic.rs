@@ -1,12 +1,11 @@
 use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 use crate::entry::Entry;
-use crate::{Params, StartMode, KV_Trait, WriteBatch, WriteError, WriteOptions};
+use crate::{Params, StartMode, KV_Trait, WriteBatch, Error, WriteOptions};
 use crate::data_blocks::DataBlocks;
 use crate::memtable::{MemtableEntry, Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
-
+use crate::cond_var::Condvar;
 use crate::wal::WriteAheadLog;
-
 use crate::manifest::{LevelId, Manifest};
 use crate::iterate::DbIterator;
 
@@ -24,8 +23,6 @@ use tokio::fs;
 use std::fs;
 
 use tokio::sync::{RwLock, Mutex};
-
-use crate::cond_var::Condvar;
 
 use bincode::Options;
 
@@ -56,15 +53,15 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
 }
 
 impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
-    pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, String> {
+    pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, Error> {
         let create;
 
         if params.db_path.components().next().is_none() {
-            return Err("DB path must not be empty!".to_string());
+            return Err(Error::InvalidParams("DB path must not be empty!".to_string()));
         }
 
         if params.db_path.exists() && !params.db_path.is_dir() {
-            return Err("DB path must be a folder!".to_string());
+            return Err(Error::InvalidParams("DB path must be a folder!".to_string()));
         }
 
         match start_mode {
@@ -73,7 +70,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             },
             StartMode::Open => {
                 if !params.db_path.exists() {
-                    return Err("DB does not exist".to_string());
+                    return Err(Error::InvalidParams("DB does not exist".to_string()));
                 }
                 create = false;
             },
@@ -81,11 +78,15 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 if params.db_path.exists() {
                     log::info!("Removing old data at \"{}\"", params.db_path.to_str().unwrap());
 
-                    #[ cfg(feature="async-io") ]
-                    fs::remove_dir_all(&params.db_path).await.expect("Failed to remove existing database");
-
-                    #[ cfg(not(feature="async-io")) ]
-                    fs::remove_dir_all(&params.db_path).expect("Failed to remove existing database");
+                    cfg_if! {
+                        if #[ cfg(feature="async-io") ] {
+                            fs::remove_dir_all(&params.db_path)
+                                .await.expect("Failed to remove existing database");
+                        } else {
+                            fs::remove_dir_all(&params.db_path)
+                                .expect("Failed to remove existing database");
+                        }
+                    }
                 }
 
                 create = true;
@@ -105,7 +106,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(e) => {
-                            return Err(format!("Failed to create DB folder: {}", e));
+                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
                         }
                     }
                 } else {
@@ -115,7 +116,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(e) => {
-                            return Err(format!("Failed to create DB folder: {}", e));
+                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
                         }
                     }
                 }
@@ -131,7 +132,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?);
+            wal = Mutex::new(WriteAheadLog::open(params.clone(),
+                    manifest.get_log_offset().await, &mut mtable).await?);
 
             memtable = RwLock::new( MemtableRef::wrap(mtable) );
         }
@@ -410,18 +412,18 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         None
     }
 
-    pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, WriteError> {
+    pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, crate::Error> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe{ memtable.get_mut() };
 
         let mut wal = self.wal.lock().await;
 
         for op in write_batch.writes.iter() {
-            wal.store(&op).await;
+            wal.store(&op).await?;
         }
 
         if opt.sync {
-            wal.sync().await;
+            wal.sync().await?;
         }
 
         for op in write_batch.writes.drain(..) {
@@ -466,7 +468,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
     /// Do compaction if necessary
     /// Returns true if any work was done
-    pub async fn do_compaction(&self) -> bool {
+    pub async fn do_compaction(&self) -> Result<bool, std::io::Error> {
         // (immutable) memtable to level compaction
         {
             let mut imm_mems = self.imm_memtables.lock().await;
@@ -496,7 +498,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             }
                         }
 
-                        vbuilder.finish().await;
+                        vbuilder.finish().await
+                            .expect("Failed to create value batch");
                     } else {
                         for (key, mem_entry) in memtable_entries.drain(..) {
                             let entry = mem_entry.into_entry();
@@ -517,7 +520,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
                 log::debug!("Created new L0 table");
                 self.imm_cond.notify_all();
-                return true;
+                return Ok(true);
             }
         }
 
@@ -526,11 +529,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels-1 && level.needs_compaction().await {
                 self.compact(level_pos as LevelId, level).await;
-                return true;
+                return Ok(true);
             }
         }
 
-        false
+        Ok(false)
     }
 
     async fn compact(&self, level_pos: LevelId, level: &Level) {

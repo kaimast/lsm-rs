@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::path::Path;
-use std::collections::BTreeSet;
 use std::convert::TryInto;
 
 use tokio::sync::Mutex;
@@ -45,8 +44,13 @@ pub struct ValueLog {
     batch_caches: Vec<Mutex<BatchShard>>,
 }
 
-pub struct ValueBatch {
-    data: Vec<u8>
+pub enum ValueBatch {
+    Regular{
+        data: Vec<u8>
+    },
+    Folded {
+        data: Vec<u8>
+    }
 }
 
 pub struct ValueBatchBuilder<'a> {
@@ -57,30 +61,35 @@ pub struct ValueBatchBuilder<'a> {
 }
 
 impl<'a> ValueBatchBuilder<'a> {
-    pub async fn finish(self) {
+    pub async fn finish(self) -> Result<ValueBatchId, std::io::Error> {
         let fpath = self.vlog.get_file_path(&self.identifier);
+        let fold_flag = 0u8;
 
         // write file header
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::create(&fpath).await.unwrap();
-                file.write_all(&self.num_values.to_le_bytes()).await.unwrap();
+                let mut file = File::create(&fpath).await?;
+                file.write_all(&fold_flag.to_le_bytes()).await?;
+                file.write_all(&self.num_values.to_le_bytes()).await?;
 
                 let delete_markers = vec![0u8; self.num_values as usize];
-                file.write_all(&delete_markers).await.unwrap();
+                file.write_all(&delete_markers).await?;
             } else {
-                let mut file = File::create(&fpath).unwrap();
-                file.write_all(&self.num_values.to_le_bytes()).unwrap();
+                let mut file = File::create(&fpath)?;
+                file.write_all(&fold_flag.to_le_bytes())?;
+                file.write_all(&self.num_values.to_le_bytes())?;
 
                 let delete_markers = vec![0u8; self.num_values as usize];
-                file.write_all(&delete_markers).unwrap();
+                file.write_all(&delete_markers)?;
             }
         }
 
-        let offset = (std::mem::size_of::<u32>() as u64) + (self.num_values as u64);
-        disk::write(&fpath, &self.data, offset).await;
+        let offset = (std::mem::size_of::<bool>() as u64)
+            + (std::mem::size_of::<u32>() as u64) + (self.num_values as u64);
 
-        let batch = ValueBatch{ data: self.data };
+        disk::write(&fpath, &self.data, offset).await?;
+
+        let batch = ValueBatch::Regular{ data: self.data };
 
         // Store in the cache so we don't have to load immediately
         {
@@ -90,6 +99,7 @@ impl<'a> ValueBatchBuilder<'a> {
         }
 
         log::trace!("Created value batch #{}", self.identifier);
+        Ok(self.identifier)
     }
 
     pub async fn add_value(&mut self, mut val: Value) -> ValueId {
@@ -179,32 +189,37 @@ impl ValueLog {
             log::trace!("Loading value batch from disk");
 
             let fpath = self.get_file_path(&id);
+            let is_folded;
+            let num_values;
 
             let offset = {
-                let num_values;
+                let mut header_data = [0u8; 5];
 
                 cfg_if!{
                     if #[cfg(feature="async-io")] {
                         let mut file = File::open(&fpath).await.unwrap();
-                        let mut len_data = [0u8; 4];
-
-                        file.read_exact(&mut len_data).await.unwrap();
-                        num_values = u32::from_le_bytes(len_data);
+                        file.read_exact(&mut header_data).await.unwrap();
                     } else {
                         let mut file = File::open(&fpath).unwrap();
-                        let mut len_data = [0u8; 4];
-
-                        file.read_exact(&mut len_data).unwrap();
-                        num_values = u32::from_le_bytes(len_data);
+                        file.read_exact(&mut header_data).unwrap();
                     }
                 }
 
-                (num_values as u64) + (std::mem::size_of::<u32>() as u64)
+                num_values = u32::from_le_bytes(header_data[1..].try_into().unwrap());
+                is_folded = header_data[0] != 0;
+
+                (std::mem::size_of::<bool>() as u64) + 
+                (std::mem::size_of::<u32>() as u64) + (num_values as u64)
             };
 
-            let data = disk::read(&fpath, offset).await;
+            let data = disk::read(&fpath, offset).await
+                .expect("Failed to read value batch from disk");
 
-            let batch = Arc::new( ValueBatch{ data } );
+            let batch = if is_folded {
+                Arc::new( ValueBatch::Folded{ data } )
+            } else {
+                Arc::new( ValueBatch::Regular{ data } )
+            };
 
             cache.put(id, batch.clone());
             batch
@@ -225,14 +240,22 @@ impl ValueLog {
 
 impl ValueBatch {
     pub fn get_value(&self, pos: ValueOffset) -> &[u8] {
-        let mut offset = pos as usize;
+        match self {
+            Self::Regular{data} => {
+                let mut offset = pos as usize;
 
-        let len_len = std::mem::size_of::<u32>();
+                let len_len = std::mem::size_of::<u32>();
 
-        let vlen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
-        offset += len_len;
+                let vlen_data = data[offset..offset+len_len].try_into().unwrap();
+                let vlen = u32::from_le_bytes(vlen_data);
 
-        &self.data[offset..offset+(vlen as usize)]
+                offset += len_len;
+                &data[offset..offset+(vlen as usize)]
+            }
+            Self::Folded{data} => {
+                todo!();
+            }
+        }
     }
 }
 
@@ -264,7 +287,7 @@ mod tests {
             vids.push(vid);
         }
 
-        builder.finish().await;
+        builder.finish().await.unwrap();
 
         for (pos, vid) in vids.iter().enumerate() {
             let value = format!("Number {}", pos);
@@ -296,7 +319,7 @@ mod tests {
         let e = crate::get_encoder();
         let vid = builder.add_value(e.serialize(&value).unwrap()).await;
 
-        builder.finish().await;
+        builder.finish().await.unwrap();
 
         let result = values.get::<String>(vid).await;
 

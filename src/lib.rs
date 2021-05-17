@@ -6,6 +6,7 @@
 #![ feature(array_methods) ]
 #![ feature(get_mut_unchecked) ]
 #![ feature(io_slice_advance) ]
+#![ feature(box_into_inner) ]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -104,9 +105,38 @@ pub struct WriteBatch<K: KV_Trait, V: KV_Trait> {
 }
 
 #[ derive(Clone, Debug) ]
-pub enum WriteError {
-    Unknown
+pub enum Error {
+    Io(String),
+    InvalidParams(String),
+    Serialization(String),
 }
+
+impl From<std::io::Error> for Error {
+    fn from(inner: std::io::Error) -> Self {
+        Self::Io(inner.to_string())
+    }
+}
+
+impl From<bincode::ErrorKind> for Error {
+    fn from(inner: bincode::ErrorKind) -> Self {
+        Self::Serialization(inner.to_string())
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for Error {
+    fn from(inner: Box<bincode::ErrorKind>) -> Self {
+        let inner = Box::into_inner(inner);
+        Self::Serialization(inner.to_string())
+    }
+}
+
+#[ cfg(feature="async-io") ]
+impl From<futures_io::Error> for Error {
+    fn from(inner: futures_io::Error) -> Self {
+        Self::Io(inner.to_string())
+    }
+}
+
 
 impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     pub fn new() -> Self {

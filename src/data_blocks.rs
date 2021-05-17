@@ -69,7 +69,8 @@ impl DataBlocks {
         // Store on disk before grabbing the lock
         let block_data = &block.data;
         let fpath = self.get_file_path(&id);
-        disk::write(&fpath, block_data, 0).await;
+        disk::write(&fpath, block_data, 0).await
+            .expect("Failed to write data blocks to disk");
 
         let mut cache = self.block_caches[shard_id].lock().await;
         cache.put(id, block);
@@ -86,7 +87,7 @@ impl DataBlocks {
         } else {
             log::trace!("Loading data block from disk");
             let fpath = self.get_file_path(&id);
-            let data = disk::read(&fpath, 0).await;
+            let data = disk::read(&fpath, 0).await.expect("Failed to load data block from disk");
             let block = Arc::new(DataBlock::new_from_data(data));
 
             cache.put(*id, block.clone());
@@ -104,8 +105,9 @@ impl DataBlocks {
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
  *  - Fixed size value reference
- * 3. Variable length or restart list (each entry is 4bytes; so we dont need length information)
+ * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  */
+//TODO support data block layouts without prefixed keys
 pub struct DataBlock {
     restart_list_start: usize,
     data: Vec<u8>
