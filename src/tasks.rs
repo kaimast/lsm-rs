@@ -20,7 +20,7 @@ pub trait Task: Sync+Send {
 #[ derive(Debug, PartialEq, Eq, Hash) ]
 pub enum TaskType {
     Compaction,
-    #[ cfg(feature="wisckey") ]
+    #[ cfg(feature="wisckey-reinsert") ]
     GarbageCollect
 }
 
@@ -53,19 +53,21 @@ impl<K: KV_Trait, V: KV_Trait> Task for CompactionTask<K, V> {
     }
 }
 
-#[ cfg(feature="wisckey") ]
+// Folding is done as part of compaction
+// So we don't need an extra task for that
+#[ cfg(feature="wisckey-reinsert") ]
 struct GarbageCollectTask {
 
 }
 
-#[ cfg(feature="wisckey") ]
+#[ cfg(feature="wisckey-reinsert") ]
 impl GarbageCollectTask {
     fn new_boxed() -> Box<dyn Task> {
         Box::new(Self{})
     }
 }
 
-#[ cfg(feature="wisckey") ]
+#[ cfg(feature="wisckey-reinsert") ]
 #[ async_trait ]
 impl Task for GarbageCollectTask {
     async fn run(&self) -> Result<bool, Error> {
@@ -114,7 +116,7 @@ impl TaskHandle {
                 Ok(res) => res,
                 Err(err) => {
                     log::error!("Background task failed: {}", err);
-                    return;
+                    break;
                 }
             };
 
@@ -140,7 +142,7 @@ impl TaskManager {
                              stop_flag.clone(), CompactionTask::new_boxed(datastore)
                      )));
 
-        #[ cfg(feature="wisckey") ]
+        #[ cfg(feature="wisckey-reinsert") ]
         tasks.insert(TaskType::GarbageCollect,
                      Arc::new(TaskHandle::new(
                              stop_flag.clone(), GarbageCollectTask::new_boxed()
