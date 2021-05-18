@@ -38,7 +38,6 @@ impl Entry {
     }
 
     #[ cfg(not(feature="wisckey")) ]
-    #[ allow(dead_code) ]
     pub fn get_value(&self) -> Option<&[u8]> {
         match self {
             Self::Value{value, ..} => Some(&value),
@@ -47,7 +46,6 @@ impl Entry {
     }
 
     #[ cfg(feature="wisckey") ]
-    #[ allow(dead_code) ]
     pub fn get_value_ref(&self) -> Option<&ValueId> {
         match self {
             Self::Value{value_ref, ..} => Some(value_ref),

@@ -158,7 +158,6 @@ impl Manifest {
         meta.value_log_offset
     }
 
-    #[ allow(dead_code) ]
     #[ cfg(feature="wisckey") ]
     pub async fn set_value_log_offset(&self, offset: u64) {
         let mut meta = self.meta.write().await;
