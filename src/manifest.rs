@@ -247,6 +247,7 @@ impl Manifest {
     }
 
     async fn sync_header(&self, meta: &MetaData) {
+        //TODO make this an atomic filesystem operation
         let data = bincode::serialize(&*meta).unwrap();
         let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
 
