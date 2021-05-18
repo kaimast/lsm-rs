@@ -38,9 +38,6 @@ pub type ValueId = (ValueBatchId, ValueOffset);
 
 const NUM_SHARDS: usize = 16;
 
-#[ cfg(feature="wisckey-reinsert") ]
-pub const GARBAGE_COLLECT_WINDOW: u64 = 10;
-#[ cfg(feature="wisckey-fold") ]
 pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
@@ -52,7 +49,6 @@ pub struct ValueLog {
 }
 
 struct ValueBatch {
-    #[ cfg(feature="wisckey-fold") ]
     fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
     data: Vec<u8>,
 }
@@ -285,7 +281,6 @@ impl ValueLog {
         cfg_if! {
             if #[cfg(feature="async-io")] {
                 file.read_exact(&mut delete_flags).await?;
-                let mut data = [0u8; size_of::<u32>()];
 
                 if is_folded {
                      let mut data = [0u8; 2*size_of::<u32>()];
@@ -329,155 +324,119 @@ impl ValueLog {
             }
         }
 
-        cfg_if! {
-            if #[ cfg(feature="wisckey-reinsert") ] {
-                let vlog_offset = self.manifest.get_value_log_offset().await;
-                assert!(vlog_offset <= batch_id);
-                let diff =  batch_id - vlog_offset;
+        let mut num_active: u32 = 0;
+        for f in delete_flags.iter() {
+            if *f == 0u8 {
+                num_active += 1;
+            }
+        }
 
-                if diff < GARBAGE_COLLECT_WINDOW {
-                    todo!();
-                }
-            } else {
-                let mut num_active: u32 = 0;
-                for f in delete_flags.iter() {
-                    if *f == 0u8 {
-                        num_active += 1;
-                    }
-                }
+        let active_ratio = (num_active as f64) / (num_values as f64);
+        let vlog_offset = self.manifest.get_value_log_offset().await;
 
-                let active_ratio = (num_active as f64) / (num_values as f64);
-                let vlog_offset = self.manifest.get_value_log_offset().await;
+        if num_active == 0 && batch_id == vlog_offset+1 {
+            log::trace!("Deleting batch #{}", batch_id);
 
-                if num_active == 0 && batch_id == vlog_offset+1 {
-                    log::trace!("Deleting batch #{}", batch_id);
+            // Hold lock so nobody else messes with the file while we do this
+            let shard_id = Self::batch_to_shard_id(batch_id);
+            let mut cache = self.batch_caches[shard_id].lock().await;
 
-                    // Hold lock so nobody else messes with the file while we do this
-                    let shard_id = Self::batch_to_shard_id(batch_id);
-                    let mut cache = self.batch_caches[shard_id].lock().await;
+            self.manifest.set_value_log_offset(vlog_offset+1).await;
 
-                    self.manifest.set_value_log_offset(vlog_offset+1).await;
-
-                    cfg_if! {
-                        if #[ cfg(feature="async-io") ] {
-                            remove_file(&fpath).await?;
-                        } else {
-                            remove_file(&fpath)?;
-                        }
-                    }
-
-                    cache.pop(&batch_id);
-
-                    Ok(true)
-                } else if !is_folded && active_ratio <= GARBAGE_COLLECT_THRESHOLD {
-                    log::debug!("Folding value batch #{}", batch_id);
-
-                    let batch = self.get_batch(batch_id).await?;
-
-                    let mut batch_data = vec![];
-                    let mut new_offsets = vec![];
-
-                    // Hold lock so nobody else messes with the file while we do this
-                    let shard_id = Self::batch_to_shard_id(batch_id);
-                    let mut cache = self.batch_caches[shard_id].lock().await;
-
-                    for (pos, flag) in delete_flags.iter().enumerate() {
-                        let old_offset = offsets[pos];
-                        let len_len = size_of::<u32>();
-                        let data_start = old_offset as usize;
-                        let vlen_data = batch.data[data_start..data_start+len_len].try_into().unwrap();
-                        let vlen = u32::from_le_bytes(vlen_data);
-
-                        let data_end = data_start + len_len + (vlen as usize);
-
-                        if *flag != 0u8 {
-                            continue;
-                        }
-
-                        let new_offset = batch_data.len() as u32;
-
-                        new_offsets.push((old_offset, new_offset));
-                        batch_data.extend_from_slice(&batch.data[data_start..data_end]);
-                    }
-
-                    // re-write batch file
-                    // TODO make this an atomic file operation
-
-                    // write file header
-                    let fold_flag = 1u8;
-                    let num_values = num_active;
-                    let delete_markers = vec![0u8; num_values as usize];
-
-                    let mut fold_table = HashMap::new();
-                    assert!(num_values as usize == new_offsets.len());
-
-                    cfg_if! {
-                        if #[cfg(feature="async-io")] {
-                            let mut file = File::create(&fpath).await?;
-                            file.write_all(&fold_flag.to_le_bytes()).await?;
-                            file.write_all(&num_values.to_le_bytes()).await?;
-                            file.write_all(&delete_markers).await?;
-
-                            for (old_offset, new_offset) in new_offsets.drain(..) {
-                                file.write_all(&old_offset.to_le_bytes()).await?;
-                                file.write_all(&new_offset.to_le_bytes()).await?;
-                                fold_table.insert(old_offset, new_offset);
-                            }
-                        } else {
-                            let mut file = File::create(&fpath)?;
-                            file.write_all(&fold_flag.to_le_bytes())?;
-                            file.write_all(&num_values.to_le_bytes())?;
-                            file.write_all(&delete_markers)?;
-
-                            for (old_offset, new_offset) in new_offsets.drain(..) {
-                                file.write_all(&old_offset.to_le_bytes())?;
-                                file.write_all(&new_offset.to_le_bytes())?;
-                                fold_table.insert(old_offset, new_offset);
-                            }
-                        }
-                    }
-
-                    let offset = (size_of::<u8>() as u64) + (size_of::<u32>() as u64)
-                        + ((2*size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
-
-                    //TODO use same fd
-                    disk::write(&fpath, &batch_data, offset).await?;
-
-                    cache.put(batch_id, Arc::new(
-                            ValueBatch{ fold_table: Some(fold_table), data: batch_data }
-                    ));
-
-                    Ok(false)
+            cfg_if! {
+                if #[ cfg(feature="async-io") ] {
+                    remove_file(&fpath).await?;
                 } else {
-                    Ok(false)
+                    remove_file(&fpath)?;
                 }
             }
+
+            cache.pop(&batch_id);
+
+            Ok(true)
+        } else if !is_folded && active_ratio <= GARBAGE_COLLECT_THRESHOLD {
+            log::debug!("Folding value batch #{}", batch_id);
+
+            let batch = self.get_batch(batch_id).await?;
+
+            let mut batch_data = vec![];
+            let mut new_offsets = vec![];
+
+            // Hold lock so nobody else messes with the file while we do this
+            let shard_id = Self::batch_to_shard_id(batch_id);
+            let mut cache = self.batch_caches[shard_id].lock().await;
+
+            for (pos, flag) in delete_flags.iter().enumerate() {
+                let old_offset = offsets[pos];
+                let len_len = size_of::<u32>();
+                let data_start = old_offset as usize;
+                let vlen_data = batch.data[data_start..data_start+len_len].try_into().unwrap();
+                let vlen = u32::from_le_bytes(vlen_data);
+
+                let data_end = data_start + len_len + (vlen as usize);
+
+                if *flag != 0u8 {
+                    continue;
+                }
+
+                let new_offset = batch_data.len() as u32;
+
+                new_offsets.push((old_offset, new_offset));
+                batch_data.extend_from_slice(&batch.data[data_start..data_end]);
+            }
+
+            // re-write batch file
+            // TODO make this an atomic file operation
+
+            // write file header
+            let fold_flag = 1u8;
+            let num_values = num_active;
+            let delete_markers = vec![0u8; num_values as usize];
+
+            let mut fold_table = HashMap::new();
+            assert!(num_values as usize == new_offsets.len());
+
+            cfg_if! {
+                if #[cfg(feature="async-io")] {
+                    let mut file = File::create(&fpath).await?;
+                    file.write_all(&fold_flag.to_le_bytes()).await?;
+                    file.write_all(&num_values.to_le_bytes()).await?;
+                    file.write_all(&delete_markers).await?;
+
+                    for (old_offset, new_offset) in new_offsets.drain(..) {
+                        file.write_all(&old_offset.to_le_bytes()).await?;
+                        file.write_all(&new_offset.to_le_bytes()).await?;
+                        fold_table.insert(old_offset, new_offset);
+                    }
+                } else {
+                    let mut file = File::create(&fpath)?;
+                    file.write_all(&fold_flag.to_le_bytes())?;
+                    file.write_all(&num_values.to_le_bytes())?;
+                    file.write_all(&delete_markers)?;
+
+                    for (old_offset, new_offset) in new_offsets.drain(..) {
+                        file.write_all(&old_offset.to_le_bytes())?;
+                        file.write_all(&new_offset.to_le_bytes())?;
+                        fold_table.insert(old_offset, new_offset);
+                    }
+                }
+            }
+
+            let offset = (size_of::<u8>() as u64) + (size_of::<u32>() as u64)
+                + ((2*size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
+
+            //TODO use same fd
+            disk::write(&fpath, &batch_data, offset).await?;
+
+            cache.put(batch_id, Arc::new(
+                    ValueBatch{ fold_table: Some(fold_table), data: batch_data }
+            ));
+
+            Ok(false)
+        } else {
+            Ok(false)
         }
     }
-
-    /*
-    pub async fn maybe_garbage_collect(&self, bid: ValueBatchId) {
-        
-        log::trace!("Deleting value batch #{}", bid);
-
-        {
-            let mut batch_ids = self.batch_ids.lock().await;
-
-            if !batch_ids.remove(&bid) {
-                panic!("No such batch");
-            }
-        }
-
-        let fpath = self.get_file_path(&bid);
-
-        cfg_if! {
-            if #[ cfg(feature="async-io") ] {
-                tokio::fs::remove_file(&fpath).await.unwrap();
-            } else {
-                std::fs::remove_file(&fpath).unwrap();
-            }
-        }
-    }*/
 
     #[inline]
     fn batch_to_shard_id(batch_id: ValueBatchId) -> usize {
@@ -505,13 +464,10 @@ impl ValueLog {
         if let Some(batch) = cache.get(&identifier) {
             Ok(batch.clone())
         } else {
-            log::trace!("Loading value batch from disk");
+            log::trace!("Loading value batch #{} from disk", identifier);
 
             let fpath = self.get_file_path(&identifier);
-            let is_folded;
-            let num_values;
-
-            let mut header_data = [0u8; 5];
+            let mut header_data = [0u8; HEADER_LEN as usize];
 
             cfg_if!{
                 if #[cfg(feature="async-io")] {
@@ -523,45 +479,46 @@ impl ValueLog {
                 }
             }
 
-            num_values = u32::from_le_bytes(header_data[1..].try_into().unwrap());
-            is_folded = header_data[0] != 0;
+            let num_values = u32::from_le_bytes(
+                header_data[size_of::<u8>()..].try_into().unwrap());
+            let is_folded = header_data[0] != 0u8;
 
-            let offset = HEADER_LEN + (num_values as u64);
+            // The point where the delete flags end and the fold table / offset list begins
+            let df_offset = HEADER_LEN + (num_values as u64);
 
-            cfg_if!{
-                if #[cfg(feature="async-io")] {
-                    file.seek(SeekFrom::Start(offset)).await?;
-                } else {
-                    file.seek(SeekFrom::Start(offset))?;
-                }
-            }
+            let (offset, fold_table) = if is_folded {
+                log::trace!("Loading fold table for batch #{}", identifier);
 
-            let fold_table = if is_folded {
                 let mut fold_table = HashMap::new();
-                let mut data = [0u8; 2 * size_of::<u32>()];
+                let mut data = vec![0u8; size_of::<u32>() * (num_values as usize)];
 
-                for _ in 0..num_values {
-                    cfg_if!{
-                        if #[cfg(feature="async-io")] {
-                            file.read_exact(&mut data).await?;
-                        } else {
-                            file.read_exact(&mut data)?;
-                        }
+                cfg_if!{
+                    if #[cfg(feature="async-io")] {
+                        file.seek(SeekFrom::Start(df_offset)).await?;
+                        file.read_exact(&mut data).await?;
+                    } else {
+                        file.seek(SeekFrom::Start(df_offset))?;
+                        file.read_exact(&mut data)?;
                     }
                 }
 
-                let old_pos = u32::from_le_bytes(data[..size_of::<u32>()].try_into().unwrap());
-                let new_pos = u32::from_le_bytes(data[size_of::<u32>()..].try_into().unwrap());
-                fold_table.insert(old_pos, new_pos);
+                for pos in 0..num_values {
+                    let len = 2 * size_of::<u32>();
+                    let offset = (pos as usize) * len;
 
-                Some(fold_table)
+                    let old_offset = u32::from_le_bytes(data[offset..offset+len].try_into().unwrap());
+                    let new_offset = u32::from_le_bytes(data[offset..offset+len].try_into().unwrap());
+                    fold_table.insert(old_offset, new_offset);
+                }
+
+                let offset = df_offset + data.len() as u64;
+                (offset, Some(fold_table))
             } else {
-                None
+                let offset = df_offset + (num_values as u64)*(size_of::<u32>() as u64);
+                (offset, None)
             };
 
-            let data = disk::read(&fpath, offset).await
-                .expect("Failed to read value batch from disk");
-
+            let data = disk::read(&fpath, offset).await?;
             let batch = Arc::new( ValueBatch{ fold_table, data } );
 
             cache.put(identifier, batch.clone());
@@ -580,7 +537,6 @@ impl ValueLog {
         Ok(super::get_encoder().deserialize(val)?)
     }
 
-    #[ cfg(feature="wisckey-fold") ]
     #[ allow(dead_code) ]
     async fn is_batch_folded(&self, identifier: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&identifier);
@@ -599,7 +555,6 @@ impl ValueLog {
         Ok(data[0] != 0u8)
     }
 
-    #[ cfg(feature="wisckey-fold") ]
     #[ allow(dead_code) ]
     async fn get_active_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let fpath = self.get_file_path(&identifier);
@@ -638,7 +593,6 @@ impl ValueLog {
         Ok(num_active)
     }
 
-    #[ cfg(feature="wisckey-fold") ]
     #[ allow(dead_code) ]
     async fn get_total_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let mut data = [0u8; size_of::<u32>()];

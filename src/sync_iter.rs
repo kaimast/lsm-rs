@@ -32,10 +32,12 @@ pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
-    #[ cfg(all(feature="sync", feature="wisckey")) ]
+    #[ cfg(feature="sync") ]
     pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>,
             mut mem_iters: Vec<MemtableIterator>,
-            mut table_iters: Vec<TableIterator>, value_log: Arc<ValueLog>) -> Self {
+            mut table_iters: Vec<TableIterator>,
+            #[ cfg(feature="wisckey") ] value_log: Arc<ValueLog>,
+            ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
 
         for iter in mem_iters.drain(..) {
@@ -47,17 +49,9 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
         }
 
         Self{
-            iterators, value_log, tokio_rt,
-            last_key: None, _marker: PhantomData
-        }
-    }
-
-    #[ cfg(all(feature="sync", not(feature="wisckey"))) ]
-    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>, mem_iters: Vec<MemtableIterator>,
-            table_iters: Vec<TableIterator>) -> Self {
-        Self{
-            mem_iters, table_iters, tokio_rt,
-            last_key: None, _marker: PhantomData
+            _marker: PhantomData,
+            last_key: None, iterators, tokio_rt,
+            #[ cfg(feature="wisckey") ] value_log,
         }
     }
 
