@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 
 use super::KV_Trait;
 
+use tokio::task::JoinHandle;
 use tokio::sync::Mutex;
 
 use crate::cond_var::Condvar;
@@ -26,14 +28,14 @@ struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
     last_change: Mutex<Instant>,
-    sc_condition: Condvar
+    sc_condition: Condvar,
 }
 
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, Arc<TaskHandle>>
+    tasks: HashMap<TaskType, (StdMutex<JoinHandle<Result<(), Error>>>, Arc<TaskHandle>)>
 }
 
 struct CompactionTask<K: KV_Trait, V: KV_Trait> {
@@ -72,7 +74,7 @@ impl TaskHandle {
         !self.stop_flag.load(Ordering::SeqCst)
     }
 
-    async fn work_loop(&self) {
+    async fn work_loop(&self) -> Result<(), Error> {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
         let mut idle = false;
@@ -90,13 +92,7 @@ impl TaskHandle {
                 break;
             }
 
-            let did_work = match self.task.run().await {
-                Ok(res) => res,
-                Err(err) => {
-                    log::error!("Background task failed: {}", err);
-                    break;
-                }
-            };
+            let did_work = self.task.run().await?;
 
             if did_work {
                 last_update = Instant::now();
@@ -107,6 +103,7 @@ impl TaskHandle {
         }
 
         log::trace!("Task work loop ended");
+        Ok(())
     }
 }
 
@@ -115,33 +112,51 @@ impl TaskManager {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        tasks.insert(TaskType::Compaction,
-                     Arc::new(TaskHandle::new(
-                             stop_flag.clone(), CompactionTask::new_boxed(datastore)
-                     )));
+        let hdl = Arc::new(TaskHandle::new(stop_flag.clone(), CompactionTask::new_boxed(datastore) ));
+        let future = {
+            let hdl = hdl.clone();
 
-        // Spawn all tasks
-        for (_, task) in tasks.iter() {
-            let task = task.clone();
+            StdMutex::new( tokio::spawn(async move {
+                hdl.work_loop().await
+            }) )
+        };
 
-            tokio::spawn(async move {
-                task.work_loop().await;
-            });
-        }
+        tasks.insert(TaskType::Compaction, (future, hdl));
 
         Self{ stop_flag, tasks }
     }
 
     pub async fn wake_up(&self, task_type: &TaskType) {
-        let task = self.tasks.get(task_type).expect("No such task");
-        task.wake_up().await;
+        let (_fut, hdl) = self.tasks.get(task_type).expect("No such task");
+        hdl.wake_up().await;
     }
 
-    pub fn stop_all(&self) {
+    pub fn terminate(&self) {
         self.stop_flag.store(false, Ordering::SeqCst);
 
-        for (_, task) in self.tasks.iter() {
-            task.sc_condition.notify_all();
+        for (_, (fut, _hdl)) in self.tasks.iter() {
+            let locked = fut.lock().unwrap();
+            locked.abort();
         }
+    }
+
+    pub async fn stop_all(&self) -> Result<(), Error> {
+        log::trace!("Stopping all background tasks");
+
+        self.stop_flag.store(true, Ordering::SeqCst);
+
+        for (_, (_fut, hdl)) in self.tasks.iter() {
+            hdl.sc_condition.notify_all();
+        }
+
+        for (_, (fut, _hdl)) in self.tasks.iter() {
+            let mut locked = fut.lock().unwrap();
+            match (&mut *locked).await {
+                Ok(res) => { res?; }
+                Err(_) => { /* ignore */ },
+            }
+        }
+
+        Ok(())
     }
 }

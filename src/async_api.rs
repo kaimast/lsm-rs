@@ -73,6 +73,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         self.write_opts(batch, opts).await
     }
 
+    /// Iterate over all entries in the database
     #[inline]
     pub async fn iter(&self) -> DbIterator<K, V> {
         self.inner.iter().await
@@ -98,12 +99,16 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
 
         Ok(())
     }
+
+    /// Stop all background tasks gracefully
+    pub async fn stop(&self) -> Result<(), Error> {
+        self.tasks.stop_all().await
+    }
 }
 
 impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
     fn drop(&mut self) {
-        self.tasks.stop_all();
-        self.inner.stop();
+        self.tasks.terminate();
     }
 }
 
@@ -150,6 +155,8 @@ mod tests {
 
         database.put(&key1, &value2).await.unwrap();
         assert_eq!(database.get(&key1).await.unwrap(), Some(value2.clone()));
+
+        database.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -179,6 +186,8 @@ mod tests {
         }
 
         assert_eq!(pos, COUNT);
+
+        database.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -200,6 +209,8 @@ mod tests {
         for pos in 0..COUNT {
             assert_eq!(database.get(&pos).await.unwrap(), Some(format!("some_string_{}", pos)));
         }
+
+        database.stop().await.unwrap();
     }
 
     // Use multi-threading to enable background compaction
@@ -227,6 +238,8 @@ mod tests {
 
             assert_eq!(database.get(&key).await.unwrap(), None);
         }
+
+        database.stop().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -253,6 +266,8 @@ mod tests {
         for pos in 0..COUNT {
             assert_eq!(database.get(&pos).await.unwrap(), None);
         }
+
+        database.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -281,8 +296,9 @@ mod tests {
             assert_eq!(database.get(&pos).await.unwrap(),
                 Some(format!("some_other_string_{}", pos)));
         }
-    }
 
+        database.stop().await.unwrap();
+    }
 
     #[tokio::test]
     async fn override_many() {
@@ -316,6 +332,8 @@ mod tests {
             assert_eq!(database.get(&pos).await.unwrap(),
                 Some(format!("some_string_{}", pos)));
         }
+
+        database.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -336,5 +354,7 @@ mod tests {
             let key = format!("key{}", pos);
             assert_eq!(database.get(&key).await.unwrap(), Some(pos));
         }
+
+        database.stop().await.unwrap();
     }
 }

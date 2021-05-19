@@ -117,12 +117,22 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
             Ok(())
         })
     }
+
+    /// Stop all background tasks gracefully
+    pub fn stop(&self) -> Result<(), Error> {
+        let tasks = self.tasks.clone();
+
+        self.tokio_rt.block_on(async move {
+            tasks.stop_all().await
+        })
+    }
 }
 
 impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
+    /// This might abort some tasks is stop() has not been called
+    /// crash consistency should prevent this from being a problem
     fn drop(&mut self) {
-        self.tasks.stop_all();
-        self.inner.stop();
+        self.tasks.terminate();
     }
 }
 

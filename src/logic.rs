@@ -1,6 +1,6 @@
 use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
 use crate::entry::Entry;
-use crate::{Params, StartMode, KV_Trait, WriteBatch, Error, WriteOptions};
+use crate::{Error, Params, StartMode, KV_Trait, WriteBatch, WriteOp, WriteOptions};
 use crate::data_blocks::DataBlocks;
 use crate::memtable::{MemtableEntry, Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
@@ -17,7 +17,7 @@ use crate::sorted_table::ValueResult;
 
 use std::marker::PhantomData;
 use std::collections::VecDeque;
-use std::sync::{Arc, atomic};
+use std::sync::Arc;
 
 #[ cfg(feature="async-io") ]
 use tokio::fs;
@@ -28,7 +28,6 @@ use std::fs;
 use tokio::sync::{RwLock, Mutex};
 
 use bincode::Options;
-
 use cfg_if::cfg_if;
 
 /// The main database logic
@@ -41,7 +40,6 @@ pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
     levels: Vec<Level>,
-    running: atomic::AtomicBool,
     data_blocks: Arc<DataBlocks>,
     wal: Mutex<WriteAheadLog>,
 
@@ -140,7 +138,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         let imm_memtables = Mutex::new( VecDeque::new() );
         let imm_cond = Condvar::new();
-        let running = atomic::AtomicBool::new(true);
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         if params.num_levels == 0 {
@@ -166,56 +163,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         Ok(Self {
             _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            levels, running, data_blocks, wal,
+            levels, data_blocks, wal,
             #[ cfg(feature="wisckey") ] value_log,
         })
     }
-
-    /* TODO
-        loop {
-            let batch_id = self.value_log.get_oldest_batch_id().await;
-            let keys = self.value_log.get_keys(batch_id).await;
-
-            let mut watch_lock = self.watched_key.lock().await;
-            assert!(watch_lock.is_none());
-
-            loop {
-                log::trace!("Checking if we can garbage collection batch #{}", batch_id);
-
-                *watch_lock = None;
-
-                // Find the first key in this batch that is still valid
-                for key in keys.iter() {
-                    let mut found = false;
-
-                    // We count all references because clients might
-                    // still iterate over outdated values
-                    for vref in self.get_value_refs(&key).await {
-                        let (value_batch, _) = vref;
-
-                        if batch_id == value_batch {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if found {
-                        *watch_lock = Some(key.clone());
-                    }
-                }
-
-                if watch_lock.is_none() {
-                    break;
-                } else {
-                    watch_lock = self.watched_key_cond.wait(watch_lock, &self.watched_key).await;
-                }
-            }
-
-            // Batch is not needed anymore
-            self.value_log.delete_batch(batch_id).await;
-            *watch_lock = None;
-        }
-    }*/
 
     #[cfg(feature="sync")]
     pub async fn iter(&self, tokio_rt: Arc<tokio::runtime::Runtime>) -> DbIterator<K, V> {
@@ -400,7 +351,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         Ok(None)
     }
 
-    pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, crate::Error> {
+    pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, Error> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe{ memtable.get_mut() };
 
@@ -416,11 +367,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         for op in write_batch.writes.drain(..) {
             match op {
-                crate::WriteOp::Put(key, value) => {
+                WriteOp::Put(key, value) => {
                     log::trace!("Storing new value for key `{:?}`", key);
                     mem_inner.put(key, value);
                 }
-                crate::WriteOp::Delete(key) => {
+                WriteOp::Delete(key) => {
                     log::trace!("Storing deletion for key `{:?}`", key);
                     mem_inner.delete(key);
                 }
@@ -455,6 +406,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     pub async fn do_compaction(&self) -> Result<bool, Error> {
         // (immutable) memtable to level compaction
         {
+            let mut wal = self.wal.lock().await;
             let mut imm_mems = self.imm_memtables.lock().await;
 
             if let Some((log_offset, mem)) = imm_mems.pop_front() {
@@ -482,8 +434,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             }
                         }
 
-                        vbuilder.finish().await
-                            .expect("Failed to create value batch");
+                        vbuilder.finish().await?;
                     } else {
                         for (key, mem_entry) in memtable_entries.drain(..) {
                             let entry = mem_entry.into_entry();
@@ -498,7 +449,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
 
-                let mut wal = self.wal.lock().await;
                 wal.set_offset(log_offset).await;
                 self.manifest.set_log_offset(log_offset).await;
 
@@ -700,30 +650,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         log::trace!("Done compacting tables");
         Ok(())
-    }
-
-    #[ allow(dead_code) ]
-    pub async fn needs_compaction(&self) -> bool {
-        {
-            let imm_mems = self.imm_memtables.lock().await;
-
-            if !imm_mems.is_empty() {
-                return true;
-            }
-        }
-
-        for (pos, level) in self.levels.iter().enumerate() {
-            // Last level cannot be compacted
-            if pos < self.params.num_levels-1 && level.needs_compaction().await {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    pub fn stop(&self) {
-        self.running.store(false, atomic::Ordering::SeqCst);
     }
 }
 
