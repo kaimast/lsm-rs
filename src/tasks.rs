@@ -6,7 +6,6 @@ use std::sync::Mutex as StdMutex;
 
 use super::KV_Trait;
 
-use tokio::task::JoinHandle;
 use tokio::sync::Mutex;
 
 use crate::cond_var::Condvar;
@@ -31,11 +30,13 @@ struct TaskHandle {
     sc_condition: Condvar,
 }
 
+type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
+
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, (StdMutex<JoinHandle<Result<(), Error>>>, Arc<TaskHandle>)>
+    tasks: HashMap<TaskType, (StdMutex<JoinHandle>, Arc<TaskHandle>)>
 }
 
 struct CompactionTask<K: KV_Trait, V: KV_Trait> {
@@ -151,9 +152,10 @@ impl TaskManager {
 
         for (_, (fut, _hdl)) in self.tasks.iter() {
             let mut locked = fut.lock().unwrap();
-            match (&mut *locked).await {
-                Ok(res) => { res?; }
-                Err(_) => { /* ignore */ },
+
+            // Ignore already terminated/aborted tasks
+            if let Ok(res) = (&mut *locked).await {
+                res?;
             }
         }
 
