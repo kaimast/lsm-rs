@@ -39,3 +39,13 @@ snappy-compression = ["snap"]
 sync = []
 wisckey = []
 async-io = ["tokio/fs"]
+
+[[test]]
+name = "sync-basic"
+path = "tests/sync/basic.rs"
+required-features = ["sync"]
+
+[[test]]
+name = "sync-reopen"
+path = "tests/sync/reopen.rs"
+required-features = ["sync"]

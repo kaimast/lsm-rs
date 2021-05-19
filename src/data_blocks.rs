@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use lru::LruCache;
 
-use crate::disk;
+use crate::{disk, Error};
 use crate::manifest::Manifest;
 use crate::Params;
 use crate::sorted_table::Key;
@@ -57,11 +57,12 @@ impl DataBlocks {
 
     #[inline]
     fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
-        let fname = format!("keys{:08}.lld", block_id);
+        let fname = format!("key{:08}.data", block_id);
         self.params.db_path.join(Path::new(&fname))
     }
 
-    pub async fn make_block(&self, entries: Vec<(PrefixedKey, Entry)>, params: &Params) -> DataBlockId {
+    pub async fn make_block(&self, entries: Vec<(PrefixedKey, Entry)>, params: &Params)
+            -> Result<DataBlockId, Error> {
         let id = self.manifest.next_data_block_id().await;
         let block = Arc::new( DataBlock::new_from_entries(entries, params) );
         let shard_id = Self::block_to_shard_id(id);
@@ -69,12 +70,12 @@ impl DataBlocks {
         // Store on disk before grabbing the lock
         let block_data = &block.data;
         let fpath = self.get_file_path(&id);
-        disk::write(&fpath, block_data).await;
+        disk::write(&fpath, block_data, 0).await?;
 
         let mut cache = self.block_caches[shard_id].lock().await;
         cache.put(id, block);
 
-        id
+        Ok(id)
     }
 
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
@@ -86,7 +87,7 @@ impl DataBlocks {
         } else {
             log::trace!("Loading data block from disk");
             let fpath = self.get_file_path(&id);
-            let data = disk::read(&fpath).await;
+            let data = disk::read(&fpath, 0).await.expect("Failed to load data block from disk");
             let block = Arc::new(DataBlock::new_from_data(data));
 
             cache.put(*id, block.clone());
@@ -104,8 +105,9 @@ impl DataBlocks {
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
  *  - Fixed size value reference
- * 3. Variable length or restart list (each entry is 4bytes; so we dont need length information)
+ * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  */
+//TODO support data block layouts without prefixed keys
 pub struct DataBlock {
     restart_list_start: usize,
     data: Vec<u8>

@@ -1,25 +1,29 @@
 #[ cfg(feature="wisckey") ]
-use crate::values::ValueLog;
+use crate::values::{ValueLog, ValueId};
 
-use crate::sorted_table::TableIterator;
+#[ cfg(feature="wisckey") ]
+use crate::sorted_table::ValueResult;
+
+use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::memtable::MemtableIterator;
-use crate::KV_Trait;
-use crate::entry::Entry;
-use crate::sync_iter::DbIterator as SyncIter;
+use crate::{Error, KV_Trait};
 
 use bincode::Options;
 
 use std::future::Future;
-use futures::stream::Stream;
 use std::task::{Context, Poll};
-
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::cmp::Ordering;
 
 #[ cfg(feature="wisckey") ]
 use std::sync::Arc;
 
-type IterFuture<K, V> = dyn Future<Output = (DbIteratorInner<K,V>, Option<(K,V)>)>+Send;
+use cfg_if::cfg_if;
+
+use futures::stream::Stream;
+
+type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K,V>, Option<(K,V)>), Error>>+Send;
 
 pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
     state: Option<Pin<Box<IterFuture<K,V>>>>
@@ -56,7 +60,10 @@ impl<K: KV_Trait, V: KV_Trait> Stream for DbIterator<K, V> {
                     return Poll::Pending
                 }
                 // item computation complete
-                Poll::Ready((inner, res)) => (inner, res),
+                Poll::Ready(result) => {
+                    let (inner, res) = result.expect("iteration failed");
+                    (inner, res)
+                }
             }
         } else {
             // no items left
@@ -79,110 +86,149 @@ struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
     _marker: PhantomData<fn(K,V)>,
 
     last_key: Option<Vec<u8>>,
-    mem_iters: Vec<MemtableIterator>,
-    table_iters: Vec<TableIterator>,
+    iterators: Vec<Box<dyn InternalIterator>>,
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
 }
 
+#[ cfg(feature="wisckey") ]
+enum IterResult<V: KV_Trait> {
+    Value(V),
+    ValueRef(ValueId),
+}
+
+type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
+
 impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
-    #[ cfg(feature="wisckey") ]
-    fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>
-            , value_log: Arc<ValueLog>) -> Self {
+    fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>,
+            #[ cfg(feature="wisckey") ]value_log: Arc<ValueLog>
+            ) -> Self {
+        let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
+        for iter in mem_iters.drain(..) {
+            iterators.push(Box::new(iter));
+        }
+        for iter in table_iters.drain(..) {
+            iterators.push(Box::new(iter));
+        }
+
         Self{
-            mem_iters, table_iters, value_log,
-            last_key: None, _marker: PhantomData
+            iterators, last_key: None, _marker: PhantomData,
+            #[ cfg(feature="wisckey") ] value_log
         }
     }
 
-    #[ cfg(not(feature="wisckey")) ]
-    fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
-        Self{
-            mem_iters, table_iters,
-            last_key: None, _marker: PhantomData
-        }
-    }
+    async fn parse_iter(&mut self, offset: usize, min_kv: MinKV) -> (bool, MinKV) {
+        // Split slices to make the borrow checker happy
+        let (prev, cur) = self.iterators[..].split_at_mut(offset);
+        let iter = &mut *cur[0];
 
-   async fn next_entry(mut slf: Self) -> (Self, Option<(bool,K,Entry)>) {
-        let mut min_kv = None;
-        let mut is_pending = true;
-
-        for iter in slf.mem_iters.iter_mut() {
-            let (change, kv) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
-
-            if change {
-                min_kv = kv;
+        if let Some(last_key) = &self.last_key {
+            while !iter.at_end() && iter.get_key() <= last_key {
+                iter.step().await;
             }
         }
 
-        for iter in slf.table_iters.iter_mut() {
-            let (change, kv ) = SyncIter::<K,V>::parse_iter(&slf.last_key, iter, min_kv).await;
-
-            if change {
-                min_kv = kv;
-                is_pending = false;
-            }
+        if iter.at_end() {
+            return (false, min_kv);
         }
-        if let Some((key, entry)) = min_kv {
-            let res_key = super::get_encoder().deserialize(&key).unwrap();
-            let entry = entry.clone();
 
-            slf.last_key = Some(key.clone());
-            (slf, Some((is_pending, res_key, entry))) //TODO can we avoid cloning here?
+        let key = iter.get_key();
+        let seq_number = iter.get_seq_number();
+
+        if let Some((min_seq_number, min_offset)) = min_kv {
+            let min_iter = &*prev[min_offset];
+            let min_key = min_iter.get_key();
+
+            match key.cmp(min_key) {
+                Ordering::Less => {
+                    (true, Some((seq_number, offset)))
+                }
+                Ordering::Equal => {
+                    if seq_number > min_seq_number {
+                        (true, Some((seq_number, offset)))
+                    } else {
+                        (false, min_kv)
+                    }
+                }
+                Ordering::Greater => (false, min_kv)
+            }
         } else {
-            (slf, None)
+            (true, Some((seq_number, offset)))
         }
     }
 
-    #[ cfg(feature="wisckey") ]
-    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
-        loop {
-            let (slf, result) = Self::next_entry(slf_).await;
 
-            if let Some((is_pending, key, entry)) = result {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
-                        let res_val = if is_pending {
-                            slf.value_log.get_pending(value_ref).await
+    async fn next(mut self) -> Result<(Self, Option<(K,V)>), Error> {
+        let mut result = None;
+
+        while result.is_none() {
+            let mut min_kv = None;
+            let num_iterators = self.iterators.len();
+
+            for offset in 0..num_iterators {
+                let (change, kv) = self.parse_iter(offset, min_kv).await;
+
+                if change {
+                    min_kv = kv;
+                }
+            }
+
+            if let Some((_, offset)) = min_kv.take() {
+                let encoder = crate::get_encoder();
+                let iter = &*self.iterators[offset];
+
+                let res_key = encoder.deserialize(iter.get_key())?;
+                self.last_key = Some(iter.get_key().clone());
+
+                cfg_if! {
+                    if #[ cfg(feature="wisckey") ] {
+                        match iter.get_value() {
+                            ValueResult::Value(value) => {
+                                let encoder = crate::get_encoder();
+                                result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value)?))));
+                            }
+                            ValueResult::Reference(value_ref) => {
+                                let value_ref = value_ref;
+                                result = Some(Some((res_key, IterResult::ValueRef(value_ref))));
+                                                    }
+                            ValueResult::NoValue => {
+                                // this is a deletion... skip
+                            }
+                        }
+                    } else {
+                        if let Some(value) = iter.get_value() {
+                            let res_val = encoder.deserialize(value)?;
+                            result = Some(Some((res_key, res_val)));
                         } else {
-                            slf.value_log.get(value_ref).await
-                        };
-
-                        return (slf, Some((key, res_val)));
-                    },
-                    Entry::Deletion{..} => {
-                        // This is a deletion. Skip
-                        slf_ = slf;
+                            // this is a deletion... skip
+                        }
                     }
                 }
             } else {
-                return (slf, None);
-            }
+                // at end
+                result = Some(None);
+            };
         }
-    }
 
-    #[ cfg(not(feature="wisckey")) ]
-    async fn next(mut slf_: Self) -> (Self, Option<(K, V)>) {
-        loop {
-            let (slf, result) = Self::next_entry(slf_).await;
+        let (key, result) = match result.unwrap() {
+            Some(inner) => inner,
+            None => { return Ok((self, None)); }
+        };
 
-            if let Some((_, key, entry)) = result {
-                match entry {
-                    Entry::Value{value, ..} => {
-                        let encoder = crate::get_encoder();
-                        let res_val = encoder.deserialize(&value).unwrap();
-                        return (slf, Some((key, res_val)));
-                    },
-
-                    Entry::Deletion{..} => {
-                        // This is a deletion. Skip
-                        slf_ = slf;
+        cfg_if!{
+            if #[ cfg(feature="wisckey") ] {
+                match result {
+                    IterResult::ValueRef(value_ref) => {
+                        let res_val = self.value_log.get(value_ref).await?;
+                        Ok((self, Some((key, res_val))))
+                    }
+                    IterResult::Value(value) => {
+                        Ok((self, Some((key, value))))
                     }
                 }
-            }
-            else {
-                return (slf, None);
+            } else {
+                Ok((self, Some((key, result))))
             }
         }
     }

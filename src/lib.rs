@@ -5,12 +5,15 @@
 #![ feature(write_all_vectored) ]
 #![ feature(array_methods) ]
 #![ feature(get_mut_unchecked) ]
+#![ feature(io_slice_advance) ]
+#![ feature(box_into_inner) ]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use bincode::Options;
 
+#[ cfg(feature="sync") ]
 pub mod sync_iter;
 
 #[ cfg(feature="sync") ]
@@ -26,7 +29,7 @@ pub use async_iter as iterate;
 mod values;
 
 mod sorted_table;
-use sorted_table::Key;
+use sorted_table::{Key, Value};
 
 mod tasks;
 mod memtable;
@@ -36,15 +39,50 @@ use logic::DbLogic;
 
 mod disk;
 mod level;
-mod wal;
 mod manifest;
 mod cond_var;
 mod entry;
 mod data_blocks;
 mod index_blocks;
+mod wal;
 
-use wal::WriteOp;
+pub enum WriteOp {
+    Put(Key, Value),
+    Delete(Key)
+}
 
+impl WriteOp {
+    const PUT_OP: u8 = 1;
+    const DELETE_OP: u8 = 2;
+
+    pub fn get_key(&self) -> &[u8] {
+        match self {
+            Self::Put(key, _) => key,
+            Self::Delete(key) => key
+        }
+    }
+
+    pub fn get_type(&self) -> u8 {
+        match self {
+            Self::Put(_, _) => Self::PUT_OP,
+            Self::Delete(_) => Self::DELETE_OP
+        }
+    }
+
+    fn get_key_length(&self) -> u64 {
+        match self {
+            Self::Put(key, _) | Self::Delete(key) => key.len() as u64
+        }
+    }
+
+    #[ allow(dead_code) ]
+    fn get_value_length(&self) -> u64 {
+        match self {
+            Self::Put(_, value) => value.len() as u64,
+            Self::Delete(_) => 0u64
+        }
+    }
+}
 #[ cfg(not(feature="sync")) ]
 mod async_api;
 #[ cfg(not(feature="sync")) ]
@@ -67,8 +105,47 @@ pub struct WriteBatch<K: KV_Trait, V: KV_Trait> {
 }
 
 #[ derive(Clone, Debug) ]
-pub enum WriteError {
-    Unknown
+pub enum Error {
+    Io(String),
+    InvalidParams(String),
+    Serialization(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::Io(msg) => {
+                fmt.write_fmt(format_args!("Io Error: {}", msg))?;
+            }
+            Self::InvalidParams(msg) => {
+                fmt.write_fmt(format_args!("Invalid Parameter: {}", msg))?;
+            }
+            Self::Serialization(msg) => {
+                fmt.write_fmt(format_args!("Serialization Error: {}", msg))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(inner: std::io::Error) -> Self {
+        Self::Io(inner.to_string())
+    }
+}
+
+impl From<bincode::ErrorKind> for Error {
+    fn from(inner: bincode::ErrorKind) -> Self {
+        Self::Serialization(inner.to_string())
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for Error {
+    fn from(inner: Box<bincode::ErrorKind>) -> Self {
+        let inner = Box::into_inner(inner);
+        Self::Serialization(inner.to_string())
+    }
 }
 
 impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
@@ -121,6 +198,7 @@ impl Default for WriteOptions {
 }
 
 /// Allow specifying how the datastore behaves during startup
+#[ derive(Debug, Clone) ]
 pub enum StartMode {
     /// Reuse existing database, or create if non-existent
     CreateOrOpen,
@@ -131,6 +209,7 @@ pub enum StartMode {
 }
 
 /// Parameters to customize the creation of the database
+#[ derive(Debug, Clone) ]
 pub struct Params {
     /// Where in the filesystem should the databasse be stored?
     pub db_path: PathBuf,
