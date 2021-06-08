@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
-use super::KV_Trait;
+use super::KvTrait;
 
 use tokio::sync::Mutex;
 
@@ -39,18 +39,18 @@ pub struct TaskManager {
     tasks: HashMap<TaskType, (StdMutex<JoinHandle>, Arc<TaskHandle>)>
 }
 
-struct CompactionTask<K: KV_Trait, V: KV_Trait> {
+struct CompactionTask<K: KvTrait, V: KvTrait> {
    datastore: Arc<DbLogic<K, V>>
 }
 
-impl<K: KV_Trait, V: KV_Trait> CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> CompactionTask<K, V> {
     fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
         Box::new(Self{ datastore })
     }
 }
 
 #[ async_trait ]
-impl<K: KV_Trait, V: KV_Trait> Task for CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         Ok( self.datastore.do_compaction().await? )
     }
@@ -109,7 +109,7 @@ impl TaskHandle {
 }
 
 impl TaskManager {
-    pub async fn new<K: KV_Trait, V: KV_Trait>(datastore: Arc<DbLogic<K,V>>) -> Self {
+    pub async fn new<K: KvTrait, V: KvTrait>(datastore: Arc<DbLogic<K,V>>) -> Self {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 

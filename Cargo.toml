@@ -20,6 +20,8 @@ futures = "0.3"
 snap = { version="1", optional=true }
 async-trait = "0.1"
 cfg-if = "1"
+tracing = "0.1"
+tracing-futures = "0.2"
 
 [dependencies.tokio]
 version="1"
@@ -27,8 +29,10 @@ default-features=false
 features=["rt-multi-thread", "io-util", "sync", "macros"]
 
 [dev-dependencies]
-env_logger = { version="0.7" }
-tempfile = { version="3" }
+env_logger = "0.7"
+tempfile = "3"
+tracing-subscriber = "0.2"
+tracing-flame = "0.1"
 
 [lib]
 path = "src/lib.rs"
@@ -36,6 +40,10 @@ path = "src/lib.rs"
 [features]
 default = ["wisckey", "snappy-compression"]
 snappy-compression = ["snap"]
+# cargo doesn't support mutually exclusive features
+# so all this does is enable async test, async APIs are always enabled
+# when 'sync' is not set
+async = []
 sync = []
 wisckey = []
 async-io = ["tokio/fs"]
@@ -49,3 +57,13 @@ required-features = ["sync"]
 name = "sync-reopen"
 path = "tests/sync/reopen.rs"
 required-features = ["sync"]
+
+[[test]]
+name = "async-basic"
+path = "tests/async/basic.rs"
+required-features = ["async"]
+
+[[example]]
+name = "lsm-benchmark"
+path = "benchmarks/async.rs"
+required-features = ["async"]

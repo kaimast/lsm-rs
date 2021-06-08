@@ -41,11 +41,11 @@ mod disk;
 mod level;
 mod manifest;
 mod cond_var;
-mod entry;
 mod data_blocks;
 mod index_blocks;
 mod wal;
 
+#[ derive(Debug) ]
 pub enum WriteOp {
     Put(Key, Value),
     Delete(Key)
@@ -94,12 +94,14 @@ mod sync_api;
 pub use sync_api::Database;
 
 /// Keys and values must be (de-)serializable
-pub trait KV_Trait = Send+serde::Serialize+serde::de::DeserializeOwned+'static+Unpin+Clone;
+pub trait KvTrait = Send + serde::Serialize+serde::de::DeserializeOwned + 'static
+        +Unpin + Clone + std::fmt::Debug;
 
 /// A WriteBatch allows to bundle multiple updates together for higher throughput
 ///
 /// Note: The batch will not be applied to the database until it is passed to `Database::write`
-pub struct WriteBatch<K: KV_Trait, V: KV_Trait> {
+#[ derive(Debug) ]
+pub struct WriteBatch<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K,V)>,
     writes: Vec<WriteOp>,
 }
@@ -148,7 +150,7 @@ impl From<Box<bincode::ErrorKind>> for Error {
     }
 }
 
-impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
+impl<K: KvTrait, V: KvTrait> WriteBatch<K, V> {
     pub fn new() -> Self {
         Self{
             writes: Vec::new(),
@@ -173,13 +175,14 @@ impl<K: KV_Trait, V: KV_Trait> WriteBatch<K, V> {
     }
 }
 
-impl<K: KV_Trait, V: KV_Trait> Default for WriteBatch<K, V> {
+impl<K: KvTrait, V: KvTrait> Default for WriteBatch<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// Allows specifying details of a write
+#[ derive(Debug, Clone) ]
 pub struct WriteOptions {
     /// Should the call block until it is guaranteed to be written to disk?
     pub sync: bool

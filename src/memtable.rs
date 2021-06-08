@@ -1,7 +1,7 @@
 use crate::sorted_table::{InternalIterator, Key};
-use crate::entry::Entry;
-use crate::{KV_Trait, Params};
+use crate::{KvTrait, Params};
 use crate::manifest::SeqNumber;
+use crate::data_blocks::DataEntryType;
 
 #[ cfg(feature="wisckey") ]
 use crate::sorted_table::ValueResult;
@@ -48,6 +48,7 @@ impl MemtableEntry {
     }
 }
 
+#[ derive(Debug) ]
 pub struct MemtableIterator {
     inner: Arc<Memtable>,
     next_index: usize,
@@ -69,6 +70,7 @@ impl MemtableIterator {
 
 #[ async_trait::async_trait ]
 impl InternalIterator for MemtableIterator {
+    #[ tracing::instrument ]
     async fn step(&mut self) {
         let entries = &self.inner.entries;
 
@@ -109,6 +111,13 @@ impl InternalIterator for MemtableIterator {
         }
     }
 
+    fn get_entry_type(&self) -> DataEntryType {
+        match self.entry.as_ref().unwrap() {
+            MemtableEntry::Value{..} => DataEntryType::Put,
+            MemtableEntry::Deletion{..} => DataEntryType::Delete
+        }
+    }
+
     #[ cfg(feature="wisckey") ]
     fn get_value(&self) -> ValueResult {
         let entry = self.entry.as_ref().unwrap();
@@ -129,10 +138,6 @@ impl InternalIterator for MemtableIterator {
         } else {
             None
         }
-    }
-
-    fn clone_entry(&self) -> Option<Entry> {
-        None
     }
 }
 
@@ -176,6 +181,7 @@ impl MemtableRef {
 
 /// In-memory representation of state that has not been written to level 0 yet.
 /// This data structure does not exist on disk, but can be recreated from the write-ahead log
+#[ derive(Debug) ]
 pub struct Memtable {
     // Sorted upadtes
     entries: Vec<(Key, MemtableEntry)>,
@@ -194,6 +200,16 @@ impl Memtable {
     #[inline]
     pub fn get_next_seq_number(&self) -> u64 {
         self.next_seq_number
+    }
+
+    pub fn get_min_max_key(&self) -> (Key, Key) {
+        let len = self.entries.len();
+
+        if len == 0 {
+            panic!("Memtable is empty");
+        }
+
+        (self.entries[0].0.clone(), self.entries[len-1].0.clone())
     }
 
     pub fn get(&self, key: &[u8]) -> Option<MemtableEntry> {

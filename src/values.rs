@@ -134,6 +134,7 @@ impl ValueLog {
         }
     }
 
+    #[ tracing::instrument(skip(self)) ]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
         let (batch_id, value_offset) = vid;
         let fpath = self.get_file_path(&batch_id);
@@ -250,6 +251,7 @@ impl ValueLog {
         Ok(())
     }
 
+    #[ tracing::instrument(skip(self)) ]
     async fn cleanup_batch(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&batch_id);
 
@@ -455,7 +457,7 @@ impl ValueLog {
         ValueBatchBuilder{ identifier, vlog: &self, data: vec![], offsets: vec![] }
     }
 
-    #[inline]
+    #[ tracing::instrument(skip(self)) ]
     async fn get_batch(&self, identifier: ValueBatchId) -> Result<Arc<ValueBatch>, Error> {
         let shard_id = Self::batch_to_shard_id(identifier);
         let mut cache = self.batch_caches[shard_id].lock().await;

@@ -6,7 +6,7 @@ use crate::sorted_table::ValueResult;
 
 use crate::sorted_table::{Key, TableIterator, InternalIterator};
 use crate::memtable::MemtableIterator;
-use crate::KV_Trait;
+use crate::KvTrait;
 
 use bincode::Options;
 
@@ -17,7 +17,7 @@ use std::cmp::Ordering;
 use cfg_if::cfg_if;
 
 /// Allows iterating over a consistent snapshot of the database
-pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
+pub struct DbIterator<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K,V)>,
 
     last_key: Option<Vec<u8>>,
@@ -31,7 +31,7 @@ pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
 
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
-impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
+impl<K: KvTrait, V: KvTrait> DbIterator<K,V> {
     #[ cfg(feature="sync") ]
     pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>,
             mut mem_iters: Vec<MemtableIterator>,
@@ -92,7 +92,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K,V> {
     }
 }
 
-impl<K: KV_Trait, V: KV_Trait> Iterator for DbIterator<K, V> {
+impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {

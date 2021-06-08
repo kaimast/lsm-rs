@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use crate::{Error, KV_Trait, Params};
-use crate::entry::Entry;
-use crate::data_blocks::{PrefixedKey, DataBlocks};
+use crate::{Error, KvTrait, Params, WriteOp};
+use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlock, DataBlocks, DataBlockBuilder, DataEntry, DataEntryType, ENTRY_LENGTH};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
 
@@ -13,6 +12,7 @@ pub type Key = Vec<u8>;
 pub type TableId = u64;
 pub type Value = Vec<u8>;
 
+#[ derive(Debug) ]
 pub struct SortedTable {
     identifier: TableId,
     index: IndexBlock,
@@ -33,22 +33,125 @@ pub trait InternalIterator: Send  {
     async fn step(&mut self);
     fn get_key(&self) -> &Key;
     fn get_seq_number(&self) -> SeqNumber;
+    fn get_entry_type(&self) -> DataEntryType;
 
     #[ cfg(feature="wisckey") ]
     fn get_value(&self) -> ValueResult;
 
     #[ cfg(not(feature="wisckey")) ]
     fn get_value(&self) -> Option<&[u8]>;
-
-    fn clone_entry(&self) -> Option<Entry>;
 }
 
+#[ derive(Debug) ]
 pub struct TableIterator {
     block_pos: usize,
     block_offset: u32,
     key: Key,
-    entry: Entry,
+    entry: DataEntry,
     table: Arc<SortedTable>,
+}
+
+pub struct TableBuilder<'a> {
+    identifier: TableId,
+    params: &'a Params,
+    data_blocks: Arc<DataBlocks>,
+    min_key: Key,
+    max_key: Key,
+
+    data_block: DataBlockBuilder,
+    block_index: Vec<(Key, DataBlockId)>,
+    last_key: Key,
+    block_entry_count: usize,
+    size: u64,
+    restart_count: usize,
+    index_key: Option<Key>,
+}
+
+impl<'a> TableBuilder<'a> {
+    pub fn new(identifier: TableId, params: &'a Params, data_blocks: Arc<DataBlocks>, min_key: Key, max_key: Key) -> TableBuilder<'a> {
+        let block_index = vec![];
+        let last_key = vec![];
+        let block_entry_count = 0;
+        let size = 0;
+        let restart_count = 0;
+        let index_key = None;
+        let data_block = DataBlocks::build_block(data_blocks.clone());
+
+        Self{
+            identifier, params, data_blocks, block_index, data_block, last_key,
+            block_entry_count, size, restart_count, index_key, min_key, max_key,
+        }
+    }
+
+    #[cfg(feature="wisckey") ]
+    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value_ref: ValueId) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value_ref).await
+    }
+
+    #[cfg(feature="wisckey") ]
+    pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default()).await
+    }
+
+    #[cfg(feature="wisckey") ]
+    async fn add_entry(&mut self, key: &[u8], seq_number: SeqNumber, op_type: u8, value_ref: ValueId) -> Result<(), Error> {
+        if self.index_key.is_none() {
+            self.index_key = Some(key.to_vec());
+        }
+        let mut prefix_len = 0;
+
+        // After a certain interval we reset the prefixed keys
+        // So that it is possible to binary search blocks
+        if self.restart_count == self.params.block_restart_interval {
+            self.restart_count = 0;
+        } else {
+            // Calculate key prefix length
+            while prefix_len < key.len()
+                    && prefix_len < self.last_key.len()
+                    && key[prefix_len] == self.last_key[prefix_len] {
+                prefix_len += 1;
+            }
+        }
+
+        let suffix = key[prefix_len..].to_vec();
+        let this_size = std::mem::size_of::<PrefixedKey>() + ENTRY_LENGTH + prefix_len;
+        self.size += this_size as u64;
+        self.block_entry_count += 1;
+        self.restart_count += 1;
+
+        let pkey = PrefixedKey::new(prefix_len, suffix);
+
+        self.last_key = key.to_vec();
+
+        self.data_block.add_entry(pkey, seq_number, op_type, value_ref);
+
+        if self.block_entry_count >= self.params.max_key_block_size {
+            let mut next_block = DataBlocks::build_block(self.data_blocks.clone());
+            std::mem::swap(&mut next_block, &mut self.data_block);
+
+            let id = next_block.finish().await?.unwrap();
+            self.block_index.push((self.index_key.take().unwrap(), id));
+
+            self.block_entry_count = 0;
+            self.restart_count = 0;
+            self.last_key.clear();
+        }
+
+        Ok(())
+    }
+
+    pub async fn finish(mut self) -> Result<SortedTable, Error> {
+        if let Some(id) = self.data_block.finish().await? {
+            self.block_index.push((self.index_key.take().unwrap(), id));
+        }
+
+        log::debug!("Created new table with {} blocks", self.block_index.len());
+
+        let index = IndexBlock::new(&self.params, self.identifier, self.block_index,
+                                    self.size, self.min_key, self.max_key).await?;
+
+        Ok(SortedTable{ identifier: self.identifier, index, data_blocks: self.data_blocks })
+    }
 }
 
 impl TableIterator {
@@ -56,10 +159,11 @@ impl TableIterator {
         let last_key = vec![];
         let block_id = table.index.get_block_id(0);
         let first_block = table.data_blocks.get_block(&block_id).await;
-        let (key, entry, entry_len) = first_block.get_offset(0, &last_key);
+        let byte_len = first_block.byte_len();
+        let (key, entry, entry_len) = DataBlock::get_offset(first_block, 0, &last_key);
 
         // Are we already at the end of the first block?
-        let (block_pos, block_offset) = if first_block.byte_len() == entry_len {
+        let (block_pos, block_offset) = if byte_len == entry_len {
             (1, 0)
         } else {
             (0, entry_len)
@@ -85,10 +189,14 @@ impl InternalIterator for TableIterator {
         self.entry.get_sequence_number()
     }
 
+    fn get_entry_type(&self) -> DataEntryType {
+        self.entry.get_type()
+    }
+
     #[ cfg(feature="wisckey") ]
     fn get_value(&self) -> ValueResult {
         if let Some(value_ref) = self.entry.get_value_ref() {
-            ValueResult::Reference(*value_ref)
+            ValueResult::Reference(value_ref)
         } else {
             ValueResult::NoValue
         }
@@ -103,6 +211,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
+    #[ tracing::instrument ]
     async fn step(&mut self) {
         #[ allow(clippy::comparison_chain) ]
         if self.block_pos == self.table.index.num_data_blocks() {
@@ -114,90 +223,23 @@ impl InternalIterator for TableIterator {
 
         let block_id = self.table.index.get_block_id(self.block_pos);
         let block = self.table.data_blocks.get_block(&block_id).await;
+        let byte_len = block.byte_len();
 
-        let (key, entry, new_offset) = block.get_offset(self.block_offset, &self.key);
+        let (key, entry, new_offset) = DataBlock::get_offset(block, self.block_offset, &self.key);
         self.key = key;
         self.entry = entry;
 
         // At the end of the block?
-        if new_offset >= block.byte_len() {
+        if new_offset >= byte_len {
             self.block_pos += 1;
             self.block_offset = 0;
         } else {
             self.block_offset = new_offset;
         }
     }
-
-    fn clone_entry(&self) -> Option<Entry> {
-        Some(self.entry.clone())
-    }
 }
 
 impl SortedTable {
-    pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, 
-                     data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Result<Self, Error> {
-        let mut block_index = Vec::new();
-        let mut prefixed_entries = Vec::new();
-        let mut last_key= vec![];
-        let mut block_entry_count = 0;
-        let mut size: u64 = 0;
-        let mut restart_count = 0;
-        let mut index_key = None;
-
-        for (key, entry) in entries.drain(..) {
-            if index_key.is_none() {
-                index_key = Some(key.clone());
-            }
-            let mut prefix_len = 0;
-
-            // After a certain interval we reset the prefixed keys
-            // So that it is possible to binary search blocks
-            if restart_count == params.block_restart_interval {
-                restart_count = 0;
-            } else {
-                // Calculate key prefix length
-                while prefix_len < key.len()
-                        && prefix_len < last_key.len()
-                        && key[prefix_len] == last_key[prefix_len] {
-                    prefix_len += 1;
-                }
-            }
-
-            let suffix = key[prefix_len..].to_vec();
-            let this_size = std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>() + prefix_len;
-            size += this_size as u64;
-            block_entry_count += 1;
-            restart_count += 1;
-
-            let pkey = PrefixedKey::new(prefix_len, suffix);
-            prefixed_entries.push((pkey, entry));
-
-            last_key = key;
-
-            if block_entry_count >= params.max_key_block_size {
-                let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params)
-                            .await?;
-
-                block_index.push((index_key.take().unwrap(), id));
-
-                block_entry_count = 0;
-                restart_count = 0;
-                last_key.clear();
-            }
-        }
-
-        if block_entry_count > 0 {
-            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params).await?;
-            block_index.push((index_key.take().unwrap(), id));
-        }
-
-        log::debug!("Created new table with {} blocks", block_index.len());
-
-        let index = IndexBlock::new(&params, identifier, block_index, size, min, max).await?;
-        Ok(Self{ identifier, index, data_blocks })
-    }
-
     pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
             -> Result<Self, Error> {
         let index = IndexBlock::load(&params, identifier).await?;
@@ -225,11 +267,12 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<Entry> {
+    #[ tracing::instrument ]
+    pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
 
-        block.get(key)
+        DataBlock::get(&block, key)
     }
 
     #[inline]
@@ -238,6 +281,7 @@ impl SortedTable {
     }
 }
 
+/*
 #[ cfg(test) ]
 mod tests {
     use super::*;
@@ -369,4 +413,4 @@ mod tests {
 
         assert_eq!(iter.at_end(), true);
     }
-}
+}*/

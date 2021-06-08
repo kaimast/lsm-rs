@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, MutexGuard, Notify};
 
-
 /// Behaves like std::sync::Condvar but for tokio Mutexes
 ///TODO remove this once tokio has native support for condition variables
 pub struct Condvar {

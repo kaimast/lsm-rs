@@ -12,16 +12,16 @@ sync-tests:
 	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=sync
 
 async-tests:
-	env RUST_LOG=${LOG_LEVEL} ${CARGO} test
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async
 
 async-io-tests:
-	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async-io
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --features=async,async-io
 
 no-compression-tests:
-	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=wisckey
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=async,wisckey
 
 no-wisckey-tests:
-	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression
+	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=async,snappy-compression
 
 no-wisckey-sync-tests:
 	env RUST_LOG=${LOG_LEVEL} ${CARGO} test --no-default-features --features=snappy-compression,sync

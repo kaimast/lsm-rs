@@ -1,8 +1,7 @@
 use crate::{Error, Params};
-use crate::sorted_table::{SortedTable, TableId, Key};
-use crate::entry::Entry;
+use crate::sorted_table::{SortedTable, TableBuilder, TableId, Key};
 use crate::manifest::{LevelId, Manifest};
-use crate::data_blocks::DataBlocks;
+use crate::data_blocks::{DataBlocks, DataEntry};
 
 use std::sync::Arc;
 use tokio::sync::{RwLock, Mutex};
@@ -43,21 +42,17 @@ impl Level {
         Ok(())
     }
 
-    pub async fn create_l0_table(&self, id: TableId, entries: Vec<(Key, Entry)>) -> Result<(), Error> {
-        let min = entries[0].0.clone();
-        let max = entries[entries.len()-1].0.clone();
-
-        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await?;
-
-        self.manifest.update_table_set(vec![(self.index, id)], vec![]).await;
-
-        let mut tables = self.tables.write().await;
-        tables.push(Arc::new(table));
-
-        Ok(())
+    pub async fn build_table<'a>(&'a self, min_key: Key, max_key: Key) -> TableBuilder<'a> {
+        let identifier = self.manifest.next_table_id().await;
+        TableBuilder::new(identifier, &*self.params, self.data_blocks.clone(), min_key, max_key)
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<Entry> {
+    pub async fn add_l0_table(&self, table: SortedTable) {
+        let mut tables = self.tables.write().await;
+        tables.push(Arc::new(table));
+    }
+
+    pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         let tables = self.tables.read().await;
 
         // Iterate from back to front (newest to oldest)
