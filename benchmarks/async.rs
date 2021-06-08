@@ -41,7 +41,6 @@ async fn main() {
     let mut options = WriteOptions::default();
     options.sync = false;
 
-
     for pos in 0..COUNT {
         let key = pos;
         let value = format!("some_string_{}", pos);

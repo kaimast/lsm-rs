@@ -42,7 +42,7 @@ impl Level {
         Ok(())
     }
 
-    pub async fn build_table<'a>(&'a self, min_key: Key, max_key: Key) -> TableBuilder<'a> {
+    pub async fn build_table(&self, min_key: Key, max_key: Key) -> TableBuilder<'_> {
         let identifier = self.manifest.next_table_id().await;
         TableBuilder::new(identifier, &*self.params, self.data_blocks.clone(), min_key, max_key)
     }

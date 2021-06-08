@@ -336,12 +336,13 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
 
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
-                match entry {
-                    Entry::Value{value, ..} => {
-                        let value = encoder.deserialize(&value)?;
+                match entry.get_type() {
+                    DataEntryType::Put => {
+                        let data = entry.get_value().unwrap();
+                        let value = encoder.deserialize(data)?;
                         return Ok(Some(value));
                     }
-                    Entry::Deletion{..} => {
+                    DataEntryType::Delete => {
                         return Ok(None);
                     }
                 }
@@ -359,7 +360,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
         let mut wal = self.wal.lock().await;
 
         for op in write_batch.writes.iter() {
-            wal.store(&op).await?;
+            wal.store(op).await?;
         }
 
         if opt.sync {
@@ -438,8 +439,14 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
                         vbuilder.finish().await?;
                     } else {
                         for (key, mem_entry) in memtable_entries.drain(..) {
-                            let entry = mem_entry.into_entry();
-                            entries.push((key, entry));
+                            match mem_entry {
+                                MemtableEntry::Value{seq_number, value} => {
+                                    table_builder.add_value(&key, seq_number, &value).await?;
+                                }
+                                MemtableEntry::Deletion{seq_number} => {
+                                    table_builder.add_deletion(&key, seq_number).await?;
+                                }
+                            }
                         }
                     }
                 }
@@ -492,7 +499,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
         let parent_level = &self.levels[level_pos as usize];
         let child_level = &self.levels[(level_pos+1) as usize];
 
-        let overlaps = child_level.get_overlaps(&min, &max).await;
+        let overlaps = child_level.get_overlaps(min, max).await;
 
         // Fast path
         if tables.len() == 1 && overlaps.is_empty() {
@@ -610,10 +617,17 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
             let min_iter = min_iter.unwrap();
             match min_iter.get_entry_type() {
                 DataEntryType::Put => {
-                    if let ValueResult::Reference(value_ref) = min_iter.get_value() {
-                        table_builder.add_value(&min_key, min_iter.get_seq_number(), value_ref).await?;
-                    } else {
-                        panic!("Invalid state");
+                    cfg_if! {
+                        if #[cfg(feature="wisckey")] {
+                            if let ValueResult::Reference(value_ref) = min_iter.get_value() {
+                                table_builder.add_value(&min_key, min_iter.get_seq_number(), value_ref).await?;
+                            } else {
+                                panic!("Invalid state");
+                            }
+                        } else {
+                            let value = min_iter.get_value().unwrap();
+                            table_builder.add_value(&min_key, min_iter.get_seq_number(), value).await?;
+                        }
                     }
                 }
                 DataEntryType::Delete => {

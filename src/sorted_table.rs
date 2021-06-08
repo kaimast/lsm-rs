@@ -1,12 +1,16 @@
 use std::sync::Arc;
 
 use crate::{Error, KvTrait, Params, WriteOp};
-use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlock, DataBlocks, DataBlockBuilder, DataEntry, DataEntryType, ENTRY_LENGTH};
+use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlock, DataBlocks, DataBlockBuilder, DataEntry, DataEntryType};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
 
+use cfg_if::cfg_if;
+
 #[ cfg(feature="wisckey") ]
 use crate::values::ValueId;
+#[ cfg(feature="wisckey") ]
+use crate::data_blocks::ENTRY_LENGTH;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
@@ -93,8 +97,20 @@ impl<'a> TableBuilder<'a> {
         self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default()).await
     }
 
-    #[cfg(feature="wisckey") ]
-    async fn add_entry(&mut self, key: &[u8], seq_number: SeqNumber, op_type: u8, value_ref: ValueId) -> Result<(), Error> {
+    #[cfg(not(feature="wisckey")) ]
+    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value: &[u8]) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value).await
+    }
+
+    #[cfg(not(feature="wisckey")) ]
+    pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[]).await
+    }
+
+    async fn add_entry(&mut self, key: &[u8], seq_number: SeqNumber, op_type: u8,
+                       #[ cfg(feature="wisckey") ] value: ValueId,
+                       #[ cfg(not(feature="wisckey")) ] value: &[u8],
+                       ) -> Result<(), Error> {
         if self.index_key.is_none() {
             self.index_key = Some(key.to_vec());
         }
@@ -114,7 +130,15 @@ impl<'a> TableBuilder<'a> {
         }
 
         let suffix = key[prefix_len..].to_vec();
-        let this_size = std::mem::size_of::<PrefixedKey>() + ENTRY_LENGTH + prefix_len;
+
+        cfg_if! {
+            if #[ cfg(feature="wisckey") ] {
+                let this_size = std::mem::size_of::<PrefixedKey>() + ENTRY_LENGTH + prefix_len;
+            } else {
+                let this_size = std::mem::size_of::<PrefixedKey>() + value.len() + prefix_len;
+            }
+        }
+
         self.size += this_size as u64;
         self.block_entry_count += 1;
         self.restart_count += 1;
@@ -123,7 +147,7 @@ impl<'a> TableBuilder<'a> {
 
         self.last_key = key.to_vec();
 
-        self.data_block.add_entry(pkey, seq_number, op_type, value_ref);
+        self.data_block.add_entry(pkey, seq_number, op_type, value);
 
         if self.block_entry_count >= self.params.max_key_block_size {
             let mut next_block = DataBlocks::build_block(self.data_blocks.clone());
@@ -147,7 +171,7 @@ impl<'a> TableBuilder<'a> {
 
         log::debug!("Created new table with {} blocks", self.block_index.len());
 
-        let index = IndexBlock::new(&self.params, self.identifier, self.block_index,
+        let index = IndexBlock::new(self.params, self.identifier, self.block_index,
                                     self.size, self.min_key, self.max_key).await?;
 
         Ok(SortedTable{ identifier: self.identifier, index, data_blocks: self.data_blocks })
@@ -205,7 +229,7 @@ impl InternalIterator for TableIterator {
     #[ cfg(not(feature="wisckey")) ]
     fn get_value(&self) -> Option<&[u8]> {
         if let Some(value) = &self.entry.get_value() {
-            Some(&value)
+            Some(value)
         } else {
             None
         }
@@ -242,7 +266,7 @@ impl InternalIterator for TableIterator {
 impl SortedTable {
     pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
             -> Result<Self, Error> {
-        let index = IndexBlock::load(&params, identifier).await?;
+        let index = IndexBlock::load(params, identifier).await?;
         Ok( Self{ identifier, index, data_blocks } )
     }
 
@@ -269,6 +293,7 @@ impl SortedTable {
 
     #[ tracing::instrument ]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
+        log::trace!("Checking table #{} for value", self.identifier);
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
 

@@ -454,7 +454,7 @@ impl ValueLog {
     #[ allow(clippy::needless_lifetimes) ] //clippy bug
     pub async fn make_batch<'a>(&'a self) -> ValueBatchBuilder<'a> {
         let identifier = self.manifest.next_value_batch_id().await;
-        ValueBatchBuilder{ identifier, vlog: &self, data: vec![], offsets: vec![] }
+        ValueBatchBuilder{ identifier, vlog: self, data: vec![], offsets: vec![] }
     }
 
     #[ tracing::instrument(skip(self)) ]

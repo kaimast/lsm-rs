@@ -34,16 +34,8 @@ pub enum MemtableEntry {
 impl MemtableEntry {
     pub fn get_value(&self) -> Option<&[u8]> {
         match self {
-            MemtableEntry::Value{ value, .. } => Some(&value),
+            MemtableEntry::Value{ value, .. } => Some(value),
             MemtableEntry::Deletion{ .. } => None,
-        }
-    }
-
-    #[ cfg(not(feature="wisckey")) ]
-    pub fn into_entry(self) -> Entry {
-        match self {
-            MemtableEntry::Value{ value, seq_number } => Entry::Value{ value, seq_number },
-            MemtableEntry::Deletion{ seq_number } => Entry::Deletion{ seq_number },
         }
     }
 }
@@ -123,7 +115,7 @@ impl InternalIterator for MemtableIterator {
         let entry = self.entry.as_ref().unwrap();
 
         if let Some(value) = entry.get_value() {
-            ValueResult::Value(&value)
+            ValueResult::Value(value)
         } else {
             ValueResult::NoValue
         }
@@ -134,7 +126,7 @@ impl InternalIterator for MemtableIterator {
         let entry = self.entry.as_ref().unwrap();
 
         if let Some(value) = entry.get_value() {
-            Some(&value)
+            Some(value)
         } else {
             None
         }

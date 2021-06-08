@@ -10,12 +10,11 @@ use crate::{disk, Error, WriteOp};
 use crate::manifest::{Manifest, SeqNumber};
 use crate::Params;
 use crate::sorted_table::Key;
-use crate::values::{ValueBatchId, ValueOffset};
 
 use tokio::sync::Mutex;
 
 #[cfg(feature="wisckey")]
-use crate::values::ValueId;
+use crate::values::{ValueBatchId, ValueOffset, ValueId};
 
 pub type DataBlockId = u64;
 
@@ -34,6 +33,9 @@ impl PrefixedKey {
 }
 
 type BlockShard = LruCache<DataBlockId, Arc<DataBlock>>;
+
+#[ cfg(not(feature="wisckey")) ]
+type DataLen = u64;
 
 pub enum DataEntryType {
     Put,
@@ -96,17 +98,12 @@ impl DataEntry {
     #[ cfg(not(feature="wisckey")) ]
     pub fn get_value(&self) -> Option<&[u8]> {
         let seq_len = std::mem::size_of::<SeqNumber>();
-        let data_len_len = std::mem::size_of::<u64>();
-
         let type_data = self.data()[seq_len];
 
-        if type_data == WriteOp::PUT_OP {
-            let offset = seq_len+1;
-            let data_len = u64::from_le_bytes(
-                self.data()[offset..offset+data_len_len].try_into().unwrap());
-            let offset = offset + data_len_len;
+        let header_len = seq_len+1;
 
-            Some(self.data()[offset..offset+data_len])
+        if type_data == WriteOp::PUT_OP {
+            Some(&self.data()[header_len..])
         } else if type_data == WriteOp::DELETE_OP {
             None
         } else {
@@ -187,22 +184,27 @@ impl DataBlockBuilder {
         self.data.extend_from_slice(&pkey_len[..]);
         self.data.extend_from_slice(&skey_len[..]);
         self.data.append(&mut key.suffix);
-        self.data.extend_from_slice(&seq_number[..]);
-        self.data.extend_from_slice(&[entry_type]);
 
         #[ cfg(feature="wisckey") ]
         {
             let block_id = value_ref.0.to_le_bytes();
             let offset = value_ref.1.to_le_bytes();
 
+            self.data.extend_from_slice(&seq_number[..]);
+            self.data.extend_from_slice(&[entry_type]);
             self.data.extend_from_slice(&block_id[..]);
             self.data.extend_from_slice(&offset[..]);
         }
 
         #[ cfg(not(feature="wisckey")) ]
         {
-            let mut entry_len = (entry_data.len() as u32).to_le_bytes().to_vec();
+            let entry_len = std::mem::size_of::<SeqNumber>()+1+entry_data.len();
+
+            let mut entry_len = (entry_len as DataLen).to_le_bytes().to_vec();
             self.data.append(&mut entry_len);
+            self.data.extend_from_slice(&seq_number[..]);
+            self.data.extend_from_slice(&[entry_type]);
+            self.data.extend_from_slice(entry_data);
         }
 
         self.position += 1;
@@ -281,7 +283,7 @@ impl DataBlocks {
             block.clone()
         } else {
             log::trace!("Loading data block from disk");
-            let fpath = self.get_file_path(&id);
+            let fpath = self.get_file_path(id);
             let data = disk::read(&fpath, 0).await.expect("Failed to load data block from disk");
             let block = Arc::new(DataBlock::new_from_data(data));
 
@@ -337,7 +339,8 @@ impl DataBlock {
 
         #[ cfg(not(feature="wisckey")) ]
         let entry_len = {
-            let elen = u32::from_le_bytes(self_ptr..data[offset..offset+len_len].try_into().unwrap());
+            let len_len = std::mem::size_of::<DataLen>();
+            let elen = DataLen::from_le_bytes(self_ptr.data[offset..offset+len_len].try_into().unwrap());
             offset += len_len;
 
             elen as usize
@@ -369,7 +372,7 @@ impl DataBlock {
         (self.data.len() - rl_len_len - rl_len) as u32
     }
 
-    #[inline]
+    #[inline(always)]
     fn restart_list_len(&self) -> usize {
         let offset_len = std::mem::size_of::<u32>();
         let rl_len = self.data.len() - self.restart_list_start;
@@ -378,7 +381,7 @@ impl DataBlock {
         rl_len / offset_len
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_restart_offset(&self, pos: u32) -> u32 {
         let rl_len_len = std::mem::size_of::<u32>() as u32;
         let offset_len = std::mem::size_of::<u32>();
@@ -420,7 +423,7 @@ impl DataBlock {
         // There is no reset at the very end so we need to include
         // that part in the sequential search
         let end = if end+1 == rl_len as u32 {
-            self_ptr.byte_len() 
+            self_ptr.byte_len()
         } else {
             self_ptr.get_restart_offset(end) as u32
         };
@@ -437,12 +440,12 @@ impl DataBlock {
             SearchResult::Range(start,end) => (start, end)
         };
 
-        // do a sequential search for the remaining interval
         let mut pos = self_ptr.get_restart_offset(start) as u32;
 
         let mut last_key = vec![];
         while pos < end {
-            let (this_key, entry, new_pos) = Self::get_offset(self_ptr.clone(), pos, &last_key);
+            let (this_key, entry, new_pos) =
+                Self::get_offset(self_ptr.clone(), pos, &last_key);
 
             if key == this_key {
                 return Some(entry);
@@ -503,32 +506,42 @@ mod tests {
     }
 
     #[ cfg(not(feature="wisckey")) ]
-    #[test]
-    fn store_and_load() {
+    #[tokio::test]
+    async fn store_and_load() {
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
+        let manifest = Arc::new( Manifest::new(params.clone()).await );
+
+        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let mut builder = DataBlocks::build_block(data_blocks.clone());
+
         let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
-        let entry1 = Entry::Value{ seq_number: 14234524, value: vec![4,2] };
+        let seq1 = 14234524;
+        let val1 = vec![4,2];
+        builder.add_entry(key1, seq1, WriteOp::PUT_OP, &val1);
 
         let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
-        let entry2 = Entry::Value{ seq_number: 424234, value: vec![4,50] };
+        let seq2 = 424234;
+        let val2 = vec![24, 50];
+        builder.add_entry(key2, seq2, WriteOp::PUT_OP, &val2);
 
-        let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
-
-        let params = Params::default();
-
-        let data_block = DataBlock::new_from_entries(entries, &params);
-
-        let data_block2 = DataBlock::new_from_data(data_block.data.clone());
+        let id = builder.finish().await.unwrap().unwrap();
+        let data_block1 = data_blocks.get_block(&id).await;
+        let data_block2 = Arc::new(DataBlock::new_from_data(data_block1.data.clone()));
 
         let prev_key = vec![];
-        let (key, val, pos) = data_block2.get_offset(0, &prev_key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
-        assert_eq!(val, entry1);
+        assert_eq!(entry.get_value(), Some(&val1[..]));
 
-        let (key, val, pos) = data_block2.get_offset(pos, &key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), pos, &key);
 
         assert_eq!(key, vec![5, 2]);
-        assert_eq!(val, entry2);
+        assert_eq!(entry.get_value(), Some(&val2[..]));
         assert_eq!(pos, data_block2.byte_len());
     }
 }
