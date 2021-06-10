@@ -42,12 +42,14 @@ pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
+#[ derive(Debug) ]
 pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
     batch_caches: Vec<Mutex<BatchShard>>,
 }
 
+#[ derive(Debug) ]
 struct ValueBatch {
     fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
     data: Vec<u8>,

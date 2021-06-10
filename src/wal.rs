@@ -25,6 +25,7 @@ use cfg_if::cfg_if;
 
 const PAGE_SIZE: u64 = 4*1024;
 
+#[ derive(Debug) ]
 pub struct WriteAheadLog{
     params: Arc<Params>,
     // The current log file

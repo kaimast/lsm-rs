@@ -10,6 +10,7 @@ use bincode::Options;
 /// The main database structure
 /// This struct can be accessed concurrently and you should
 /// never instantiate it more than once for the same on-disk files
+#[ derive(Debug) ]
 pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
     tasks: Arc<TaskManager>

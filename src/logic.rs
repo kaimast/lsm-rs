@@ -30,6 +30,7 @@ use bincode::Options;
 use cfg_if::cfg_if;
 
 /// The main database logic
+#[ derive(Debug) ]
 pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K,V)>,
 

@@ -9,6 +9,7 @@ use bincode::Options;
 
 use tokio::runtime::Runtime as TokioRuntime;
 
+#[ derive(Debug) ]
 pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
     tasks: Arc<TaskManager>,

@@ -8,14 +8,14 @@ use crate::sorted_table::ValueResult;
 
 use std::sync::Arc;
 
-#[ derive(Clone) ]
+#[ derive(Debug, Clone) ]
 pub struct MemtableRef {
     //TODO this rw lock is not really needed because there is another lock in DbInner
     // Not sure how to remove the lock logic without using unsafe code though
     inner: Arc<Memtable>
 }
 
-#[ derive(Clone) ]
+#[ derive(Debug, Clone) ]
 pub struct ImmMemtableRef {
     inner: Arc<Memtable>
 }

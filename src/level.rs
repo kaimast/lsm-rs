@@ -11,6 +11,7 @@ const L0_COMPACTION_TRIGGER: usize = 4;
 
 pub type TableVec = Vec<Arc<SortedTable>>;
 
+#[ derive(Debug) ]
 pub struct Level {
     index: LevelId,
     #[ allow(clippy::mutex_atomic) ]

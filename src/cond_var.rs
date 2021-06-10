@@ -5,6 +5,7 @@ use tokio::sync::{Mutex, MutexGuard, Notify};
 
 /// Behaves like std::sync::Condvar but for tokio Mutexes
 ///TODO remove this once tokio has native support for condition variables
+#[ derive(Debug) ]
 pub struct Condvar {
     notifier: Notify,
     wait_count: AtomicU32,
