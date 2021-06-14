@@ -1,7 +1,7 @@
-use crate::Params;
-use crate::sorted_table::{SortedTable, Key};
+use crate::{Error, Params};
+use crate::sorted_table::{SortedTable, TableId, Key};
 use crate::entry::Entry;
-use crate::manifest::Manifest;
+use crate::manifest::{LevelId, Manifest};
 use crate::data_blocks::DataBlocks;
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ const L0_COMPACTION_TRIGGER: usize = 4;
 pub type TableVec = Vec<Arc<SortedTable>>;
 
 pub struct Level {
-    index: usize,
+    index: LevelId,
     #[ allow(clippy::mutex_atomic) ]
     next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
@@ -23,7 +23,7 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(index: usize, data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+    pub fn new(index: LevelId,  data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
         #[ allow(clippy::mutex_atomic) ]
         Self {
             index, params, manifest,
@@ -33,19 +33,28 @@ impl Level {
         }
     }
 
-    pub async fn create_l0_table(&self, _id: usize, entries: Vec<(Key, Entry)>) {
+    pub async fn load_table(&self, id: TableId) -> Result<(), Error> {
+        let table = SortedTable::load(id, self.data_blocks.clone(), &*self.params).await?;
+
+        let mut tables = self.tables.write().await;
+        tables.push(Arc::new(table));
+
+        log::trace!("Loaded table {} on level {}", id, self.index);
+        Ok(())
+    }
+
+    pub async fn create_l0_table(&self, id: TableId, entries: Vec<(Key, Entry)>) -> Result<(), Error> {
         let min = entries[0].0.clone();
         let max = entries[entries.len()-1].0.clone();
 
-        let id = self.manifest.next_table_id().await;
-
-        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await;
+        let table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await?;
 
         self.manifest.update_table_set(vec![(self.index, id)], vec![]).await;
 
-        //TODO update manifest
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
+
+        Ok(())
     }
 
     pub async fn get(&self, key: &[u8]) -> Option<Entry> {

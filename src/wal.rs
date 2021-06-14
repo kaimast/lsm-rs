@@ -1,159 +1,350 @@
-use std::sync::Arc;
-
-use crate::{Key, Params};
-use crate::sorted_table::Value;
+use crate::Params;
+use crate::memtable::Memtable;
+use crate::WriteOp;
 
 use std::path::Path;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::io::IoSlice;
 
 #[ cfg(feature="async-io") ]
-use tokio::fs::File;
+use tokio::fs::{OpenOptions, File, remove_file};
 
 #[ cfg(feature="async-io") ]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
+use std::convert::TryInto;
 
 #[ cfg(not(feature="async-io")) ]
-use std::fs::File;
+use std::fs::{OpenOptions, File, remove_file};
 
 #[ cfg(not(feature="async-io")) ]
-use std::io::{IoSlice, Write};
+use std::io::{Read, Seek, Write};
 
 use cfg_if::cfg_if;
 
+const PAGE_SIZE: u64 = 4*1024;
+
 pub struct WriteAheadLog{
-    #[ allow(dead_code) ]
     params: Arc<Params>,
-    log_file: File
-}
-
-pub enum WriteOp {
-    Put(Key, Value),
-    Delete(Key)
-}
-
-impl WriteOp {
-    const PUT_OP: u8 = 1;
-    const DELETE_OP: u8 = 2;
-
-    pub fn get_key(&self) -> &[u8] {
-        match self {
-            Self::Put(key, _) => key,
-            Self::Delete(key) => key
-        }
-    }
-
-    pub fn get_type(&self) -> u8 {
-        match self {
-            Self::Put(_, _) => Self::PUT_OP,
-            Self::Delete(_) => Self::DELETE_OP
-        }
-    }
-
-    fn get_key_length(&self) -> u64 {
-        match self {
-            Self::Put(key, _) | Self::Delete(key) => key.len() as u64
-        }
-    }
-
-    #[ allow(dead_code) ]
-    fn get_value_length(&self) -> u64 {
-        match self {
-            Self::Put(_, value) => value.len() as u64,
-            Self::Delete(_) => 0u64
-        }
-    }
+    // The current log file
+    log_file: File,
+    // Everything below offset can be garbage collected
+    offset: u64,
+    // The absolute position of the log we are at
+    // (must be >= offset)
+    position: u64,
 }
 
 impl WriteAheadLog{
-    pub async fn new(params: Arc<Params>) -> Self {
-        let fpath = params.db_path.join(Path::new("LOG"));
+    pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
+        let log_file = Self::create_file(&*params, 0).await?;
+        Ok( Self{ params, log_file, offset: 0, position: 0 } )
+    }
+
+    pub async fn open(params: Arc<Params>, offset: u64, memtable: &mut Memtable) -> Result<Self, std::io::Error> {
+        let position = offset;
+        let mut count: usize = 0;
+
+        let fpos = position / PAGE_SIZE;
+        let file_offset = position % PAGE_SIZE;
+
+        let mut log_file = Self::open_file(&*params, fpos).await?;
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let log_file = File::create(fpath).await.expect("Failed to open log file");
+                log_file.seek(futures::io::SeekFrom::Start(file_offset)).await.unwrap();
             } else {
-                let log_file = File::create(fpath).expect("Failed to open log file");
+                log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
             }
         }
 
-        Self{ params, log_file }
+        let mut obj = Self{ params, log_file, offset, position };
+
+        // Re-insert ops into memtable
+        loop {
+            let mut op_header = [0u8; 9];
+            let op_type;
+            let key_len;
+
+            let success = obj.read_from_log(&mut op_header[..], true).await?;
+
+            if !success {
+                break;
+            }
+
+            op_type = op_header[0];
+
+            let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
+            key_len = u64::from_le_bytes(*key_data);
+
+            let mut key = vec![0; key_len as usize];
+            obj.read_from_log(&mut key, false).await?;
+
+            if op_type == WriteOp::PUT_OP {
+                let mut val_len = [0u8; 8];
+                obj.read_from_log(&mut val_len, false).await?;
+
+                let val_len = u64::from_le_bytes(val_len);
+                let mut value = vec![0; val_len as usize];
+
+                obj.read_from_log(&mut value, false).await?;
+                memtable.put(key, value);
+
+            } else if op_type == WriteOp::DELETE_OP {
+                memtable.delete(key);
+            } else {
+                panic!("Unexpected op type!");
+            }
+
+            count += 1;
+        }
+
+        log::debug!("Found {} entries in Write-Ahead-Log", count);
+
+        Ok(obj)
     }
 
-    pub async fn store(&mut self, op: &WriteOp) {
+    /// Stores an operation and returns the new position in the logfile
+    pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         // we do not use serde here to avoid copying data
 
         let op_type = op.get_type().to_le_bytes();
 
         let key = op.get_key();
         let klen = op.get_key_length().to_le_bytes();
+        let vlen = op.get_value_length().to_le_bytes();
 
-        cfg_if! {
-            if #[ cfg(feature="async-io") ] {
-                cfg_if! {
-                    if #[ cfg(feature="wisckey") ] {
-                        // Value will be stored in the vlog, so no need to store it here as well
-                        self.log_file.write_all(op_type.as_slice()).await.unwrap();
-                        self.log_file.write_all(klen.as_slice()).await.unwrap();
-                        self.log_file.write_all(key).await.unwrap();
+        let mut buffers: VecDeque<IoSlice> = vec![
+            IoSlice::new(op_type.as_slice()),
+            IoSlice::new(klen.as_slice()),
+            IoSlice::new(key)
+        ].into();
+
+        match op {
+            WriteOp::Put(_, value) => {
+                buffers.push_back(IoSlice::new(vlen.as_slice()));
+                buffers.push_back(IoSlice::new(value));
+            },
+            WriteOp::Delete(_) => {}
+        }
+
+        self.write_all_vectored(buffers).await?;
+        Ok(self.position)
+    }
+
+    async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, std::io::Error> {
+        let start_pos = self.position;
+        let buffer_len = out.len() as u64;
+        let mut buffer_pos = 0;
+
+        while buffer_pos < buffer_len {
+            let mut file_offset = self.position % PAGE_SIZE;
+            let file_remaining = PAGE_SIZE - file_offset;
+
+            assert!(file_remaining > 0);
+
+            let read_len = file_remaining.min(buffer_len - buffer_pos);
+
+            let read_start = buffer_pos as usize;
+            let read_end = (read_len+buffer_pos) as usize;
+
+            let read_slice = &mut out[read_start..read_end];
+
+            cfg_if! {
+                if #[cfg(feature="async-io")] {
+                    let read_result = self.log_file.read_exact(read_slice).await;
+                } else {
+                    let read_result = self.log_file.read_exact(read_slice);
+                }
+            }
+
+            match read_result {
+                Ok(_) => {
+                    self.position += read_len;
+                    file_offset += read_len;
+                }
+                Err(err) => {
+                    if maybe {
+                        return Ok(false);
                     } else {
-                        let vlen = op.get_value_length().to_le_bytes();
+                        return Err(err);
+                    }
+                }
+            }
 
-                        self.log_file.write_all(op_type.as_slice()).await.unwrap();
-                        self.log_file.write_all(klen.as_slice()).await.unwrap();
-                        self.log_file.write_all(key).await.unwrap();
+            assert!(file_offset <= PAGE_SIZE);
+            buffer_pos = self.position - start_pos;
 
-                        match op {
-                            WriteOp::Put(_, value) => {
-                                self.log_file.write_all(vlen.as_slice()).await.unwrap();
-                                self.log_file.write_all(value).await.unwrap();
-                            },
-                            WriteOp::Delete(_) => {}
+            if file_offset == PAGE_SIZE {
+                // Try open next file
+                let fpos = self.position / PAGE_SIZE;
+                self.log_file = match Self::open_file(&*self.params, fpos).await {
+                    Ok(file) => file,
+                    Err(err) => {
+                        if maybe {
+                            self.log_file = Self::create_file(&*self.params, fpos).await?;
+                            return Ok(buffer_pos == buffer_len);
+                        } else {
+                            return Err(err);
                         }
                     }
                 }
-            } else {
-                let mut buffers = vec![
-                    IoSlice::new(op_type.as_slice()),
-                    IoSlice::new(klen.as_slice()),
-                    IoSlice::new(key)
-                ];
+            }
+        }
 
+        Ok(true)
+    }
+
+    #[ allow(clippy::needless_lifetimes) ] //clippy bug?
+    async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) -> Result<(), std::io::Error> {
+        use std::cmp::Ordering;
+
+        while !buffers.is_empty() {
+            let mut file_offset = self.position % PAGE_SIZE;
+            let mut to_write = vec![];
+            let mut advance_by = None;
+
+            // Figure out how much we can fit into the current file
+            while let Some(buffer) = buffers.pop_front() {
+                assert!(!buffer.is_empty());
+                assert!(file_offset < PAGE_SIZE);
+
+                let remaining = PAGE_SIZE - file_offset;
+
+                match buffer.len().cmp(&(remaining as usize)) {
+                    Ordering::Less => {
+                        to_write.push(buffer);
+
+                        self.position += buffer.len() as u64;
+                        file_offset += buffer.len() as u64;
+                    }
+                    Ordering::Equal => {
+                        to_write.push(buffer);
+
+                        self.position += buffer.len() as u64;
+                        file_offset += buffer.len() as u64;
+                        break;
+                    }
+                    Ordering::Greater => {
+                        buffers.push_front(buffer);
+                        to_write.push(IoSlice::new(&buffers[0][..(remaining as usize)]));
+
+                        advance_by = Some(remaining as usize);
+
+                        self.position += remaining;
+                        file_offset += remaining;
+                        break;
+                    }
+                }
+            }
+
+            if !to_write.is_empty() {
                 cfg_if! {
-                    if #[ cfg(not(feature="wisckey")) ] {
-                        let vlen = op.get_value_length().to_le_bytes();
+                    if #[ cfg(feature="async-io") ] {
+                        // TODO Not supported yet by tokio...
+                        // self.log_file.write_all_vectored(&mut to_write)
+                        //   .await.expect("Failed to write to log file");
 
-                        match op {
-                            WriteOp::Put(_, value) => {
-                                buffers.push(IoSlice::new(vlen.as_slice()));
-                                buffers.push(IoSlice::new(value));
-                            },
-                            WriteOp::Delete(_) => {}
+                        for slice in to_write.drain(..) {
+                            self.log_file.write_all(&slice[..]).await
+                                .expect("Failed to write to log file");
                         }
-
-                        self.log_file.write_all_vectored(&mut buffers)
-                            .expect("Failed to write to log file");
                     } else {
                         // Try doing one write syscall if possible
-                        self.log_file.write_all_vectored(&mut buffers)
+                        self.log_file.write_all_vectored(&mut to_write)
                             .expect("Failed to write to log file");
                     }
                 }
+
+                if let Some(offset) = advance_by.take() {
+                    buffers[0] = IoSlice::advance(&mut [buffers[0]], offset)[0];
+                }
+            }
+
+            assert!(advance_by.is_none());
+            assert!(file_offset <= PAGE_SIZE);
+
+            // Create a new file?
+            if file_offset == PAGE_SIZE {
+                let file_pos = self.position / PAGE_SIZE;
+                self.log_file = Self::create_file(&*self.params, file_pos).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
+        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", file_pos+1)));
+        log::trace!("Creating new log file at {:?}", fpath);
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                Ok(File::create(fpath).await?)
+            } else {
+                Ok(File::create(fpath)?)
             }
         }
     }
 
-    pub async fn sync(&mut self) {
+    async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
+        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+        log::trace!("Opening file at {:?}", fpath);
+
+        cfg_if! {
+            if #[cfg(feature="async-io")] {
+                let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath).await?;
+            } else {
+                 let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath)?;
+            }
+        }
+
+        Ok(log_file)
+    }
+
+    pub async fn sync(&mut self) -> Result<(), std::io::Error> {
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                self.log_file.sync_data().await.expect("Failed to sync log file!");
+                self.log_file.sync_data().await?;
             } else {
-                self.log_file.sync_data().expect("Failed to sync log file!");
+                self.log_file.sync_data()?;
             }
         }
+
+        Ok(())
     }
 
-    /// Once the memtable has been flushed we can remove all log entries
-    #[ allow(dead_code)]
-    pub fn clear(&mut self) {
-        todo!();
+    pub fn get_log_position(&self) -> u64 {
+        self.position
+    }
+
+    /// Once the memtable has been flushed we can remove old log entries
+    pub async fn set_offset(&mut self, new_offset: u64) {
+        if new_offset <= self.offset {
+            panic!("Not a valid offset");
+        }
+
+        let old_file_pos = self.offset / PAGE_SIZE;
+        let new_file_pos = new_offset / PAGE_SIZE;
+
+        for fpos in old_file_pos..new_file_pos {
+            let fpath = self.params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+            log::trace!("Removing file {:?}", fpath);
+
+            cfg_if! {
+                if #[cfg(feature="async-io") ] {
+                    remove_file(fpath).await.expect("Failed to remove log file");
+                } else {
+                    remove_file(fpath).expect("Failed to remove log file");
+                }
+            }
+        }
+
+        self.offset = new_offset;
     }
 }

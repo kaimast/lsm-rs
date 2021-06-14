@@ -1,21 +1,47 @@
-use crate::Key;
 use crate::data_blocks::DataBlockId;
+use crate::{disk, Error};
+use crate::{Key, Params};
+use crate::sorted_table::TableId;
 
 use serde::{Serialize, Deserialize};
 
+use std::path::Path;
 use std::cmp::Ordering;
+
+use bincode::Options;
 
 #[ derive(Serialize, Deserialize) ]
 pub struct IndexBlock {
     index: Vec<(Key, DataBlockId)>,
-    size: usize,
+    size: u64,
     min: Key,
     max: Key,
 }
 
 impl IndexBlock {
-    pub fn new( index: Vec<(Key, DataBlockId)>, size: usize, min: Key, max: Key) -> Self {
-        Self{ index, size, min, max }
+    pub async fn new(params: &Params, id: TableId, index: Vec<(Key, DataBlockId)>, size: u64, min: Key, max: Key) -> Result<Self, Error> {
+        let block = Self{ index, size, min, max };
+
+        // Store on disk before grabbing the lock
+        let block_data = crate::get_encoder().serialize(&block)?;
+        let fpath = Self::get_file_path(params, &id);
+        disk::write(&fpath, &block_data, 0).await?;
+
+        Ok(block)
+    }
+
+    pub async fn load(params: &Params, id: TableId) -> Result<Self, Error> {
+        log::trace!("Loading data block from disk");
+        let fpath = Self::get_file_path(params, &id);
+        let data = disk::read(&fpath, 0).await?;
+
+        Ok( crate::get_encoder().deserialize(&data)? )
+    }
+
+    #[inline]
+    fn get_file_path(params: &Params, block_id: &TableId) -> std::path::PathBuf {
+        let fname = format!("idx{:08}.data", block_id);
+        params.db_path.join(Path::new(&fname))
     }
 
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
@@ -27,7 +53,7 @@ impl IndexBlock {
     }
 
     pub fn get_size(&self) -> usize {
-        self.size
+        self.size as usize
     }
 
     pub fn get_min(&self) -> &[u8] {

@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use crate::Params;
+use crate::{Error, KV_Trait, Params};
 use crate::entry::Entry;
 use crate::data_blocks::{PrefixedKey, DataBlocks};
 use crate::index_blocks::IndexBlock;
+use crate::manifest::SeqNumber;
+
+#[ cfg(feature="wisckey") ]
+use crate::values::ValueId;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
@@ -11,16 +15,32 @@ pub type Value = Vec<u8>;
 
 pub struct SortedTable {
     identifier: TableId,
-    index: Box<IndexBlock>,
+    index: IndexBlock,
     data_blocks: Arc<DataBlocks>
 }
 
+#[ cfg(feature="wisckey") ]
+#[ derive(Debug, PartialEq) ]
+pub enum ValueResult<'a> {
+    Reference(ValueId),
+    Value(&'a [u8]),
+    NoValue,
+}
+
 #[async_trait::async_trait]
-pub trait InternalIterator: Send {
+pub trait InternalIterator: Send  {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
     fn get_key(&self) -> &Key;
-    fn get_entry(&self) -> &Entry;
+    fn get_seq_number(&self) -> SeqNumber;
+
+    #[ cfg(feature="wisckey") ]
+    fn get_value(&self) -> ValueResult;
+
+    #[ cfg(not(feature="wisckey")) ]
+    fn get_value(&self) -> Option<&[u8]>;
+
+    fn clone_entry(&self) -> Option<Entry>;
 }
 
 pub struct TableIterator {
@@ -28,7 +48,7 @@ pub struct TableIterator {
     block_offset: u32,
     key: Key,
     entry: Entry,
-    table: Arc<SortedTable>
+    table: Arc<SortedTable>,
 }
 
 impl TableIterator {
@@ -45,7 +65,9 @@ impl TableIterator {
             (0, entry_len)
         };
 
-        Self{ block_pos, block_offset, key, entry, table }
+        Self{
+            block_pos, block_offset, key, entry, table,
+        }
     }
 }
 
@@ -59,8 +81,26 @@ impl InternalIterator for TableIterator {
         &self.key
     }
 
-    fn get_entry(&self) -> &Entry {
-        &self.entry
+    fn get_seq_number(&self) -> SeqNumber {
+        self.entry.get_sequence_number()
+    }
+
+    #[ cfg(feature="wisckey") ]
+    fn get_value(&self) -> ValueResult {
+        if let Some(value_ref) = self.entry.get_value_ref() {
+            ValueResult::Reference(*value_ref)
+        } else {
+            ValueResult::NoValue
+        }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    fn get_value(&self) -> Option<&[u8]> {
+        if let Some(value) = &self.entry.get_value() {
+            Some(&value)
+        } else {
+            None
+        }
     }
 
     async fn step(&mut self) {
@@ -87,16 +127,21 @@ impl InternalIterator for TableIterator {
             self.block_offset = new_offset;
         }
     }
+
+    fn clone_entry(&self) -> Option<Entry> {
+        Some(self.entry.clone())
+    }
 }
 
 impl SortedTable {
-    pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Self {
+    pub async fn new(identifier: TableId, mut entries: Vec<(Key, Entry)>, min: Key, max: Key, 
+                     data_blocks: Arc<DataBlocks>, params: &Params)
+            -> Result<Self, Error> {
         let mut block_index = Vec::new();
         let mut prefixed_entries = Vec::new();
         let mut last_key= vec![];
         let mut block_entry_count = 0;
-        let mut size = 0;
+        let mut size: u64 = 0;
         let mut restart_count = 0;
         let mut index_key = None;
 
@@ -121,7 +166,7 @@ impl SortedTable {
 
             let suffix = key[prefix_len..].to_vec();
             let this_size = std::mem::size_of::<PrefixedKey>() + std::mem::size_of::<Entry>() + prefix_len;
-            size += this_size;
+            size += this_size as u64;
             block_entry_count += 1;
             restart_count += 1;
 
@@ -132,7 +177,7 @@ impl SortedTable {
 
             if block_entry_count >= params.max_key_block_size {
                 let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params)
-                            .await;
+                            .await?;
 
                 block_index.push((index_key.take().unwrap(), id));
 
@@ -143,14 +188,20 @@ impl SortedTable {
         }
 
         if block_entry_count > 0 {
-            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params).await;
+            let id = data_blocks.make_block(std::mem::take(&mut prefixed_entries), params).await?;
             block_index.push((index_key.take().unwrap(), id));
         }
 
         log::debug!("Created new table with {} blocks", block_index.len());
 
-        let index = Box::new(IndexBlock::new(block_index, size, min, max));
-        Self{ identifier, index, data_blocks }
+        let index = IndexBlock::new(&params, identifier, block_index, size, min, max).await?;
+        Ok(Self{ identifier, index, data_blocks })
+    }
+
+    pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
+            -> Result<Self, Error> {
+        let index = IndexBlock::load(&params, identifier).await?;
+        Ok( Self{ identifier, index, data_blocks } )
     }
 
     #[inline]
@@ -217,19 +268,19 @@ mod tests {
 
         let id = 124234;
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry(), &entry1);
+        assert_eq!(iter.get_value(), ValueResult::Reference(*entry1.get_value_ref().unwrap()));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry(), &entry2);
+        assert_eq!(iter.get_value(), ValueResult::Reference(*entry2.get_value_ref().unwrap()));
 
         iter.step().await;
 
@@ -256,19 +307,19 @@ mod tests {
 
         let id = 124234;
         let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_entry(), &entry1);
+        assert_eq!(iter.get_value(), entry1.get_value());
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_entry(), &entry2);
+        assert_eq!(iter.get_value(), entry2.get_value());
 
         iter.step().await;
 
@@ -302,7 +353,7 @@ mod tests {
         }
 
         let id = 1;
-        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await );
+        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await.unwrap() );
 
         let mut iter = TableIterator::new(table).await;
 
@@ -310,8 +361,8 @@ mod tests {
             assert_eq!(iter.at_end(), false);
 
             assert_eq!(iter.get_key(), &(pos as u32).to_le_bytes().to_vec());
-            assert_eq!(iter.get_entry(),
-                    &Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) });
+            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)) );
+            assert_eq!(iter.get_seq_number(), 500+pos as u64);
 
             iter.step().await;
         }

@@ -5,103 +5,93 @@ use tokio::fs;
 use std::fs;
 
 #[cfg(feature="async-io")]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[cfg(not(feature="async-io"))]
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 
 use std::path::Path;
 
 use cfg_if::cfg_if;
 
-#[ cfg(feature="snappy-compression") ]
-pub async fn read(fpath: &Path) -> Vec<u8> {
-    let mut decoder = snap::raw::Decoder::new();
+//TODO add proper error handling
+
+#[ inline(always) ]
+pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+    let mut compressed = vec![];
 
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
-            let compressed = match fs::read(fpath).await {
-                Ok(data) => data,
-                Err(e) => {
-                    panic!("Cannot read file {:?} from disk: {}", fpath, e);
-                }
-            };
+            let mut file = fs::File::open(fpath).await?;
+
+            if offset > 0 {
+                file.seek(futures::io::SeekFrom::Start(offset)).await?;
+            }
+
+            file.read_to_end(&mut compressed).await?;
         } else {
-            let compressed = match fs::read(fpath) {
-                Ok(data) => data,
-                Err(e) => {
-                    panic!("Cannot read file {:?} from disk: {}", fpath, e);
-                }
-            };
+            let mut file = fs::File::open(fpath)?;
+
+            if offset > 0 {
+                file.seek(std::io::SeekFrom::Start(offset))?;
+            }
+
+            file.read_to_end(&mut compressed)?;
         }
     }
 
-    decoder.decompress_vec(&compressed)
-        .expect("Failed to decompress data")
-}
-
-#[ cfg(not(feature="snappy-compression")) ]
-pub async fn read(fpath: &Path) -> Vec<u8> {
     cfg_if! {
-        if #[ cfg(feature="async-io") ] {
-            fs::read(fpath).await
-                    .expect("Cannot read file from disk")
+        if #[ cfg(feature="snappy-compression") ] {
+            let mut decoder = snap::raw::Decoder::new();
+            Ok(decoder.decompress_vec(&compressed)?)
         } else {
-            fs::read(fpath)
-                    .expect("Cannot read file from disk")
+            Ok(compressed)
         }
     }
 }
 
-#[ cfg(feature="snappy-compression") ]
-pub async fn write(fpath: &Path, data: &[u8]) {
+#[ inline(always) ]
+pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io::Error> {
     //TODO it might be worth investigating if encoding/decoding
     // chunks is more efficient
 
-    let mut encoder = snap::raw::Encoder::new();
-    let compressed = encoder.compress_vec(data)
-        .expect("Failed to compress data");
+    let compressed;
+
+    cfg_if! {
+        if #[cfg(feature="snappy-compression") ] {
+            let mut encoder = snap::raw::Encoder::new();
+            compressed = encoder.compress_vec(data)
+                .expect("Failed to compress data");
+        } else {
+            compressed = data;
+        }
+    }
 
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
-            let mut file = fs::File::create(fpath).await
-                    .expect("Failed to open file for writing");
+            let mut file = fs::OpenOptions::new().create(true).write(true)
+                .open(fpath).await?;
 
-            file.write_all(&compressed).await
-                    .expect("Failed to write to file");
+            if offset > 0 {
+                file.set_len(offset).await?;
+                file.seek(futures::io::SeekFrom::Start(offset)).await?;
+            }
 
-            file.sync_all().await.expect("Failed to write to file");
+            file.write_all(&compressed).await?;
+            file.sync_all().await?;
         } else {
-            let mut file = fs::File::create(fpath)
-                    .expect("Failed to open file for writing");
+            let mut file = fs::OpenOptions::new().create(true).write(true)
+                .open(fpath)?;
 
-            file.write_all(&compressed)
-                    .expect("Failed to write to file");
+            if offset > 0 {
+                file.set_len(offset)?;
+                file.seek(std::io::SeekFrom::Start(offset))?;
+            }
 
-            file.sync_all().expect("Failed to write to file");
+            file.write_all(&compressed)?;
+            file.sync_all()?;
         }
     }
-}
 
-#[ cfg(not(feature="snappy-compression")) ]
-pub async fn write(fpath: &Path, data: &[u8]) {
-    cfg_if! {
-        if #[ cfg(feature="async-io") ] {
-            let mut file = fs::File::create(fpath).await
-                    .expect("Failed to open file for writing");
-
-            file.write_all(data).await
-                    .expect("Failed to write to file");
-
-            file.sync_all().await.expect("Failed to write to file");
-        } else {
-            let mut file = fs::File::create(fpath)
-                    .expect("Failed to open file for writing");
-
-            file.write_all(data)
-                    .expect("Failed to write to file");
-
-            file.sync_all().expect("Failed to write to file");
-        }
-    }
+    Ok(())
 }
