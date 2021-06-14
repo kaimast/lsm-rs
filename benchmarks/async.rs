@@ -1,5 +1,8 @@
-use tempfile::{Builder, TempDir};
 use std::{fs::File, io::BufWriter};
+
+use tempfile::{Builder, TempDir};
+
+use clap::{App, Arg};
 
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
@@ -7,18 +10,32 @@ use tracing_flame::{FlushGuard, FlameLayer};
 
 use lsm::{Database, StartMode, KvTrait, Params, WriteOptions};
 
-async fn bench_init<K: KvTrait, V: KvTrait>() -> (FlushGuard<BufWriter<File>>, TempDir, Database<K, V>) {
-    let fmt_layer = fmt::Layer::default();
+async fn bench_init<K: KvTrait, V: KvTrait>() -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
+    let arg_matches = App::new("lsm-benchmark")
+        .author("Kai Mast <kaimast@cs.cornell.edu>")
+        .arg(Arg::new("enable_tracing")
+                .takes_value(false)
+                .long("enable_tracing")
+            )
+        .get_matches();
 
-    let (flame_layer, tracing_guard) = FlameLayer::with_file("./tracing.folded").unwrap();
+    let tracing_guard = if arg_matches.is_present("enable_tracing") {
+        let fmt_layer = fmt::Layer::default();
 
-    tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(flame_layer)
-        .init();
+        let (flame_layer, tracing_guard) = FlameLayer::with_file("./tracing.folded").unwrap();
 
-    let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
+        tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(flame_layer)
+            .init();
+
+        Some(tracing_guard)
+    } else {
+        None
+    };
+
     let _ = env_logger::builder().is_test(true).try_init();
+    let tmp_dir = Builder::new().prefix("lsm-async-benchmark-").tempdir().unwrap();
 
     let mut db_path = tmp_dir.path().to_path_buf();
     db_path.push("storage.lsm");
@@ -34,7 +51,7 @@ async fn bench_init<K: KvTrait, V: KvTrait>() -> (FlushGuard<BufWriter<File>>, T
 
 #[tokio::main]
 async fn main() {
-    const COUNT: u64 = 3_400;
+    const COUNT: u64 = 10_000;
 
     let (_tracing, _tmpdir, database) = bench_init().await;
 
