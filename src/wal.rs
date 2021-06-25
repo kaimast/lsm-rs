@@ -259,7 +259,7 @@ impl WriteAheadLog{
                 }
 
                 if let Some(offset) = advance_by.take() {
-                    buffers[0] = IoSlice::advance(&mut [buffers[0]], offset)[0];
+                    IoSlice::advance(&mut buffers[0], offset);
                 }
             }
 
