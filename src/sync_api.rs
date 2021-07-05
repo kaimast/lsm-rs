@@ -52,13 +52,24 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
         })
     }
 
-    /// Store 
+    /// Ensure all data is written to disk
+    /// Only has an effect if there were previous writes with sync=false
+    pub async fn synchronize(&self) -> Result<(), Error> {
+        let inner = &*self.inner;
+
+        self.tokio_rt.block_on(async move {
+            inner.synchronize().await
+        })
+    }
+
+    /// Store entry
     #[inline]
     pub fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS)
     }
 
+    /// Store entry (with options)
     #[inline]
     pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();

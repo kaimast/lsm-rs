@@ -353,6 +353,13 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
         Ok(None)
     }
 
+    pub async fn synchronize(&self) -> Result<(), Error> {
+        let mut wal = self.wal.lock().await;
+        wal.sync().await?;
+
+        Ok(())
+    }
+
     #[ tracing::instrument(skip(self)) ]
     pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, Error> {
         let mut memtable = self.memtable.write().await;

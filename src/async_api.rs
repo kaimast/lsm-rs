@@ -51,6 +51,12 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
         self.write_opts(batch, &OPTS).await
     }
 
+    /// Ensure all data is written to disk
+    /// Only has an effect if there were previous writes with sync=false
+    pub async fn synchronize(&self) -> Result<(), Error> {
+        self.inner.synchronize().await
+    }
+
     /// Delete an existing entry (with additional options)
     #[inline]
     pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
