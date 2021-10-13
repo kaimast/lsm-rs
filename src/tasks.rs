@@ -38,7 +38,7 @@ type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
 #[ derive(Debug) ]
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, (StdMutex<JoinHandle>, Arc<TaskHandle>)>
+    tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>
 }
 
 #[ derive(Debug) ]
@@ -119,10 +119,11 @@ impl TaskManager {
         let hdl = Arc::new(TaskHandle::new(stop_flag.clone(), CompactionTask::new_boxed(datastore) ));
         let future = {
             let hdl = hdl.clone();
-
-            StdMutex::new( tokio::spawn(async move {
+            let future = tokio::spawn(async move {
                 hdl.work_loop().await
-            }) )
+            });
+
+            StdMutex::new(Some(future))
         };
 
         tasks.insert(TaskType::Compaction, (future, hdl));
@@ -139,8 +140,9 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, (fut, _hdl)) in self.tasks.iter() {
-            let locked = fut.lock().unwrap();
-            locked.abort();
+            if let Some(future) = fut.lock().unwrap().take() {
+                future.abort();
+            }
         }
     }
 
@@ -154,11 +156,11 @@ impl TaskManager {
         }
 
         for (_, (fut, _hdl)) in self.tasks.iter() {
-            let mut locked = fut.lock().unwrap();
-
-            // Ignore already terminated/aborted tasks
-            if let Ok(res) = (&mut *locked).await {
-                res?;
+            if let Some(future) = fut.lock().unwrap().take() {
+                // Ignore already terminated/aborted tasks
+                if let Ok(res) = future.await {
+                    res?;
+                }
             }
         }
 

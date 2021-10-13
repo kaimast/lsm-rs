@@ -2,7 +2,7 @@
 name = "lsm"
 version = "0.1.0"
 authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
-edition = "2018"
+edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
 description = "An implementation of log-structured merge trees in pure Rust"
 license = "MIT"
