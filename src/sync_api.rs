@@ -1,7 +1,7 @@
 use crate::tasks::{TaskType, TaskManager};
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
-use crate::{get_encoder, StartMode, KV_Trait, Params, WriteBatch, Error, WriteOptions};
+use crate::{get_encoder, StartMode, KvTrait, Params, WriteBatch, Error, WriteOptions};
 
 use std::sync::Arc;
 
@@ -9,13 +9,14 @@ use bincode::Options;
 
 use tokio::runtime::Runtime as TokioRuntime;
 
-pub struct Database<K: KV_Trait, V: KV_Trait> {
+#[ derive(Debug) ]
+pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
     tasks: Arc<TaskManager>,
     tokio_rt: Arc<TokioRuntime>
 }
 
-impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
+impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
     pub fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -51,13 +52,24 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
         })
     }
 
-    /// Store 
+    /// Ensure all data is written to disk
+    /// Only has an effect if there were previous writes with sync=false
+    pub async fn synchronize(&self) -> Result<(), Error> {
+        let inner = &*self.inner;
+
+        self.tokio_rt.block_on(async move {
+            inner.synchronize().await
+        })
+    }
+
+    /// Store entry
     #[inline]
     pub fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS)
     }
 
+    /// Store entry (with options)
     #[inline]
     pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
@@ -128,7 +140,7 @@ impl<K: 'static+KV_Trait, V: 'static+KV_Trait> Database<K, V> {
     }
 }
 
-impl<K: KV_Trait, V: KV_Trait> Drop for Database<K,V> {
+impl<K: KvTrait, V: KvTrait> Drop for Database<K,V> {
     /// This might abort some tasks is stop() has not been called
     /// crash consistency should prevent this from being a problem
     fn drop(&mut self) {

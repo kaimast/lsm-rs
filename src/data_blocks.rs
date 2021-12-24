@@ -2,21 +2,25 @@ use std::sync::Arc;
 use std::path::Path;
 use std::convert::TryInto;
 use std::cmp::Ordering;
+use std::mem::size_of;
 
 use lru::LruCache;
 
-use crate::{disk, Error};
-use crate::manifest::Manifest;
+use crate::{disk, Error, WriteOp};
+use crate::manifest::{Manifest, SeqNumber};
 use crate::Params;
 use crate::sorted_table::Key;
-use crate::entry::Entry;
 
 use tokio::sync::Mutex;
+
+#[cfg(feature="wisckey")]
+use crate::values::{ValueBatchId, ValueOffset, ValueId};
 
 pub type DataBlockId = u64;
 
 const NUM_SHARDS: usize = 16;
 
+#[ derive(Debug) ]
 pub struct PrefixedKey {
     prefix_len: u32,
     suffix: Vec<u8>,
@@ -30,10 +34,214 @@ impl PrefixedKey {
 
 type BlockShard = LruCache<DataBlockId, Arc<DataBlock>>;
 
+#[ cfg(not(feature="wisckey")) ]
+type DataLen = u64;
+
+pub enum DataEntryType {
+    Put,
+    Delete
+}
+
+#[derive(Clone, Debug)]
+pub struct DataEntry {
+    block: Arc<DataBlock>,
+    offset: usize,
+
+    #[ cfg(not(feature="wisckey")) ]
+    length: usize,
+}
+
+enum SearchResult {
+    ExactMatch(DataEntry),
+    Range(u32, u32),
+}
+
+#[ cfg(feature="wisckey") ]
+pub const ENTRY_LENGTH: usize = size_of::<SeqNumber>()+size_of::<u8>()
+    +size_of::<ValueBatchId>()+size_of::<ValueOffset>();
+
+impl DataEntry {
+    #[ inline(always) ]
+    fn get_length(&self) -> usize {
+        cfg_if::cfg_if! {
+            if #[cfg(feature="wisckey")] {
+                ENTRY_LENGTH
+            } else {
+                self.length
+            }
+        }
+    }
+
+    #[ inline(always) ]
+    fn data(&self) -> &[u8] {
+        &self.block.data[self.offset..self.offset+self.get_length()]
+    }
+
+    pub fn get_sequence_number(&self) -> u64 {
+        let seq_len = size_of::<SeqNumber>();
+        u64::from_le_bytes(self.data()[0..seq_len].try_into().unwrap())
+    }
+
+    pub fn get_type(&self) -> DataEntryType {
+        let seq_len = std::mem::size_of::<SeqNumber>();
+        let type_data = self.data()[seq_len];
+
+        if type_data == WriteOp::PUT_OP {
+            DataEntryType::Put
+        } else if type_data == WriteOp::DELETE_OP {
+            DataEntryType::Delete
+        } else {
+            panic!("Unknown data entry type");
+        }
+    }
+
+    #[ cfg(not(feature="wisckey")) ]
+    pub fn get_value(&self) -> Option<&[u8]> {
+        let seq_len = std::mem::size_of::<SeqNumber>();
+        let type_data = self.data()[seq_len];
+
+        let header_len = seq_len+1;
+
+        if type_data == WriteOp::PUT_OP {
+            Some(&self.data()[header_len..])
+        } else if type_data == WriteOp::DELETE_OP {
+            None
+        } else {
+            panic!("Unknown write op");
+        }
+    }
+
+    #[ cfg(feature="wisckey") ]
+    pub fn get_value_ref(&self) -> Option<ValueId> {
+        let seq_len = std::mem::size_of::<SeqNumber>();
+        let batch_id_len= std::mem::size_of::<ValueBatchId>();
+        let offset_len = std::mem::size_of::<ValueOffset>();
+
+        let type_data = self.data()[seq_len];
+
+        if type_data == WriteOp::PUT_OP {
+            let offset = seq_len+1;
+            let batch_id = ValueBatchId::from_le_bytes(
+                self.data()[offset..offset+batch_id_len].try_into().unwrap());
+            let offset = offset + batch_id_len;
+            let value_offset = ValueOffset::from_le_bytes(
+                self.data()[offset..offset+offset_len].try_into().unwrap());
+
+            Some((batch_id, value_offset))
+
+        } else if type_data == WriteOp::DELETE_OP {
+            None
+        } else {
+            panic!("Unknown write op");
+        }
+    }
+}
+
+#[ derive(Debug) ]
 pub struct DataBlocks {
     params: Arc<Params>,
     block_caches: Vec<Mutex<BlockShard>>,
     manifest: Arc<Manifest>,
+}
+
+pub struct DataBlockBuilder {
+    data_blocks: Arc<DataBlocks>,
+    data: Vec<u8>,
+
+    position: usize,
+    restart_list: Vec<u32>,
+}
+
+impl DataBlockBuilder {
+    fn new(data_blocks: Arc<DataBlocks>) -> Self {
+        let mut data = vec![];
+
+        // The restart list keeps track of when the keys are fully reset
+        // This enables using binary search in get() instead of seeking linearly
+        let restart_list = vec![];
+
+        // Reserve space to mark where the restart list starts
+        data.append(&mut 0u32.to_le_bytes().to_vec());
+
+        let position = 0;
+
+        Self{ data_blocks, data, position, restart_list }
+    }
+
+    pub fn add_entry(&mut self, mut key: PrefixedKey, seq_number: SeqNumber, entry_type: u8,
+                       #[ cfg(not(feature="wisckey"))] entry_data: &[u8],
+                       #[ cfg(feature="wisckey")] value_ref: ValueId,
+                       ) {
+        if self.position % self.data_blocks.params.block_restart_interval == 0 {
+            assert!(key.prefix_len == 0);
+            self.restart_list.push(self.data.len() as u32);
+        }
+
+        let pkey_len = (key.prefix_len   as u32).to_le_bytes();
+        let skey_len = (key.suffix.len() as u32).to_le_bytes();
+        let seq_number = seq_number.to_le_bytes();
+
+        self.data.extend_from_slice(&pkey_len[..]);
+        self.data.extend_from_slice(&skey_len[..]);
+        self.data.append(&mut key.suffix);
+
+        #[ cfg(feature="wisckey") ]
+        {
+            let block_id = value_ref.0.to_le_bytes();
+            let offset = value_ref.1.to_le_bytes();
+
+            self.data.extend_from_slice(&seq_number[..]);
+            self.data.extend_from_slice(&[entry_type]);
+            self.data.extend_from_slice(&block_id[..]);
+            self.data.extend_from_slice(&offset[..]);
+        }
+
+        #[ cfg(not(feature="wisckey")) ]
+        {
+            let entry_len = std::mem::size_of::<SeqNumber>()+1+entry_data.len();
+
+            let mut entry_len = (entry_len as DataLen).to_le_bytes().to_vec();
+            self.data.append(&mut entry_len);
+            self.data.extend_from_slice(&seq_number[..]);
+            self.data.extend_from_slice(&[entry_type]);
+            self.data.extend_from_slice(entry_data);
+        }
+
+        self.position += 1;
+    }
+
+    pub async fn finish(mut self) -> Result<Option<DataBlockId>, Error> {
+        if self.position == 0 {
+            return Ok(None);
+        }
+
+        let identifier = self.data_blocks.manifest.next_data_block_id().await;
+
+        let rl_len_len = std::mem::size_of::<u32>();
+        let restart_list_start = self.data.len() as u32;
+        self.data[..rl_len_len].copy_from_slice(&restart_list_start.to_le_bytes());
+
+        for restart_offset in self.restart_list.drain(..) {
+            let mut offset = restart_offset.to_le_bytes().to_vec();
+            self.data.append(&mut offset);
+        }
+
+        let block = Arc::new(
+            DataBlock{ data: self.data, restart_list_start: restart_list_start as usize }
+        );
+        let shard_id = DataBlocks::block_to_shard_id(identifier);
+
+        // Store on disk before grabbing the lock
+        let block_data = &block.data;
+        let fpath = self.data_blocks.get_file_path(&identifier);
+
+        disk::write(&fpath, block_data, 0).await?;
+
+        let mut cache = self.data_blocks.block_caches[shard_id].lock().await;
+        cache.put(identifier, block);
+
+        Ok(Some(identifier))
+    }
 }
 
 impl DataBlocks {
@@ -61,23 +269,12 @@ impl DataBlocks {
         self.params.db_path.join(Path::new(&fname))
     }
 
-    pub async fn make_block(&self, entries: Vec<(PrefixedKey, Entry)>, params: &Params)
-            -> Result<DataBlockId, Error> {
-        let id = self.manifest.next_data_block_id().await;
-        let block = Arc::new( DataBlock::new_from_entries(entries, params) );
-        let shard_id = Self::block_to_shard_id(id);
-
-        // Store on disk before grabbing the lock
-        let block_data = &block.data;
-        let fpath = self.get_file_path(&id);
-        disk::write(&fpath, block_data, 0).await?;
-
-        let mut cache = self.block_caches[shard_id].lock().await;
-        cache.put(id, block);
-
-        Ok(id)
+    #[ tracing::instrument ]
+    pub fn build_block(self_ptr: Arc<DataBlocks>) -> DataBlockBuilder {
+        DataBlockBuilder::new(self_ptr)
     }
 
+    #[ tracing::instrument ]
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
 
@@ -86,7 +283,7 @@ impl DataBlocks {
             block.clone()
         } else {
             log::trace!("Loading data block from disk");
-            let fpath = self.get_file_path(&id);
+            let fpath = self.get_file_path(id);
             let data = disk::read(&fpath, 0).await.expect("Failed to load data block from disk");
             let block = Arc::new(DataBlock::new_from_data(data));
 
@@ -99,7 +296,7 @@ impl DataBlocks {
 
 /*
  * The data layout is the following:
- * 1. 4 bytes marking where the restart list starts
+ * 1. 4 bytes marking where the restart l"ist starts
  * 2. Variable length of Block Entries, where each entry is:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
@@ -108,58 +305,13 @@ impl DataBlocks {
  * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  */
 //TODO support data block layouts without prefixed keys
+#[ derive(Debug) ]
 pub struct DataBlock {
     restart_list_start: usize,
     data: Vec<u8>
 }
 
 impl DataBlock {
-    pub fn new_from_entries(mut entries: Vec<(PrefixedKey, Entry)>, params: &Params) -> Self {
-        let mut data = vec![];
-
-        // The restart list keeps track of when the keys are fully reset
-        // This enables using binary search in get() instead of seeking linearly
-        let mut restart_list = vec![];
-
-        // Reserve space to mark where the restart list starts
-        data.append(&mut 0u32.to_le_bytes().to_vec());
-
-        for (pos, (mut key, entry)) in entries.drain(..).enumerate() {
-            if pos % params.block_restart_interval == 0 {
-                assert!(key.prefix_len == 0);
-                restart_list.push(data.len() as u32);
-            }
-
-            let mut entry_data = bincode::serialize(&entry).unwrap();
-
-            let mut pkey_len = (key.prefix_len   as u32).to_le_bytes().to_vec();
-            let mut skey_len = (key.suffix.len() as u32).to_le_bytes().to_vec();
-
-            #[ cfg(not(feature="wisckey")) ]
-            let mut entry_len = (entry_data.len() as u32).to_le_bytes().to_vec();
-
-            data.append(&mut pkey_len);
-            data.append(&mut skey_len);
-            data.append(&mut key.suffix);
-
-            #[ cfg(not(feature="wisckey")) ]
-            data.append(&mut entry_len);
-
-            data.append(&mut entry_data);
-        }
-
-        let rl_len_len = std::mem::size_of::<u32>();
-        let restart_list_start = data.len() as u32;
-        data[..rl_len_len].copy_from_slice(&restart_list_start.to_le_bytes());
-
-        for restart_offset in restart_list.drain(..) {
-            let mut offset = restart_offset.to_le_bytes().to_vec();
-            data.append(&mut offset);
-        }
-
-        Self{ data, restart_list_start: restart_list_start as usize }
-    }
-
     pub fn new_from_data(data: Vec<u8>) -> Self {
         let rls_len = std::mem::size_of::<u32>();
         let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap());
@@ -168,26 +320,27 @@ impl DataBlock {
 
     /// Get the key and entry at the specified offset (must be valid!)
     /// The third entry in this result is the new offset after the entry
-    #[inline]
-    pub fn get_offset(&self, offset: u32, previous_key: &[u8]) -> (Key, Entry, u32) {
+    #[ tracing::instrument ]
+    pub fn get_offset(self_ptr: Arc<DataBlock>, offset: u32, previous_key: &[u8]) -> (Key, DataEntry, u32) {
         let rl_len_len = std::mem::size_of::<u32>();
         let mut offset = (offset as usize) + rl_len_len;
 
-        assert!(offset < self.restart_list_start);
+        assert!(offset < self_ptr.restart_list_start);
 
         let len_len = std::mem::size_of::<u32>();
-        let pkey_len = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
+        let pkey_len = u32::from_le_bytes(self_ptr.data[offset..offset+len_len].try_into().unwrap());
         offset += len_len;
 
-        let skey_len = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
+        let skey_len = u32::from_le_bytes(self_ptr.data[offset..offset+len_len].try_into().unwrap());
         offset += len_len;
 
-        let kdata = [&previous_key[..pkey_len as usize], &self.data[offset..offset+(skey_len as usize)]].concat();
+        let kdata = [&previous_key[..pkey_len as usize], &self_ptr.data[offset..offset+(skey_len as usize)]].concat();
         offset += skey_len as usize;
 
         #[ cfg(not(feature="wisckey")) ]
         let entry_len = {
-            let elen = u32::from_le_bytes(self.data[offset..offset+len_len].try_into().unwrap());
+            let len_len = std::mem::size_of::<DataLen>();
+            let elen = DataLen::from_le_bytes(self_ptr.data[offset..offset+len_len].try_into().unwrap());
             offset += len_len;
 
             elen as usize
@@ -195,9 +348,14 @@ impl DataBlock {
 
         // WiscKey has constant-size entries
         #[ cfg(feature="wisckey") ]
-        let entry_len = bincode::serialized_size(&Entry::default()).unwrap() as usize;
+        let entry_len = ENTRY_LENGTH;
 
-        let entry = bincode::deserialize(&self.data[offset..offset+entry_len]).unwrap();
+        let entry = DataEntry{
+            block: self_ptr,
+            offset,
+            #[ cfg(not(feature="wisckey")) ]
+            length: entry_len
+        };
 
         offset += entry_len;
         offset -= rl_len_len;
@@ -214,7 +372,7 @@ impl DataBlock {
         (self.data.len() - rl_len_len - rl_len) as u32
     }
 
-    #[inline]
+    #[inline(always)]
     fn restart_list_len(&self) -> usize {
         let offset_len = std::mem::size_of::<u32>();
         let rl_len = self.data.len() - self.restart_list_start;
@@ -223,7 +381,7 @@ impl DataBlock {
         rl_len / offset_len
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_restart_offset(&self, pos: u32) -> u32 {
         let rl_len_len = std::mem::size_of::<u32>() as u32;
         let offset_len = std::mem::size_of::<u32>();
@@ -233,8 +391,9 @@ impl DataBlock {
         u32::from_le_bytes(self.data[pos..pos+offset_len].try_into().unwrap()) - rl_len_len
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<Entry> {
-        let rl_len = self.restart_list_len();
+    #[ tracing::instrument ]
+    fn binary_search(self_ptr: &Arc<DataBlock>, key: &[u8]) -> SearchResult {
+        let rl_len = self_ptr.restart_list_len();
 
         let mut start: u32 = 0;
         let mut end = (rl_len as u32) - 1;
@@ -242,13 +401,13 @@ impl DataBlock {
         // binary search
         while end-start > 1 {
             let mid = start + (end - start) / 2;
-            let offset = self.get_restart_offset(mid);
-            let (this_key, entry,  _) = self.get_offset(offset, &[]);
+            let offset = self_ptr.get_restart_offset(mid);
+            let (this_key, entry,  _) = Self::get_offset(self_ptr.clone(), offset, &[]);
 
             match this_key.as_slice().cmp(key) {
                 Ordering::Equal => {
-                    // exact match
-                    return Some(entry);
+                    // Exact match
+                    return SearchResult::ExactMatch(entry);
                 }
                 Ordering::Less => {
                     // continue with right half
@@ -261,20 +420,32 @@ impl DataBlock {
             }
         }
 
-        // do a sequential search for the remaining interval
-        let mut pos = self.get_restart_offset(start) as u32;
-
         // There is no reset at the very end so we need to include
         // that part in the sequential search
-        let end_offset = if end+1 == rl_len as u32 {
-            self.byte_len() 
+        let end = if end+1 == rl_len as u32 {
+            self_ptr.byte_len()
         } else {
-            self.get_restart_offset(end) as u32
+            self_ptr.get_restart_offset(end) as u32
         };
 
+        SearchResult::Range(start, end)
+    }
+
+    #[ tracing::instrument ]
+    pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
+        let (start, end) = match Self::binary_search(self_ptr, key) {
+            SearchResult::ExactMatch(entry) => {
+                return Some(entry);
+            }
+            SearchResult::Range(start,end) => (start, end)
+        };
+
+        let mut pos = self_ptr.get_restart_offset(start) as u32;
+
         let mut last_key = vec![];
-        while pos < end_offset {
-            let (this_key, entry, new_pos) = self.get_offset(pos, &last_key);
+        while pos < end {
+            let (this_key, entry, new_pos) =
+                Self::get_offset(self_ptr.clone(), pos, &last_key);
 
             if key == this_key {
                 return Some(entry);
@@ -292,64 +463,85 @@ impl DataBlock {
 #[ cfg(test) ]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[ cfg(feature="wisckey") ]
-    #[test]
-    fn store_and_load() {
+    #[tokio::test]
+    async fn store_and_load() {
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
+        let manifest = Arc::new( Manifest::new(params.clone()).await );
+
+        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let mut builder = DataBlocks::build_block(data_blocks.clone());
+
         let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
-        let entry1 = Entry::Value{ seq_number: 14234524, value_ref: (4,2) };
+        let seq1 = 14234524;
+        let val1 = (4,2);
+        builder.add_entry(key1, seq1, WriteOp::PUT_OP, val1);
 
         let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
-        let entry2 = Entry::Value{ seq_number: 424234, value_ref: (4,50) };
+        let seq2 = 424234;
+        let val2 = (4,5);
+        builder.add_entry(key2, seq2, WriteOp::PUT_OP, val2);
 
-        let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
-
-        let params = Params::default();
-
-        let data_block = DataBlock::new_from_entries(entries, &params);
-
-        let data_block2 = DataBlock::new_from_data(data_block.data.clone());
+        let id = builder.finish().await.unwrap().unwrap();
+        let data_block1 = data_blocks.get_block(&id).await;
+        let data_block2 = Arc::new(DataBlock::new_from_data(data_block1.data.clone()));
 
         let prev_key = vec![];
-        let (key, val, pos) = data_block2.get_offset(0, &prev_key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
-        assert_eq!(val, entry1);
+        assert_eq!(entry.get_value_ref(), Some(val1));
 
-        let (key, val, pos) = data_block2.get_offset(pos, &key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), pos, &key);
 
         assert_eq!(key, vec![5, 2]);
-        assert_eq!(val, entry2);
+        assert_eq!(entry.get_value_ref(), Some(val2));
         assert_eq!(pos, data_block2.byte_len());
     }
 
     #[ cfg(not(feature="wisckey")) ]
-    #[test]
-    fn store_and_load() {
+    #[tokio::test]
+    async fn store_and_load() {
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
+        let manifest = Arc::new( Manifest::new(params.clone()).await );
+
+        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let mut builder = DataBlocks::build_block(data_blocks.clone());
+
         let key1 = PrefixedKey{ prefix_len: 0, suffix: vec![5] };
-        let entry1 = Entry::Value{ seq_number: 14234524, value: vec![4,2] };
+        let seq1 = 14234524;
+        let val1 = vec![4,2];
+        builder.add_entry(key1, seq1, WriteOp::PUT_OP, &val1);
 
         let key2 = PrefixedKey{ prefix_len: 1, suffix: vec![2] };
-        let entry2 = Entry::Value{ seq_number: 424234, value: vec![4,50] };
+        let seq2 = 424234;
+        let val2 = vec![24, 50];
+        builder.add_entry(key2, seq2, WriteOp::PUT_OP, &val2);
 
-        let entries = vec![(key1, entry1.clone()), (key2, entry2.clone())];
-
-        let params = Params::default();
-
-        let data_block = DataBlock::new_from_entries(entries, &params);
-
-        let data_block2 = DataBlock::new_from_data(data_block.data.clone());
+        let id = builder.finish().await.unwrap().unwrap();
+        let data_block1 = data_blocks.get_block(&id).await;
+        let data_block2 = Arc::new(DataBlock::new_from_data(data_block1.data.clone()));
 
         let prev_key = vec![];
-        let (key, val, pos) = data_block2.get_offset(0, &prev_key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
-        assert_eq!(val, entry1);
+        assert_eq!(entry.get_value(), Some(&val1[..]));
 
-        let (key, val, pos) = data_block2.get_offset(pos, &key);
+        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), pos, &key);
 
         assert_eq!(key, vec![5, 2]);
-        assert_eq!(val, entry2);
+        assert_eq!(entry.get_value(), Some(&val2[..]));
         assert_eq!(pos, data_block2.byte_len());
     }
 }

@@ -41,6 +41,7 @@ pub type LevelData = HashSet<TableId>;
 
 /// Keeps track of the LSM meta-data
 /// Will persist to disk
+#[ derive(Debug) ]
 pub struct Manifest {
     params: Arc<Params>,
     meta: RwLock<MetaData>,

@@ -55,15 +55,13 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
     //TODO it might be worth investigating if encoding/decoding
     // chunks is more efficient
 
-    let compressed;
-
     cfg_if! {
         if #[cfg(feature="snappy-compression") ] {
             let mut encoder = snap::raw::Encoder::new();
-            compressed = encoder.compress_vec(data)
+            let compressed = encoder.compress_vec(data)
                 .expect("Failed to compress data");
         } else {
-            compressed = data;
+            let compressed = data;
         }
     }
 

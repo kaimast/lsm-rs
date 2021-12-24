@@ -1,10 +1,8 @@
-use crate::sorted_table::{SortedTable, Key, TableIterator, InternalIterator};
-use crate::entry::Entry;
-use crate::{Error, Params, StartMode, KV_Trait, WriteBatch, WriteOp, WriteOptions};
-use crate::data_blocks::DataBlocks;
+use crate::sorted_table::{Key, TableIterator, InternalIterator};
+use crate::{Error, Params, StartMode, KvTrait, WriteBatch, WriteOp, WriteOptions};
+use crate::data_blocks::{DataEntryType, DataBlocks};
 use crate::memtable::{MemtableEntry, Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
-use crate::cond_var::Condvar;
 use crate::wal::WriteAheadLog;
 use crate::manifest::{LevelId, Manifest};
 use crate::iterate::DbIterator;
@@ -25,32 +23,30 @@ use tokio::fs;
 #[ cfg(not(feature="async-io")) ]
 use std::fs;
 
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{RwLock, Mutex, Notify};
 
 use bincode::Options;
 use cfg_if::cfg_if;
 
 /// The main database logic
-pub struct DbLogic<K: KV_Trait, V: KV_Trait> {
+#[ derive(Debug) ]
+pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K,V)>,
 
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Condvar,
+    imm_cond: Notify,
     levels: Vec<Level>,
-    data_blocks: Arc<DataBlocks>,
     wal: Mutex<WriteAheadLog>,
 
     #[ cfg(feature="wisckey") ]
     value_log: Arc<ValueLog>,
 }
 
-impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
+impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
     pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, Error> {
-        let create;
-
         if params.db_path.components().next().is_none() {
             return Err(Error::InvalidParams("DB path must not be empty!".to_string()));
         }
@@ -59,15 +55,16 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             return Err(Error::InvalidParams("DB path must be a folder!".to_string()));
         }
 
-        match start_mode {
+        let create = match start_mode {
             StartMode::CreateOrOpen => {
-                create = !params.db_path.exists();
+                !params.db_path.exists()
             },
             StartMode::Open => {
                 if !params.db_path.exists() {
                     return Err(Error::InvalidParams("DB does not exist".to_string()));
                 }
-                create = false;
+
+                false
             },
             StartMode::CreateOrOverride => {
                 if params.db_path.exists() {
@@ -84,9 +81,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                     }
                 }
 
-                create = true;
+                true
             }
-        }
+        };
 
         let params = Arc::new(params);
         let manifest;
@@ -100,8 +97,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
-                        Err(e) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
+                        Err(err) => {
+                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
                         }
                     }
                 } else {
@@ -110,8 +107,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
-                        Err(e) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
+                        Err(err) => {
+                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
                         }
                     }
                 }
@@ -137,7 +134,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         let imm_memtables = Mutex::new( VecDeque::new() );
-        let imm_cond = Condvar::new();
+        let imm_cond = Notify::new();
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         if params.num_levels == 0 {
@@ -162,8 +159,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let _marker = PhantomData;
 
         Ok(Self {
-            _marker, manifest, params, memtable, imm_memtables, imm_cond,
-            levels, data_blocks, wal,
+            _marker, manifest, params, memtable, imm_memtables, imm_cond, levels, wal,
             #[ cfg(feature="wisckey") ] value_log,
         })
     }
@@ -240,8 +236,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     }
 
     #[ cfg(feature="wisckey") ]
+    #[ tracing::instrument(skip(self)) ]
     pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
-        log::trace!("Starting to seek for key `{:?}`", key);
+        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = crate::get_encoder();
 
         {
@@ -280,11 +277,12 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
-                match entry {
-                    Entry::Value{value_ref, ..} => {
+                match entry.get_type() {
+                    DataEntryType::Put => {
+                        let value_ref = entry.get_value_ref().unwrap();
                         return Ok(Some( self.value_log.get(value_ref).await? ));
                     }
-                    Entry::Deletion{..} => {
+                    DataEntryType::Delete => {
                         return Ok(None);
                     }
                 }
@@ -296,8 +294,9 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
     }
 
     #[ cfg(not(feature="wisckey")) ]
+    #[ tracing::instrument(skip(self)) ]
     pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
-        log::trace!("Starting to seek for key `{:?}`", key);
+        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = crate::get_encoder();
 
         {
@@ -336,12 +335,13 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         for level in self.levels.iter() {
             if let Some(entry) = level.get(key).await {
-                match entry {
-                    Entry::Value{value, ..} => {
-                        let value = encoder.deserialize(&value)?;
+                match entry.get_type() {
+                    DataEntryType::Put => {
+                        let data = entry.get_value().unwrap();
+                        let value = encoder.deserialize(data)?;
                         return Ok(Some(value));
                     }
-                    Entry::Deletion{..} => {
+                    DataEntryType::Delete => {
                         return Ok(None);
                     }
                 }
@@ -351,6 +351,14 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         Ok(None)
     }
 
+    pub async fn synchronize(&self) -> Result<(), Error> {
+        let mut wal = self.wal.lock().await;
+        wal.sync().await?;
+
+        Ok(())
+    }
+
+    #[ tracing::instrument(skip(self)) ]
     pub async fn write_opts(&self, mut write_batch: WriteBatch<K, V>, opt: &WriteOptions) -> Result<bool, Error> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe{ memtable.get_mut() };
@@ -358,7 +366,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let mut wal = self.wal.lock().await;
 
         for op in write_batch.writes.iter() {
-            wal.store(&op).await?;
+            wal.store(op).await?;
         }
 
         if opt.sync {
@@ -368,11 +376,11 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         for op in write_batch.writes.drain(..) {
             match op {
                 WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{:?}`", key);
+                    log::trace!("Storing new value for key `{key:?}`");
                     mem_inner.put(key, value);
                 }
                 WriteOp::Delete(key) => {
-                    log::trace!("Storing deletion for key `{:?}`", key);
+                    log::trace!("Storing deletion for key `{key:?}`");
                     mem_inner.delete(key);
                 }
             }
@@ -385,12 +393,20 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
             let imm = memtable.take(next_seq_num);
 
             let wal_offset = wal.get_log_position();
+
+            // FIXME this might cause inconsistencies in the order the memtables are flushed
             drop(wal);
             drop(memtable);
 
             // Currently only one immutable memtable is supported
-            while !imm_mems.is_empty() {
-                imm_mems = self.imm_cond.wait(imm_mems, &self.imm_memtables).await;
+            // Wait for it to be flushed...
+            loop {
+                if imm_mems.is_empty() {
+                    break;
+                }
+                drop(imm_mems);
+                self.imm_cond.notified().await;
+                imm_mems = self.imm_memtables.lock().await;
             }
 
             imm_mems.push_back((wal_offset, imm));
@@ -403,19 +419,20 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
     /// Do compaction if necessary
     /// Returns true if any work was done
+    #[ tracing::instrument(skip(self)) ]
     pub async fn do_compaction(&self) -> Result<bool, Error> {
-        // (immutable) memtable to level compaction
+        // (Immutable) memtable to level compaction
         {
             let mut wal = self.wal.lock().await;
             let mut imm_mems = self.imm_memtables.lock().await;
 
             if let Some((log_offset, mem)) = imm_mems.pop_front() {
                 // First create table
+                let (min_key, max_key) = mem.get().get_min_max_key();
                 let l0 = self.levels.get(0).unwrap();
-                let table_id = self.manifest.next_table_id().await;
+                let mut table_builder = l0.build_table(min_key, max_key).await;
 
                 let mut memtable_entries = mem.get().get_entries();
-                let mut entries = vec![];
 
                 cfg_if! {
                     if #[cfg(feature="wisckey")] {
@@ -425,11 +442,10 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                             match mem_entry {
                                 MemtableEntry::Value{seq_number, value} => {
                                     let value_ref = vbuilder.add_value(value).await;
-                                    entries.push((key, Entry::Value{seq_number, value_ref}));
+                                    table_builder.add_value(&key, seq_number, value_ref).await?;
                                 }
                                 MemtableEntry::Deletion{seq_number} => {
-                                    let _value_ref = Default::default();
-                                    entries.push((key, Entry::Deletion{seq_number, _value_ref }));
+                                    table_builder.add_deletion(&key, seq_number).await?;
                                 }
                             }
                         }
@@ -437,23 +453,32 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                         vbuilder.finish().await?;
                     } else {
                         for (key, mem_entry) in memtable_entries.drain(..) {
-                            let entry = mem_entry.into_entry();
-                            entries.push((key, entry));
+                            match mem_entry {
+                                MemtableEntry::Value{seq_number, value} => {
+                                    table_builder.add_value(&key, seq_number, &value).await?;
+                                }
+                                MemtableEntry::Deletion{seq_number} => {
+                                    table_builder.add_deletion(&key, seq_number).await?;
+                                }
+                            }
                         }
                     }
                 }
 
-                l0.create_l0_table(table_id, entries).await?;
+                let table = table_builder.finish().await?;
+                let table_id = table.get_id();
+                l0.add_l0_table(table).await;
 
                 // Then update manifest and flush WAL
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
+                self.manifest.update_table_set(vec![(0, table_id)], vec![]).await;
 
                 wal.set_offset(log_offset).await;
                 self.manifest.set_log_offset(log_offset).await;
 
                 log::debug!("Created new L0 table");
-                self.imm_cond.notify_all();
+                self.imm_cond.notify_waiters();
                 return Ok(true);
             }
         }
@@ -470,6 +495,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         Ok(false)
     }
 
+    #[ tracing::instrument(skip(self,level)) ]
     async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<(), Error> {
         let (offsets, mut tables) = level.start_compaction().await;
         assert!(!tables.is_empty());
@@ -487,7 +513,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
         let parent_level = &self.levels[level_pos as usize];
         let child_level = &self.levels[(level_pos+1) as usize];
 
-        let overlaps = child_level.get_overlaps(&min, &max).await;
+        let overlaps = child_level.get_overlaps(min, max).await;
 
         // Fast path
         if tables.len() == 1 && overlaps.is_empty() {
@@ -514,9 +540,6 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         log::debug!("Compacting {} table(s) in level {} with {} table(s) in level {}", tables.len(), level_pos, overlaps.len(), level_pos+1);
 
-        //Merge
-        let mut entries = Vec::new();
-
         for (_, table) in overlaps.iter() {
             min = std::cmp::min(min, table.get_min());
             max = std::cmp::max(max, table.get_max());
@@ -541,6 +564,8 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
 
         #[ cfg(feature="wisckey") ]
         let mut deleted_values = vec![];
+
+        let mut table_builder = child_level.build_table(min, max).await;
 
         loop {
             log::trace!("Starting compaction for next key");
@@ -567,7 +592,7 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 break;
             }
 
-            let mut min_iter: Option<&dyn InternalIterator> = None;
+            let mut min_iter: Option<&TableIterator> = None;
             let min_key = min_key.unwrap().clone();
 
             for table_iter in table_iters.iter_mut() {
@@ -603,17 +628,33 @@ impl<K: KV_Trait, V: KV_Trait>  DbLogic<K, V> {
                 }
             }
 
-            //FIXME don't clone entry here
-            let entry = min_iter.unwrap().clone_entry().unwrap();
-            entries.push((min_key.clone(), entry));
+            let min_iter = min_iter.unwrap();
+            match min_iter.get_entry_type() {
+                DataEntryType::Put => {
+                    cfg_if! {
+                        if #[cfg(feature="wisckey")] {
+                            if let ValueResult::Reference(value_ref) = min_iter.get_value() {
+                                table_builder.add_value(&min_key, min_iter.get_seq_number(), value_ref).await?;
+                            } else {
+                                panic!("Invalid state");
+                            }
+                        } else {
+                            let value = min_iter.get_value().unwrap();
+                            table_builder.add_value(&min_key, min_iter.get_seq_number(), value).await?;
+                        }
+                    }
+                }
+                DataEntryType::Delete => {
+                    table_builder.add_deletion(&min_key, min_iter.get_seq_number()).await?;
+                }
+            }
+
             last_key = Some(min_key);
         }
 
-        let id = self.manifest.next_table_id().await;
+        let new_table = table_builder.finish().await?;
 
-        let new_table = SortedTable::new(id, entries, min, max, self.data_blocks.clone(), &*self.params).await?;
-
-        let add_set = vec![(level_pos+1, id)];
+        let add_set = vec![(level_pos+1, new_table.get_id())];
         let mut remove_set = vec![];
 
         // Install new tables atomically

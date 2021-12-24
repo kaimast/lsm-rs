@@ -6,7 +6,7 @@ use crate::sorted_table::ValueResult;
 
 use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::memtable::MemtableIterator;
-use crate::{Error, KV_Trait};
+use crate::{Error, KvTrait};
 
 use bincode::Options;
 
@@ -25,11 +25,11 @@ use futures::stream::Stream;
 
 type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K,V>, Option<(K,V)>), Error>>+Send;
 
-pub struct DbIterator<K: KV_Trait, V: KV_Trait> {
+pub struct DbIterator<K: KvTrait, V: KvTrait> {
     state: Option<Pin<Box<IterFuture<K,V>>>>
 }
 
-impl<K: KV_Trait, V: KV_Trait> DbIterator<K, V> {
+impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     #[ cfg(feature="wisckey") ]
     pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>,
                       value_log: Arc<ValueLog>) -> Self {
@@ -48,7 +48,7 @@ impl<K: KV_Trait, V: KV_Trait> DbIterator<K, V> {
     }
 }
 
-impl<K: KV_Trait, V: KV_Trait> Stream for DbIterator<K, V> {
+impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
     type Item = (K, V);
 
     fn poll_next(mut self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Option<Self::Item>> {
@@ -82,7 +82,7 @@ impl<K: KV_Trait, V: KV_Trait> Stream for DbIterator<K, V> {
     }
 }
 
-struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
+struct DbIteratorInner<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K,V)>,
 
     last_key: Option<Vec<u8>>,
@@ -93,14 +93,14 @@ struct DbIteratorInner<K: KV_Trait, V: KV_Trait> {
 }
 
 #[ cfg(feature="wisckey") ]
-enum IterResult<V: KV_Trait> {
+enum IterResult<V: KvTrait> {
     Value(V),
     ValueRef(ValueId),
 }
 
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
-impl<K: KV_Trait, V: KV_Trait> DbIteratorInner<K, V> {
+impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
     fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>,
             #[ cfg(feature="wisckey") ]value_log: Arc<ValueLog>
             ) -> Self {
