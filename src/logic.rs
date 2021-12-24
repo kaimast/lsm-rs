@@ -48,8 +48,6 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
 
 impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
     pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, Error> {
-        let create;
-
         if params.db_path.components().next().is_none() {
             return Err(Error::InvalidParams("DB path must not be empty!".to_string()));
         }
@@ -58,15 +56,16 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
             return Err(Error::InvalidParams("DB path must be a folder!".to_string()));
         }
 
-        match start_mode {
+        let create = match start_mode {
             StartMode::CreateOrOpen => {
-                create = !params.db_path.exists();
+                !params.db_path.exists()
             },
             StartMode::Open => {
                 if !params.db_path.exists() {
                     return Err(Error::InvalidParams("DB does not exist".to_string()));
                 }
-                create = false;
+
+                false
             },
             StartMode::CreateOrOverride => {
                 if params.db_path.exists() {
@@ -83,9 +82,9 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
                     }
                 }
 
-                create = true;
+                true
             }
-        }
+        };
 
         let params = Arc::new(params);
         let manifest;

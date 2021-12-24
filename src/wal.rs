@@ -65,19 +65,16 @@ impl WriteAheadLog{
         // Re-insert ops into memtable
         loop {
             let mut op_header = [0u8; 9];
-            let op_type;
-            let key_len;
-
             let success = obj.read_from_log(&mut op_header[..], true).await?;
 
             if !success {
                 break;
             }
 
-            op_type = op_header[0];
+            let op_type = op_header[0];
 
             let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
-            key_len = u64::from_le_bytes(*key_data);
+            let key_len = u64::from_le_bytes(*key_data);
 
             let mut key = vec![0; key_len as usize];
             obj.read_from_log(&mut key, false).await?;
