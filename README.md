@@ -29,11 +29,11 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
-We provide a makefile for convenience:
+We provide a [justfile](https://github.com/casey/just) for convenience:
 
 ```sh
-make test #runs all tests
-make lint #runs cargo clippy
+just test #runs all tests
+just lint #runs cargo clippy
 ```
 
 ## Similar Crates

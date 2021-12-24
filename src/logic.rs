@@ -97,8 +97,8 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
-                        Err(e) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
+                        Err(err) => {
+                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
                         }
                     }
                 } else {
@@ -107,8 +107,8 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
-                        Err(e) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {}", e)));
+                        Err(err) => {
+                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
                         }
                     }
                 }
@@ -238,7 +238,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
     #[ cfg(feature="wisckey") ]
     #[ tracing::instrument(skip(self)) ]
     pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
-        log::trace!("Starting to seek for key `{:?}`", key);
+        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = crate::get_encoder();
 
         {
@@ -296,7 +296,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
     #[ cfg(not(feature="wisckey")) ]
     #[ tracing::instrument(skip(self)) ]
     pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
-        log::trace!("Starting to seek for key `{:?}`", key);
+        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = crate::get_encoder();
 
         {
@@ -376,11 +376,11 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
         for op in write_batch.writes.drain(..) {
             match op {
                 WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{:?}`", key);
+                    log::trace!("Storing new value for key `{key:?}`");
                     mem_inner.put(key, value);
                 }
                 WriteOp::Delete(key) => {
-                    log::trace!("Storing deletion for key `{:?}`", key);
+                    log::trace!("Storing deletion for key `{key:?}`");
                     mem_inner.delete(key);
                 }
             }
@@ -393,6 +393,10 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
             let imm = memtable.take(next_seq_num);
 
             let wal_offset = wal.get_log_position();
+
+            // FIXME this might cause inconsistencies in the order the memtables are flushed
+            drop(wal);
+            drop(memtable);
 
             // Currently only one immutable memtable is supported
             // Wait for it to be flushed...
