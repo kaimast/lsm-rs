@@ -40,7 +40,6 @@ use logic::DbLogic;
 mod disk;
 mod level;
 mod manifest;
-mod cond_var;
 mod data_blocks;
 mod index_blocks;
 mod wal;

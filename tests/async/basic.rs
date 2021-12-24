@@ -1,14 +1,11 @@
 use futures::stream::StreamExt;
 use tempfile::{Builder, TempDir};
-use std::{fs::File, io::BufWriter};
 
 use lsm::{Database, StartMode, KvTrait, Params, WriteBatch, WriteOptions};
 
 const SM: StartMode = StartMode::CreateOrOverride;
 
 async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
-    let fmt_layer = fmt::Layer::default();
-
     let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
 

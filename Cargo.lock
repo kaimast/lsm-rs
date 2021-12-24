@@ -308,7 +308,7 @@ dependencies = [
  "snap",
  "tempfile",
  "tokio",
- "tracing",
+ "tracing 0.2.0",
  "tracing-flame",
  "tracing-futures",
  "tracing-subscriber",
@@ -656,15 +656,24 @@ checksum = "375a639232caf30edfc78e8d89b2d4c375515393e7af7e16f01cd96917fb2105"
 dependencies = [
  "cfg-if",
  "pin-project-lite",
+ "tracing-core 0.1.21",
+]
+
+[[package]]
+name = "tracing"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing.git#ca1e7eba0f380d82a0ebb770a544256a6560545f"
+dependencies = [
+ "cfg-if",
+ "pin-project-lite",
  "tracing-attributes",
- "tracing-core",
+ "tracing-core 0.2.0",
 ]
 
 [[package]]
 name = "tracing-attributes"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f480b8f81512e825f337ad51e94c1eb5d3bbdf2b363dcd01e2b19a9ffe3f8e"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing.git#ca1e7eba0f380d82a0ebb770a544256a6560545f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -681,13 +690,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-flame"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd520fe41c667b437952383f3a1ec14f1fa45d653f719a77eedd6e6a02d8fa54"
+name = "tracing-core"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing.git#ca1e7eba0f380d82a0ebb770a544256a6560545f"
 dependencies = [
  "lazy_static",
- "tracing",
+]
+
+[[package]]
+name = "tracing-flame"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing.git#ca1e7eba0f380d82a0ebb770a544256a6560545f"
+dependencies = [
+ "lazy_static",
+ "tracing 0.2.0",
  "tracing-subscriber",
 ]
 
@@ -698,19 +714,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
 dependencies = [
  "pin-project",
- "tracing",
+ "tracing 0.1.29",
 ]
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.2.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e0d2eaa99c3c2e41547cfa109e910a68ea03823cccad4a0525dcbc9b01e8c71"
+version = "0.3.0"
+source = "git+https://github.com/tokio-rs/tracing.git#ca1e7eba0f380d82a0ebb770a544256a6560545f"
 dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
- "tracing-core",
+ "tracing-core 0.2.0",
 ]
 
 [[package]]

@@ -1,4 +1,6 @@
-Unreleased:
+0.2:
+    - Support for tracing to benchmark the library
+    - Removed custom Condition Variable implementation
     - Databases can be reopened
     - Wisckey now uses a more efficient "folding"-based implementation
     - Allow disabling key-value separation using the "wisckey" feature flag

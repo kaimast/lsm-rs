@@ -18,6 +18,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 ## Planned Features:
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
+* Transactions: Modify multiple values at once and atomically
 * More modularity and configuration options
 
 ## Feature Flags

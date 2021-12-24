@@ -6,9 +6,8 @@ use std::sync::Mutex as StdMutex;
 
 use super::KvTrait;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
-use crate::cond_var::Condvar;
 use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
@@ -28,7 +27,7 @@ struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
     last_change: Mutex<Instant>,
-    sc_condition: Condvar,
+    sc_condition: Notify,
 }
 
 type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
@@ -62,11 +61,12 @@ impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
 impl TaskHandle {
     fn new(stop_flag: Arc<AtomicBool>, task: Box<dyn Task>) -> Self {
         let last_change = Mutex::new(Instant::now());
-        let sc_condition = Condvar::new();
+        let sc_condition = Notify::new();
 
         Self{ stop_flag, task, last_change, sc_condition }
     }
 
+    /// Notify the task that there is new work to do
     async fn wake_up(&self) {
         let mut last_change = self.last_change.lock().await;
         *last_change = Instant::now();
@@ -84,12 +84,15 @@ impl TaskHandle {
         let mut idle = false;
 
         loop {
-            {
-                let mut lchange = self.last_change.lock().await;
-
-                while self.is_running() && idle && *lchange < last_update {
-                    lchange = self.sc_condition.wait(lchange, &self.last_change).await;
+            loop {
+                {
+                    let lchange = self.last_change.lock().await;
+                    if !self.is_running() || !idle || *lchange >= last_update {
+                        break;
+                    }
                 }
+
+                self.sc_condition.notified().await;
             }
 
             if !self.is_running() {
@@ -152,7 +155,7 @@ impl TaskManager {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         for (_, (_fut, hdl)) in self.tasks.iter() {
-            hdl.sc_condition.notify_all();
+            hdl.sc_condition.notify_waiters();
         }
 
         for (_, (fut, _hdl)) in self.tasks.iter() {

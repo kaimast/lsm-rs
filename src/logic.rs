@@ -3,7 +3,6 @@ use crate::{Error, Params, StartMode, KvTrait, WriteBatch, WriteOp, WriteOptions
 use crate::data_blocks::{DataEntryType, DataBlocks};
 use crate::memtable::{MemtableEntry, Memtable, MemtableRef, ImmMemtableRef};
 use crate::level::Level;
-use crate::cond_var::Condvar;
 use crate::wal::WriteAheadLog;
 use crate::manifest::{LevelId, Manifest};
 use crate::iterate::DbIterator;
@@ -24,7 +23,7 @@ use tokio::fs;
 #[ cfg(not(feature="async-io")) ]
 use std::fs;
 
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{RwLock, Mutex, Notify};
 
 use bincode::Options;
 use cfg_if::cfg_if;
@@ -38,7 +37,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Condvar,
+    imm_cond: Notify,
     levels: Vec<Level>,
     wal: Mutex<WriteAheadLog>,
 
@@ -135,7 +134,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
         let value_log = Arc::new( ValueLog::new(params.clone(), manifest.clone()).await );
 
         let imm_memtables = Mutex::new( VecDeque::new() );
-        let imm_cond = Condvar::new();
+        let imm_cond = Notify::new();
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest.clone()) );
 
         if params.num_levels == 0 {
@@ -394,12 +393,16 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
             let imm = memtable.take(next_seq_num);
 
             let wal_offset = wal.get_log_position();
-            drop(wal);
-            drop(memtable);
 
             // Currently only one immutable memtable is supported
-            while !imm_mems.is_empty() {
-                imm_mems = self.imm_cond.wait(imm_mems, &self.imm_memtables).await;
+            // Wait for it to be flushed...
+            loop {
+                if imm_mems.is_empty() {
+                    break;
+                }
+                drop(imm_mems);
+                self.imm_cond.notified().await;
+                imm_mems = self.imm_memtables.lock().await;
             }
 
             imm_mems.push_back((wal_offset, imm));
@@ -471,7 +474,7 @@ impl<K: KvTrait, V: KvTrait>  DbLogic<K, V> {
                 self.manifest.set_log_offset(log_offset).await;
 
                 log::debug!("Created new L0 table");
-                self.imm_cond.notify_all();
+                self.imm_cond.notify_waiters();
                 return Ok(true);
             }
         }

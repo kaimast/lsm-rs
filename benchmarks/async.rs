@@ -5,8 +5,9 @@ use tempfile::{Builder, TempDir};
 use clap::{App, Arg};
 
 use tracing_subscriber::fmt;
+use tracing_subscriber::registry::Registry;
 use tracing_subscriber::prelude::*;
-use tracing_flame::{FlushGuard, FlameLayer};
+use tracing_flame::{FlushGuard, FlameSubscriber};
 
 use lsm::{Database, StartMode, KvTrait, Params, WriteOptions};
 
@@ -20,14 +21,16 @@ async fn bench_init<K: KvTrait, V: KvTrait>() -> (Option<FlushGuard<BufWriter<Fi
         .get_matches();
 
     let tracing_guard = if arg_matches.is_present("enable_tracing") {
-        let fmt_layer = fmt::Layer::default();
+        let fmt_subscriber = fmt::Subscriber::default();
+        let (flame_subscriber, tracing_guard) = FlameSubscriber::with_file("./tracing.folded")
+                .expect("Failed to set up flame subscriber");
 
-        let (flame_layer, tracing_guard) = FlameLayer::with_file("./tracing.folded").unwrap();
+        let collector = Registry::default()
+            .with(fmt_subscriber)
+            .with(flame_subscriber);
 
-        tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(flame_layer)
-            .init();
+        tracing::collect::set_global_default(collector)
+            .expect("setting global tracing subscriber failed");
 
         Some(tracing_guard)
     } else {
