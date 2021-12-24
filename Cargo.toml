@@ -1,13 +1,13 @@
 [package]
 name = "lsm"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
 edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
 description = "An implementation of log-structured merge trees in pure Rust"
 license = "MIT"
 readme = "README.md"
-keywords = ["storage", "database"]
+keywords = ["storage", "database", "async"]
 
 [dependencies]
 lru = "0.6"
