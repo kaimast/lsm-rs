@@ -12,6 +12,9 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput (not fully implemented yet)
 * *Async-support*: All API calls are exposed as async functions.
 
+## Latest Version:
+The version on crates.io is quite outdated. I recommend using the `main` git branch.
+
 ## Supported Architectures:
 Currently, the code is only tested on Linux machines, but it should run on all systems supported by the rust compiler.
 

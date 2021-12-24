@@ -20,7 +20,7 @@ futures = "0.3"
 snap = { version="1", optional=true }
 async-trait = "0.1"
 cfg-if = "1"
-tracing = { version="0.2", git="https://github.com/tokio-rs/tracing.git", default-features=false, features=["attributes"] }
+tracing = { git="https://github.com/tokio-rs/tracing.git", default-features=false, features=["attributes"] }
 tracing-futures = "0.2"
 
 [dependencies.tokio]
