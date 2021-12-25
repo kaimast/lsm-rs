@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 
 use bincode::Options;
 
-#[ derive(Serialize, Deserialize) ]
+#[ derive(Debug, Serialize, Deserialize) ]
 pub struct IndexBlock {
     index: Vec<(Key, DataBlockId)>,
     size: u64,

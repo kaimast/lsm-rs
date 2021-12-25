@@ -1,21 +1,21 @@
 use crate::sorted_table::{InternalIterator, Key};
-use crate::entry::Entry;
-use crate::{KV_Trait, Params};
+use crate::{KvTrait, Params};
 use crate::manifest::SeqNumber;
+use crate::data_blocks::DataEntryType;
 
 #[ cfg(feature="wisckey") ]
 use crate::sorted_table::ValueResult;
 
 use std::sync::Arc;
 
-#[ derive(Clone) ]
+#[ derive(Debug, Clone) ]
 pub struct MemtableRef {
     //TODO this rw lock is not really needed because there is another lock in DbInner
     // Not sure how to remove the lock logic without using unsafe code though
     inner: Arc<Memtable>
 }
 
-#[ derive(Clone) ]
+#[ derive(Debug, Clone) ]
 pub struct ImmMemtableRef {
     inner: Arc<Memtable>
 }
@@ -34,20 +34,13 @@ pub enum MemtableEntry {
 impl MemtableEntry {
     pub fn get_value(&self) -> Option<&[u8]> {
         match self {
-            MemtableEntry::Value{ value, .. } => Some(&value),
+            MemtableEntry::Value{ value, .. } => Some(value),
             MemtableEntry::Deletion{ .. } => None,
-        }
-    }
-
-    #[ cfg(not(feature="wisckey")) ]
-    pub fn into_entry(self) -> Entry {
-        match self {
-            MemtableEntry::Value{ value, seq_number } => Entry::Value{ value, seq_number },
-            MemtableEntry::Deletion{ seq_number } => Entry::Deletion{ seq_number },
         }
     }
 }
 
+#[ derive(Debug) ]
 pub struct MemtableIterator {
     inner: Arc<Memtable>,
     next_index: usize,
@@ -69,6 +62,7 @@ impl MemtableIterator {
 
 #[ async_trait::async_trait ]
 impl InternalIterator for MemtableIterator {
+    #[ tracing::instrument ]
     async fn step(&mut self) {
         let entries = &self.inner.entries;
 
@@ -109,12 +103,19 @@ impl InternalIterator for MemtableIterator {
         }
     }
 
+    fn get_entry_type(&self) -> DataEntryType {
+        match self.entry.as_ref().unwrap() {
+            MemtableEntry::Value{..} => DataEntryType::Put,
+            MemtableEntry::Deletion{..} => DataEntryType::Delete
+        }
+    }
+
     #[ cfg(feature="wisckey") ]
     fn get_value(&self) -> ValueResult {
         let entry = self.entry.as_ref().unwrap();
 
         if let Some(value) = entry.get_value() {
-            ValueResult::Value(&value)
+            ValueResult::Value(value)
         } else {
             ValueResult::NoValue
         }
@@ -125,14 +126,10 @@ impl InternalIterator for MemtableIterator {
         let entry = self.entry.as_ref().unwrap();
 
         if let Some(value) = entry.get_value() {
-            Some(&value)
+            Some(value)
         } else {
             None
         }
-    }
-
-    fn clone_entry(&self) -> Option<Entry> {
-        None
     }
 }
 
@@ -176,6 +173,7 @@ impl MemtableRef {
 
 /// In-memory representation of state that has not been written to level 0 yet.
 /// This data structure does not exist on disk, but can be recreated from the write-ahead log
+#[ derive(Debug) ]
 pub struct Memtable {
     // Sorted upadtes
     entries: Vec<(Key, MemtableEntry)>,
@@ -194,6 +192,16 @@ impl Memtable {
     #[inline]
     pub fn get_next_seq_number(&self) -> u64 {
         self.next_seq_number
+    }
+
+    pub fn get_min_max_key(&self) -> (Key, Key) {
+        let len = self.entries.len();
+
+        if len == 0 {
+            panic!("Memtable is empty");
+        }
+
+        (self.entries[0].0.clone(), self.entries[len-1].0.clone())
     }
 
     pub fn get(&self, key: &[u8]) -> Option<MemtableEntry> {

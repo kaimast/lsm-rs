@@ -25,6 +25,7 @@ use cfg_if::cfg_if;
 
 const PAGE_SIZE: u64 = 4*1024;
 
+#[ derive(Debug) ]
 pub struct WriteAheadLog{
     params: Arc<Params>,
     // The current log file
@@ -64,19 +65,16 @@ impl WriteAheadLog{
         // Re-insert ops into memtable
         loop {
             let mut op_header = [0u8; 9];
-            let op_type;
-            let key_len;
-
             let success = obj.read_from_log(&mut op_header[..], true).await?;
 
             if !success {
                 break;
             }
 
-            op_type = op_header[0];
+            let op_type = op_header[0];
 
             let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
-            key_len = u64::from_le_bytes(*key_data);
+            let key_len = u64::from_le_bytes(*key_data);
 
             let mut key = vec![0; key_len as usize];
             obj.read_from_log(&mut key, false).await?;
@@ -258,7 +256,7 @@ impl WriteAheadLog{
                 }
 
                 if let Some(offset) = advance_by.take() {
-                    buffers[0] = IoSlice::advance(&mut [buffers[0]], offset)[0];
+                    IoSlice::advance(&mut buffers[0], offset);
                 }
             }
 

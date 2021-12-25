@@ -1,7 +1,7 @@
-use lsm::{Database, StartMode, KV_Trait, Params, WriteOptions};
+use lsm::{Database, StartMode, KvTrait, Params, WriteOptions};
 use tempfile::{Builder, TempDir};
 
-fn test_init<K: KV_Trait, V: KV_Trait>() -> (TempDir, Params, Database<K, V>) {
+fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
     let tmp_dir = Builder::new().prefix("lsm-sync-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
 

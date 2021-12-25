@@ -4,17 +4,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
-use super::KV_Trait;
+use super::KvTrait;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
-use crate::cond_var::Condvar;
 use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
 
 #[ async_trait ]
-pub trait Task: Sync+Send {
+pub trait Task: Sync+Send+std::fmt::Debug {
     async fn run(&self) -> Result<bool, Error>;
 }
 
@@ -23,34 +22,37 @@ pub enum TaskType {
     Compaction,
 }
 
+#[ derive(Debug) ]
 struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
     last_change: Mutex<Instant>,
-    sc_condition: Condvar,
+    sc_condition: Notify,
 }
 
 type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
 
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
+#[ derive(Debug) ]
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, (StdMutex<JoinHandle>, Arc<TaskHandle>)>
+    tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>
 }
 
-struct CompactionTask<K: KV_Trait, V: KV_Trait> {
+#[ derive(Debug) ]
+struct CompactionTask<K: KvTrait, V: KvTrait> {
    datastore: Arc<DbLogic<K, V>>
 }
 
-impl<K: KV_Trait, V: KV_Trait> CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> CompactionTask<K, V> {
     fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
         Box::new(Self{ datastore })
     }
 }
 
 #[ async_trait ]
-impl<K: KV_Trait, V: KV_Trait> Task for CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         Ok( self.datastore.do_compaction().await? )
     }
@@ -59,11 +61,12 @@ impl<K: KV_Trait, V: KV_Trait> Task for CompactionTask<K, V> {
 impl TaskHandle {
     fn new(stop_flag: Arc<AtomicBool>, task: Box<dyn Task>) -> Self {
         let last_change = Mutex::new(Instant::now());
-        let sc_condition = Condvar::new();
+        let sc_condition = Notify::new();
 
         Self{ stop_flag, task, last_change, sc_condition }
     }
 
+    /// Notify the task that there is new work to do
     async fn wake_up(&self) {
         let mut last_change = self.last_change.lock().await;
         *last_change = Instant::now();
@@ -81,12 +84,15 @@ impl TaskHandle {
         let mut idle = false;
 
         loop {
-            {
-                let mut lchange = self.last_change.lock().await;
-
-                while self.is_running() && idle && *lchange < last_update {
-                    lchange = self.sc_condition.wait(lchange, &self.last_change).await;
+            loop {
+                {
+                    let lchange = self.last_change.lock().await;
+                    if !self.is_running() || !idle || *lchange >= last_update {
+                        break;
+                    }
                 }
+
+                self.sc_condition.notified().await;
             }
 
             if !self.is_running() {
@@ -109,17 +115,18 @@ impl TaskHandle {
 }
 
 impl TaskManager {
-    pub async fn new<K: KV_Trait, V: KV_Trait>(datastore: Arc<DbLogic<K,V>>) -> Self {
+    pub async fn new<K: KvTrait, V: KvTrait>(datastore: Arc<DbLogic<K,V>>) -> Self {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let hdl = Arc::new(TaskHandle::new(stop_flag.clone(), CompactionTask::new_boxed(datastore) ));
         let future = {
             let hdl = hdl.clone();
-
-            StdMutex::new( tokio::spawn(async move {
+            let future = tokio::spawn(async move {
                 hdl.work_loop().await
-            }) )
+            });
+
+            StdMutex::new(Some(future))
         };
 
         tasks.insert(TaskType::Compaction, (future, hdl));
@@ -136,8 +143,9 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, (fut, _hdl)) in self.tasks.iter() {
-            let locked = fut.lock().unwrap();
-            locked.abort();
+            if let Some(future) = fut.lock().unwrap().take() {
+                future.abort();
+            }
         }
     }
 
@@ -147,15 +155,15 @@ impl TaskManager {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         for (_, (_fut, hdl)) in self.tasks.iter() {
-            hdl.sc_condition.notify_all();
+            hdl.sc_condition.notify_waiters();
         }
 
         for (_, (fut, _hdl)) in self.tasks.iter() {
-            let mut locked = fut.lock().unwrap();
-
-            // Ignore already terminated/aborted tasks
-            if let Ok(res) = (&mut *locked).await {
-                res?;
+            if let Some(future) = fut.lock().unwrap().take() {
+                // Ignore already terminated/aborted tasks
+                if let Ok(res) = future.await {
+                    res?;
+                }
             }
         }
 

@@ -42,12 +42,14 @@ pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
+#[ derive(Debug) ]
 pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
     batch_caches: Vec<Mutex<BatchShard>>,
 }
 
+#[ derive(Debug) ]
 struct ValueBatch {
     fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
     data: Vec<u8>,
@@ -134,6 +136,7 @@ impl ValueLog {
         }
     }
 
+    #[ tracing::instrument(skip(self)) ]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
         let (batch_id, value_offset) = vid;
         let fpath = self.get_file_path(&batch_id);
@@ -250,6 +253,7 @@ impl ValueLog {
         Ok(())
     }
 
+    #[ tracing::instrument(skip(self)) ]
     async fn cleanup_batch(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&batch_id);
 
@@ -452,10 +456,10 @@ impl ValueLog {
     #[ allow(clippy::needless_lifetimes) ] //clippy bug
     pub async fn make_batch<'a>(&'a self) -> ValueBatchBuilder<'a> {
         let identifier = self.manifest.next_value_batch_id().await;
-        ValueBatchBuilder{ identifier, vlog: &self, data: vec![], offsets: vec![] }
+        ValueBatchBuilder{ identifier, vlog: self, data: vec![], offsets: vec![] }
     }
 
-    #[inline]
+    #[ tracing::instrument(skip(self)) ]
     async fn get_batch(&self, identifier: ValueBatchId) -> Result<Arc<ValueBatch>, Error> {
         let shard_id = Self::batch_to_shard_id(identifier);
         let mut cache = self.batch_caches[shard_id].lock().await;

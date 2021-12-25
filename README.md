@@ -12,12 +12,16 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput (not fully implemented yet)
 * *Async-support*: All API calls are exposed as async functions.
 
+## Latest Version:
+The version on crates.io is quite outdated. I recommend using the `main` git branch.
+
 ## Supported Architectures:
 Currently, the code is only tested on Linux machines, but it should run on all systems supported by the rust compiler.
 
 ## Planned Features:
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
+* Transactions: Modify multiple values at once and atomically
 * More modularity and configuration options
 
 ## Feature Flags
@@ -28,11 +32,11 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
-We provide a makefile for convenience:
+We provide a [justfile](https://github.com/casey/just) for convenience:
 
 ```sh
-make test #runs all tests
-make lint #runs cargo clippy
+just test #runs all tests
+just lint #runs cargo clippy
 ```
 
 ## Similar Crates
