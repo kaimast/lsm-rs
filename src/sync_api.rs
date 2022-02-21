@@ -1,7 +1,7 @@
-use crate::tasks::{TaskType, TaskManager};
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
-use crate::{get_encoder, StartMode, KvTrait, Params, WriteBatch, Error, WriteOptions};
+use crate::tasks::{TaskManager, TaskType};
+use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 
 use std::sync::Arc;
 
@@ -9,14 +9,14 @@ use bincode::Options;
 
 use tokio::runtime::Runtime as TokioRuntime;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
     tasks: Arc<TaskManager>,
-    tokio_rt: Arc<TokioRuntime>
+    tokio_rt: Arc<TokioRuntime>,
 }
 
-impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
+impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     pub fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -28,28 +28,29 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
             match DbLogic::new(mode, params).await {
                 Ok(inner) => {
                     let inner = Arc::new(inner);
-                    let tasks = Arc::new( TaskManager::new(inner.clone()).await );
+                    let tasks = Arc::new(TaskManager::new(inner.clone()).await);
 
                     Ok((inner, tasks))
                 }
-                Err(err) => {
-                    Err(err)
-                }
+                Err(err) => Err(err),
             }
         })?;
 
-        Ok( Self{ inner, tasks, tokio_rt } )
+        Ok(Self {
+            inner,
+            tasks,
+            tokio_rt,
+        })
     }
 
     /// Will deserialize V from the raw data (avoids an additional copy)
     #[inline]
-    pub fn get(&self, key: &K)-> Result<Option<V>, Error> {
+    pub fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
         let inner = &*self.inner;
 
-        self.tokio_rt.block_on(async move{
-            inner.get(&key_data).await
-        })
+        self.tokio_rt
+            .block_on(async move { inner.get(&key_data).await })
     }
 
     /// Ensure all data is written to disk
@@ -57,9 +58,8 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
     pub async fn synchronize(&self) -> Result<(), Error> {
         let inner = &*self.inner;
 
-        self.tokio_rt.block_on(async move {
-            inner.synchronize().await
-        })
+        self.tokio_rt
+            .block_on(async move { inner.synchronize().await })
     }
 
     /// Store entry
@@ -103,9 +103,8 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
         let inner = &*self.inner;
         let tokio_rt = self.tokio_rt.clone();
 
-        self.tokio_rt.block_on(async move {
-            inner.iter(tokio_rt).await
-        })
+        self.tokio_rt
+            .block_on(async move { inner.iter(tokio_rt).await })
     }
 
     /// Write a batch of updates to the database
@@ -117,7 +116,11 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
         self.write_opts(write_batch, &OPTS)
     }
 
-    pub fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), Error> {
+    pub fn write_opts(
+        &self,
+        write_batch: WriteBatch<K, V>,
+        opts: &WriteOptions,
+    ) -> Result<(), Error> {
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async move {
@@ -134,17 +137,15 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
     pub fn stop(&self) -> Result<(), Error> {
         let tasks = self.tasks.clone();
 
-        self.tokio_rt.block_on(async move {
-            tasks.stop_all().await
-        })
+        self.tokio_rt
+            .block_on(async move { tasks.stop_all().await })
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Drop for Database<K,V> {
+impl<K: KvTrait, V: KvTrait> Drop for Database<K, V> {
     /// This might abort some tasks is stop() has not been called
     /// crash consistency should prevent this from being a problem
     fn drop(&mut self) {
         self.tasks.terminate();
     }
 }
-

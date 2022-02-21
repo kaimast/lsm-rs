@@ -1,46 +1,42 @@
+use crate::data_blocks::DataEntryType;
+use crate::manifest::SeqNumber;
 use crate::sorted_table::{InternalIterator, Key};
 use crate::{KvTrait, Params};
-use crate::manifest::SeqNumber;
-use crate::data_blocks::DataEntryType;
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
-#[ derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub struct MemtableRef {
     //TODO this rw lock is not really needed because there is another lock in DbInner
     // Not sure how to remove the lock logic without using unsafe code though
-    inner: Arc<Memtable>
+    inner: Arc<Memtable>,
 }
 
-#[ derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub struct ImmMemtableRef {
-    inner: Arc<Memtable>
+    inner: Arc<Memtable>,
 }
 
-#[derive(Clone, Debug,PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MemtableEntry {
-    Value {
-        seq_number: u64,
-        value: Vec<u8>,
-    },
-    Deletion {
-        seq_number: u64,
-    }
+    Value { seq_number: u64, value: Vec<u8> },
+    Deletion { seq_number: u64 },
 }
 
 impl MemtableEntry {
     pub fn get_value(&self) -> Option<&[u8]> {
         match self {
-            MemtableEntry::Value{ value, .. } => Some(value),
-            MemtableEntry::Deletion{ .. } => None,
+            MemtableEntry::Value { value, .. } => Some(value),
+            MemtableEntry::Deletion { .. } => None,
         }
     }
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct MemtableIterator {
     inner: Arc<Memtable>,
     next_index: usize,
@@ -50,8 +46,11 @@ pub struct MemtableIterator {
 
 impl MemtableIterator {
     pub async fn new(inner: Arc<Memtable>) -> Self {
-        let mut obj = Self{
-            inner, key: None, entry: None, next_index: 0,
+        let mut obj = Self {
+            inner,
+            key: None,
+            entry: None,
+            next_index: 0,
         };
 
         obj.step().await;
@@ -60,31 +59,33 @@ impl MemtableIterator {
     }
 }
 
-#[ async_trait::async_trait ]
+#[async_trait::async_trait]
 impl InternalIterator for MemtableIterator {
-    #[ tracing::instrument ]
+    #[tracing::instrument]
     async fn step(&mut self) {
         let entries = &self.inner.entries;
 
-        #[ allow(clippy::comparison_chain) ]
-        if self.next_index > entries.len() {
-            panic!("Cannot step(); already at end");
-        } else if self.next_index == entries.len() {
-            self.next_index += 1;
-            return;
+        match self.next_index.cmp(&entries.len()) {
+            Ordering::Greater => {
+                panic!("Cannot step(); already at end");
+            }
+            Ordering::Equal => {
+                self.next_index += 1;
+            }
+            Ordering::Less => {
+                let key = &entries[self.next_index].0;
+
+                while self.next_index + 1 < entries.len() && &entries[self.next_index + 1].0 == key
+                {
+                    self.next_index += 1;
+                }
+
+                let (key, entry) = entries[self.next_index].clone();
+                self.key = Some(key);
+                self.entry = Some(entry);
+                self.next_index += 1;
+            }
         }
-
-        let key = &entries[self.next_index].0;
-
-        while self.next_index+1 < entries.len()
-            && &entries[self.next_index+1].0 == key {
-            self.next_index += 1;
-        }
-
-        let (key, entry) = entries[self.next_index].clone();
-        self.key = Some(key);
-        self.entry = Some(entry);
-        self.next_index += 1;
     }
 
     fn at_end(&self) -> bool {
@@ -98,19 +99,20 @@ impl InternalIterator for MemtableIterator {
 
     fn get_seq_number(&self) -> SeqNumber {
         match self.entry.as_ref().unwrap() {
-            MemtableEntry::Value{ seq_number, ..}
-            | MemtableEntry::Deletion{ seq_number } => *seq_number,
+            MemtableEntry::Value { seq_number, .. } | MemtableEntry::Deletion { seq_number } => {
+                *seq_number
+            }
         }
     }
 
     fn get_entry_type(&self) -> DataEntryType {
         match self.entry.as_ref().unwrap() {
-            MemtableEntry::Value{..} => DataEntryType::Put,
-            MemtableEntry::Deletion{..} => DataEntryType::Delete
+            MemtableEntry::Value { .. } => DataEntryType::Put,
+            MemtableEntry::Deletion { .. } => DataEntryType::Delete,
         }
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     fn get_value(&self) -> ValueResult {
         let entry = self.entry.as_ref().unwrap();
 
@@ -121,7 +123,7 @@ impl InternalIterator for MemtableIterator {
         }
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]> {
         let entry = self.entry.as_ref().unwrap();
 
@@ -139,26 +141,30 @@ impl ImmMemtableRef {
     }
 
     pub async fn into_iter(self) -> MemtableIterator {
-        MemtableIterator::new( self.inner ).await
+        MemtableIterator::new(self.inner).await
     }
 }
 
 impl MemtableRef {
     pub fn wrap(inner: Memtable) -> Self {
-        Self{ inner: Arc::new(inner) }
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 
     pub fn clone_immutable(&self) -> ImmMemtableRef {
-        ImmMemtableRef{ inner: self.inner.clone() }
+        ImmMemtableRef {
+            inner: self.inner.clone(),
+        }
     }
 
     /// Make the current contents into an immutable memtable
     /// And create a new mutable one
-    pub fn take(&mut self, next_seq_number: u64)  -> ImmMemtableRef {
-        let mut inner =  Arc::new( Memtable::new(next_seq_number) );
+    pub fn take(&mut self, next_seq_number: u64) -> ImmMemtableRef {
+        let mut inner = Arc::new(Memtable::new(next_seq_number));
         std::mem::swap(&mut inner, &mut self.inner);
 
-        ImmMemtableRef{ inner }
+        ImmMemtableRef { inner }
     }
 
     pub fn get(&self) -> &Memtable {
@@ -173,7 +179,7 @@ impl MemtableRef {
 
 /// In-memory representation of state that has not been written to level 0 yet.
 /// This data structure does not exist on disk, but can be recreated from the write-ahead log
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct Memtable {
     // Sorted upadtes
     entries: Vec<(Key, MemtableEntry)>,
@@ -186,7 +192,11 @@ impl Memtable {
         let entries = Vec::new();
         let size = 0;
 
-        Self{entries, size, next_seq_number}
+        Self {
+            entries,
+            size,
+            next_seq_number,
+        }
     }
 
     #[inline]
@@ -201,13 +211,13 @@ impl Memtable {
             panic!("Memtable is empty");
         }
 
-        (self.entries[0].0.clone(), self.entries[len-1].0.clone())
+        (self.entries[0].0.clone(), self.entries[len - 1].0.clone())
     }
 
     pub fn get(&self, key: &[u8]) -> Option<MemtableEntry> {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
             Ok(pos) => Some(self.entries[pos].1.clone()),
-            Err(_) => None
+            Err(_) => None,
         }
     }
 
@@ -218,32 +228,33 @@ impl Memtable {
             Ok(pos) => {
                 // remove old entry
                 let entry_len = {
-                    let (_,entry) = self.entries.remove(pos);
+                    let (_, entry) = self.entries.remove(pos);
                     match entry {
-                        MemtableEntry::Value{value,..} => {
-                            key.len()+value.len()
-                        }
-                        MemtableEntry::Deletion{..} => {
-                            key.len()
-                        }
+                        MemtableEntry::Value { value, .. } => key.len() + value.len(),
+                        MemtableEntry::Deletion { .. } => key.len(),
                     }
                 };
 
                 self.size -= entry_len;
                 pos
-            },
+            }
             Err(pos) => pos,
         }
     }
 
     pub fn put(&mut self, key: Key, value: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
-        let entry_len = key.len()+value.len();
+        let entry_len = key.len() + value.len();
 
-        self.entries.insert(pos,
-            (key, MemtableEntry::Value{
-                value, seq_number: self.next_seq_number
-            })
+        self.entries.insert(
+            pos,
+            (
+                key,
+                MemtableEntry::Value {
+                    value,
+                    seq_number: self.next_seq_number,
+                },
+            ),
         );
 
         self.size += entry_len;
@@ -254,10 +265,14 @@ impl Memtable {
         let pos = self.get_key_pos(key.as_slice());
         let entry_len = key.len();
 
-        self.entries.insert(pos,
-            (key, MemtableEntry::Deletion{
-                seq_number: self.next_seq_number,
-            })
+        self.entries.insert(
+            pos,
+            (
+                key,
+                MemtableEntry::Deletion {
+                    seq_number: self.next_seq_number,
+                },
+            ),
         );
 
         self.size += entry_len;
@@ -275,7 +290,7 @@ impl Memtable {
     }
 }
 
-#[ cfg(test) ]
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -1,30 +1,32 @@
 use std::sync::Arc;
 
-use crate::{Error, KvTrait, Params, WriteOp};
-use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlock, DataBlocks, DataBlockBuilder, DataEntry, DataEntryType};
+use crate::data_blocks::{
+    DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
+};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
+use crate::{Error, KvTrait, Params, WriteOp};
 
 use cfg_if::cfg_if;
 
-#[ cfg(feature="wisckey") ]
-use crate::values::ValueId;
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::data_blocks::ENTRY_LENGTH;
+#[cfg(feature = "wisckey")]
+use crate::values::ValueId;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
 pub type Value = Vec<u8>;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct SortedTable {
     identifier: TableId,
     index: IndexBlock,
-    data_blocks: Arc<DataBlocks>
+    data_blocks: Arc<DataBlocks>,
 }
 
-#[ cfg(feature="wisckey") ]
-#[ derive(Debug, PartialEq) ]
+#[cfg(feature = "wisckey")]
+#[derive(Debug, PartialEq)]
 pub enum ValueResult<'a> {
     Reference(ValueId),
     Value(&'a [u8]),
@@ -32,21 +34,21 @@ pub enum ValueResult<'a> {
 }
 
 #[async_trait::async_trait]
-pub trait InternalIterator: Send  {
+pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
     fn get_key(&self) -> &Key;
     fn get_seq_number(&self) -> SeqNumber;
     fn get_entry_type(&self) -> DataEntryType;
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     fn get_value(&self) -> ValueResult;
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]>;
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct TableIterator {
     block_pos: usize,
     block_offset: u32,
@@ -72,7 +74,13 @@ pub struct TableBuilder<'a> {
 }
 
 impl<'a> TableBuilder<'a> {
-    pub fn new(identifier: TableId, params: &'a Params, data_blocks: Arc<DataBlocks>, min_key: Key, max_key: Key) -> TableBuilder<'a> {
+    pub fn new(
+        identifier: TableId,
+        params: &'a Params,
+        data_blocks: Arc<DataBlocks>,
+        min_key: Key,
+        max_key: Key,
+    ) -> TableBuilder<'a> {
         let block_index = vec![];
         let last_key = vec![];
         let block_entry_count = 0;
@@ -81,36 +89,64 @@ impl<'a> TableBuilder<'a> {
         let index_key = None;
         let data_block = DataBlocks::build_block(data_blocks.clone());
 
-        Self{
-            identifier, params, data_blocks, block_index, data_block, last_key,
-            block_entry_count, size, restart_count, index_key, min_key, max_key,
+        Self {
+            identifier,
+            params,
+            data_blocks,
+            block_index,
+            data_block,
+            last_key,
+            block_entry_count,
+            size,
+            restart_count,
+            index_key,
+            min_key,
+            max_key,
         }
     }
 
-    #[cfg(feature="wisckey") ]
-    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value_ref: ValueId) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::PUT_OP, value_ref).await
+    #[cfg(feature = "wisckey")]
+    pub async fn add_value(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        value_ref: ValueId,
+    ) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value_ref)
+            .await
     }
 
-    #[cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default()).await
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default())
+            .await
     }
 
-    #[cfg(not(feature="wisckey")) ]
-    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value: &[u8]) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::PUT_OP, value).await
+    #[cfg(not(feature = "wisckey"))]
+    pub async fn add_value(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value)
+            .await
     }
 
-    #[cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[]).await
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[])
+            .await
     }
 
-    async fn add_entry(&mut self, key: &[u8], seq_number: SeqNumber, op_type: u8,
-                       #[ cfg(feature="wisckey") ] value: ValueId,
-                       #[ cfg(not(feature="wisckey")) ] value: &[u8],
-                       ) -> Result<(), Error> {
+    async fn add_entry(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        op_type: u8,
+        #[cfg(feature = "wisckey")] value: ValueId,
+        #[cfg(not(feature = "wisckey"))] value: &[u8],
+    ) -> Result<(), Error> {
         if self.index_key.is_none() {
             self.index_key = Some(key.to_vec());
         }
@@ -123,8 +159,9 @@ impl<'a> TableBuilder<'a> {
         } else {
             // Calculate key prefix length
             while prefix_len < key.len()
-                    && prefix_len < self.last_key.len()
-                    && key[prefix_len] == self.last_key[prefix_len] {
+                && prefix_len < self.last_key.len()
+                && key[prefix_len] == self.last_key[prefix_len]
+            {
                 prefix_len += 1;
             }
         }
@@ -171,10 +208,21 @@ impl<'a> TableBuilder<'a> {
 
         log::debug!("Created new table with {} blocks", self.block_index.len());
 
-        let index = IndexBlock::new(self.params, self.identifier, self.block_index,
-                                    self.size, self.min_key, self.max_key).await?;
+        let index = IndexBlock::new(
+            self.params,
+            self.identifier,
+            self.block_index,
+            self.size,
+            self.min_key,
+            self.max_key,
+        )
+        .await?;
 
-        Ok(SortedTable{ identifier: self.identifier, index, data_blocks: self.data_blocks })
+        Ok(SortedTable {
+            identifier: self.identifier,
+            index,
+            data_blocks: self.data_blocks,
+        })
     }
 }
 
@@ -193,8 +241,12 @@ impl TableIterator {
             (0, entry_len)
         };
 
-        Self{
-            block_pos, block_offset, key, entry, table,
+        Self {
+            block_pos,
+            block_offset,
+            key,
+            entry,
+            table,
         }
     }
 }
@@ -217,7 +269,7 @@ impl InternalIterator for TableIterator {
         self.entry.get_type()
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     fn get_value(&self) -> ValueResult {
         if let Some(value_ref) = self.entry.get_value_ref() {
             ValueResult::Reference(value_ref)
@@ -226,7 +278,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]> {
         if let Some(value) = &self.entry.get_value() {
             Some(value)
@@ -235,9 +287,9 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[ tracing::instrument ]
+    #[tracing::instrument]
     async fn step(&mut self) {
-        #[ allow(clippy::comparison_chain) ]
+        #[allow(clippy::comparison_chain)]
         if self.block_pos == self.table.index.num_data_blocks() {
             self.block_pos += 1;
             return;
@@ -264,10 +316,17 @@ impl InternalIterator for TableIterator {
 }
 
 impl SortedTable {
-    pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Result<Self, Error> {
+    pub async fn load(
+        identifier: TableId,
+        data_blocks: Arc<DataBlocks>,
+        params: &Params,
+    ) -> Result<Self, Error> {
         let index = IndexBlock::load(params, identifier).await?;
-        Ok( Self{ identifier, index, data_blocks } )
+        Ok(Self {
+            identifier,
+            index,
+            data_blocks,
+        })
     }
 
     #[inline]
@@ -291,7 +350,7 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    #[ tracing::instrument ]
+    #[tracing::instrument]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         log::trace!("Checking table #{} for value", self.identifier);
         let block_id = self.index.binary_search(key)?;

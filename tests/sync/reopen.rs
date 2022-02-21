@@ -1,4 +1,4 @@
-use lsm::{Database, StartMode, KvTrait, Params, WriteOptions};
+use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 use tempfile::{Builder, TempDir};
 
 fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
@@ -8,13 +8,15 @@ fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
     let mut db_path = tmp_dir.path().to_path_buf();
     db_path.push("storage.lsm");
 
-    let params = Params{ db_path, ..Default::default() };
+    let params = Params {
+        db_path,
+        ..Default::default()
+    };
     let database = Database::new_with_params(StartMode::CreateOrOverride, params.clone())
         .expect("Failed to create database instance");
 
     (tmp_dir, params, database)
 }
-
 
 #[test]
 fn get_put() {
@@ -68,9 +70,9 @@ fn get_put_many() {
         .expect("Failed to create database instance");
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_string_{}", pos)));
+        assert_eq!(
+            database.get(&pos).unwrap(),
+            Some(format!("some_string_{}", pos))
+        );
     }
 }
-
-
-

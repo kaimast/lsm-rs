@@ -1,33 +1,33 @@
-use std::sync::Arc;
-use std::path::Path;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::mem::size_of;
-use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::Error;
 use crate::sorted_table::Value;
+use crate::Error;
 
 use bincode::Options;
 
 use lru::LruCache;
 
-#[ cfg(feature="async-io") ]
-use tokio::fs::{remove_file, File, OpenOptions};
-#[ cfg(feature="async-io") ]
+#[cfg(feature = "async-io")]
 use futures::io::SeekFrom;
-#[ cfg(feature="async-io") ]
+#[cfg(feature = "async-io")]
+use tokio::fs::{remove_file, File, OpenOptions};
+#[cfg(feature = "async-io")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-#[ cfg(not(feature="async-io")) ]
+#[cfg(not(feature = "async-io"))]
 use std::fs::{remove_file, File, OpenOptions};
-#[ cfg(not(feature="async-io")) ]
-use std::io::{Read, Seek, Write, SeekFrom};
+#[cfg(not(feature = "async-io"))]
+use std::io::{Read, Seek, SeekFrom, Write};
 
-use crate::Params;
 use crate::disk;
 use crate::manifest::Manifest;
+use crate::Params;
 
 use cfg_if::cfg_if;
 
@@ -42,14 +42,14 @@ pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
     batch_caches: Vec<Mutex<BatchShard>>,
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 struct ValueBatch {
     fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
     data: Vec<u8>,
@@ -86,13 +86,17 @@ impl<'a> ValueBatchBuilder<'a> {
             }
         }
 
-        let offset = (size_of::<u8>() as u64) + (size_of::<u32>() as u64)
+        let offset = (size_of::<u8>() as u64)
+            + (size_of::<u32>() as u64)
             + ((size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
 
         //TODO use same fd
         disk::write(&fpath, &self.data, offset).await?;
 
-        let batch = ValueBatch{ fold_table: None, data: self.data };
+        let batch = ValueBatch {
+            fold_table: None,
+            data: self.data,
+        };
 
         // Store in the cache so we don't have to load immediately
         {
@@ -127,16 +131,18 @@ impl ValueLog {
         assert!(shard_size > 0);
 
         for _ in 0..NUM_SHARDS {
-            let cache = Mutex::new( BatchShard::new(shard_size) );
+            let cache = Mutex::new(BatchShard::new(shard_size));
             batch_caches.push(cache);
         }
 
-        Self{
-            params, manifest, batch_caches,
+        Self {
+            params,
+            manifest,
+            batch_caches,
         }
     }
 
-    #[ tracing::instrument(skip(self)) ]
+    #[tracing::instrument(skip(self))]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
         let (batch_id, value_offset) = vid;
         let fpath = self.get_file_path(&batch_id);
@@ -144,7 +150,7 @@ impl ValueLog {
         const HEADER_LEN: u64 = (size_of::<u8>() + size_of::<u32>()) as u64;
         let mut header_data = [0u8; HEADER_LEN as usize];
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 let mut file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
@@ -253,14 +259,14 @@ impl ValueLog {
         Ok(())
     }
 
-    #[ tracing::instrument(skip(self)) ]
+    #[tracing::instrument(skip(self))]
     async fn cleanup_batch(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&batch_id);
 
         const HEADER_LEN: u64 = (size_of::<u8>() + size_of::<u32>()) as u64;
         let mut header_data = [0u8; HEADER_LEN as usize];
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 let mut file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
@@ -338,14 +344,14 @@ impl ValueLog {
         let active_ratio = (num_active as f64) / (num_values as f64);
         let vlog_offset = self.manifest.get_value_log_offset().await;
 
-        if num_active == 0 && batch_id == vlog_offset+1 {
+        if num_active == 0 && batch_id == vlog_offset + 1 {
             log::trace!("Deleting batch #{}", batch_id);
 
             // Hold lock so nobody else messes with the file while we do this
             let shard_id = Self::batch_to_shard_id(batch_id);
             let mut cache = self.batch_caches[shard_id].lock().await;
 
-            self.manifest.set_value_log_offset(vlog_offset+1).await;
+            self.manifest.set_value_log_offset(vlog_offset + 1).await;
 
             cfg_if! {
                 if #[ cfg(feature="async-io") ] {
@@ -374,7 +380,9 @@ impl ValueLog {
                 let old_offset = offsets[pos];
                 let len_len = size_of::<u32>();
                 let data_start = old_offset as usize;
-                let vlen_data = batch.data[data_start..data_start+len_len].try_into().unwrap();
+                let vlen_data = batch.data[data_start..data_start + len_len]
+                    .try_into()
+                    .unwrap();
                 let vlen = u32::from_le_bytes(vlen_data);
 
                 let data_end = data_start + len_len + (vlen as usize);
@@ -426,15 +434,20 @@ impl ValueLog {
                 }
             }
 
-            let offset = (size_of::<u8>() as u64) + (size_of::<u32>() as u64)
-                + ((2*size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
+            let offset = (size_of::<u8>() as u64)
+                + (size_of::<u32>() as u64)
+                + ((2 * size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
 
             //TODO use same fd
             disk::write(&fpath, &batch_data, offset).await?;
 
-            cache.put(batch_id, Arc::new(
-                    ValueBatch{ fold_table: Some(fold_table), data: batch_data }
-            ));
+            cache.put(
+                batch_id,
+                Arc::new(ValueBatch {
+                    fold_table: Some(fold_table),
+                    data: batch_data,
+                }),
+            );
 
             Ok(false)
         } else {
@@ -453,13 +466,17 @@ impl ValueLog {
         self.params.db_path.join(Path::new(&fname))
     }
 
-    #[ allow(clippy::needless_lifetimes) ] //clippy bug
-    pub async fn make_batch<'a>(&'a self) -> ValueBatchBuilder<'a> {
+    pub async fn make_batch(&self) -> ValueBatchBuilder<'_> {
         let identifier = self.manifest.next_value_batch_id().await;
-        ValueBatchBuilder{ identifier, vlog: self, data: vec![], offsets: vec![] }
+        ValueBatchBuilder {
+            identifier,
+            vlog: self,
+            data: vec![],
+            offsets: vec![],
+        }
     }
 
-    #[ tracing::instrument(skip(self)) ]
+    #[tracing::instrument(skip(self))]
     async fn get_batch(&self, identifier: ValueBatchId) -> Result<Arc<ValueBatch>, Error> {
         let shard_id = Self::batch_to_shard_id(identifier);
         let mut cache = self.batch_caches[shard_id].lock().await;
@@ -473,7 +490,7 @@ impl ValueLog {
             let fpath = self.get_file_path(&identifier);
             let mut header_data = [0u8; HEADER_LEN as usize];
 
-            cfg_if!{
+            cfg_if! {
                 if #[cfg(feature="async-io")] {
                     let mut file = File::open(&fpath).await?;
                     file.read_exact(&mut header_data).await?;
@@ -483,8 +500,7 @@ impl ValueLog {
                 }
             }
 
-            let num_values = u32::from_le_bytes(
-                header_data[size_of::<u8>()..].try_into().unwrap());
+            let num_values = u32::from_le_bytes(header_data[size_of::<u8>()..].try_into().unwrap());
             let is_folded = header_data[0] != 0u8;
 
             // The point where the delete flags end and the fold table / offset list begins
@@ -496,7 +512,7 @@ impl ValueLog {
                 let mut fold_table = HashMap::new();
                 let mut data = vec![0u8; size_of::<u32>() * (num_values as usize)];
 
-                cfg_if!{
+                cfg_if! {
                     if #[cfg(feature="async-io")] {
                         file.seek(SeekFrom::Start(df_offset)).await?;
                         file.read_exact(&mut data).await?;
@@ -510,28 +526,32 @@ impl ValueLog {
                     let len = 2 * size_of::<u32>();
                     let offset = (pos as usize) * len;
 
-                    let old_offset = u32::from_le_bytes(data[offset..offset+len].try_into().unwrap());
-                    let new_offset = u32::from_le_bytes(data[offset..offset+len].try_into().unwrap());
+                    let old_offset =
+                        u32::from_le_bytes(data[offset..offset + len].try_into().unwrap());
+                    let new_offset =
+                        u32::from_le_bytes(data[offset..offset + len].try_into().unwrap());
                     fold_table.insert(old_offset, new_offset);
                 }
 
                 let offset = df_offset + data.len() as u64;
                 (offset, Some(fold_table))
             } else {
-                let offset = df_offset + (num_values as u64)*(size_of::<u32>() as u64);
+                let offset = df_offset + (num_values as u64) * (size_of::<u32>() as u64);
                 (offset, None)
             };
 
             let data = disk::read(&fpath, offset).await?;
-            let batch = Arc::new( ValueBatch{ fold_table, data } );
+            let batch = Arc::new(ValueBatch { fold_table, data });
 
             cache.put(identifier, batch.clone());
             Ok(batch)
         }
     }
 
-    pub async fn get<V: serde::de::DeserializeOwned>(&self, value_ref: ValueId)
-            -> Result<V, Error> {
+    pub async fn get<V: serde::de::DeserializeOwned>(
+        &self,
+        value_ref: ValueId,
+    ) -> Result<V, Error> {
         log::trace!("Getting value at {:?}", value_ref);
 
         let (id, offset) = value_ref;
@@ -541,12 +561,12 @@ impl ValueLog {
         Ok(super::get_encoder().deserialize(val)?)
     }
 
-    #[ allow(dead_code) ]
+    #[allow(dead_code)]
     async fn is_batch_folded(&self, identifier: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&identifier);
         let mut data = [0u8];
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 let mut file = File::open(&fpath).await?;
                 file.read_exact(&mut data).await?;
@@ -559,12 +579,12 @@ impl ValueLog {
         Ok(data[0] != 0u8)
     }
 
-    #[ allow(dead_code) ]
+    #[allow(dead_code)]
     async fn get_active_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let fpath = self.get_file_path(&identifier);
         let mut data = [0u8; size_of::<u32>()];
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 let mut file = File::open(&fpath).await?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
@@ -579,7 +599,7 @@ impl ValueLog {
         let num_values = u32::from_le_bytes(data);
         let mut delete_flags = vec![0u8; num_values as usize];
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 file.read_exact(&mut delete_flags).await?;
             } else {
@@ -597,12 +617,12 @@ impl ValueLog {
         Ok(num_active)
     }
 
-    #[ allow(dead_code) ]
+    #[allow(dead_code)]
     async fn get_total_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let mut data = [0u8; size_of::<u32>()];
         let fpath = self.get_file_path(&identifier);
 
-        cfg_if!{
+        cfg_if! {
             if #[cfg(feature="async-io")] {
                 let mut file = File::open(&fpath).await?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
@@ -630,13 +650,12 @@ impl ValueBatch {
 
         let len_len = size_of::<u32>();
 
-        let vlen_data = self.data[offset..offset+len_len].try_into().unwrap();
+        let vlen_data = self.data[offset..offset + len_len].try_into().unwrap();
         let vlen = u32::from_le_bytes(vlen_data);
 
         offset += len_len;
-        &self.data[offset..offset+(vlen as usize)]
+        &self.data[offset..offset + (vlen as usize)]
     }
-
 }
 
 #[cfg(test)]
@@ -646,19 +665,22 @@ mod tests {
     use tempfile::{Builder, TempDir};
 
     async fn test_init() -> (TempDir, ValueLog) {
-        let tmp_dir = Builder::new().prefix("lsm-value-log-test-").tempdir().unwrap();
+        let tmp_dir = Builder::new()
+            .prefix("lsm-value-log-test-")
+            .tempdir()
+            .unwrap();
         let _ = env_logger::builder().is_test(true).try_init();
 
         let mut params = Params::default();
         params.db_path = tmp_dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         (tmp_dir, ValueLog::new(params, manifest).await)
     }
 
-    #[ cfg(feature="wisckey-fold") ]
+    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_value() {
         const SIZE: usize = 1_000;
@@ -678,16 +700,22 @@ mod tests {
 
         let batch_id = builder.finish().await.unwrap();
 
-        assert_eq!(values.get_active_values_in_batch(batch_id).await.unwrap(), 2);
+        assert_eq!(
+            values.get_active_values_in_batch(batch_id).await.unwrap(),
+            2
+        );
         assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
 
         values.mark_value_deleted(vid2).await.unwrap();
 
-        assert_eq!(values.get_active_values_in_batch(batch_id).await.unwrap(), 1);
+        assert_eq!(
+            values.get_active_values_in_batch(batch_id).await.unwrap(),
+            1
+        );
         assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
     }
 
-    #[ cfg(feature="wisckey-fold") ]
+    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_batch() {
         const SIZE: usize = 1_000;
@@ -705,7 +733,10 @@ mod tests {
 
         let batch_id = builder.finish().await.unwrap();
 
-        assert_eq!(values.get_active_values_in_batch(batch_id).await.unwrap(), 1);
+        assert_eq!(
+            values.get_active_values_in_batch(batch_id).await.unwrap(),
+            1
+        );
         assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 1);
 
         values.mark_value_deleted(vid).await.unwrap();
@@ -761,7 +792,10 @@ mod tests {
         }
 
         assert!(values.is_batch_folded(batch_id).await.unwrap());
-        assert_eq!(values.get_active_values_in_batch(batch_id).await.unwrap(), 3);
+        assert_eq!(
+            values.get_active_values_in_batch(batch_id).await.unwrap(),
+            3
+        );
 
         for pos in [0u32, 1u32, 19u32] {
             let vid = vids[pos as usize];
@@ -775,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn get_put_large_value() {
         let (_tmpdir, values) = test_init().await;
- 
+
         const SIZE: usize = 1_000_000;
         let mut builder = values.make_batch().await;
 
@@ -792,5 +826,4 @@ mod tests {
         let result = values.get::<String>(vid).await.unwrap();
         assert_eq!(result, value);
     }
-
 }

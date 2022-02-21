@@ -20,7 +20,7 @@ jobs:
          profile: minimal
          toolchain: nightly
          override: true
-         components: cargo, rustc, clippy
+         components: cargo, rustc, clippy, rustfmt
     - name: install just
       run: cargo install just
     - name: Tests (Async)
@@ -45,3 +45,5 @@ jobs:
       run: just sync-lint
     - name: Linting (No WiscKey)
       run: just no-wisckey-lint
+    - name: Check formatting
+      run: cargo fmt --check

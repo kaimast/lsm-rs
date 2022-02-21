@@ -1,53 +1,52 @@
 // For writing to the log
-#![ feature(map_first_last) ]
-#![ feature(trait_alias) ]
-#![ feature(async_stream) ]
-#![ feature(write_all_vectored) ]
-#![ feature(array_methods) ]
-#![ feature(get_mut_unchecked) ]
-#![ feature(io_slice_advance) ]
-#![ feature(box_into_inner) ]
+#![feature(map_first_last)]
+#![feature(trait_alias)]
+#![feature(write_all_vectored)]
+#![feature(array_methods)]
+#![feature(get_mut_unchecked)]
+#![feature(io_slice_advance)]
+#![feature(box_into_inner)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use bincode::Options;
 
-#[ cfg(feature="sync") ]
+#[cfg(feature = "sync")]
 pub mod sync_iter;
 
-#[ cfg(feature="sync") ]
+#[cfg(feature = "sync")]
 pub use sync_iter as iterate;
 
-#[ cfg(not(feature="sync")) ]
+#[cfg(not(feature = "sync"))]
 pub mod async_iter;
 
-#[ cfg(not(feature="sync")) ]
+#[cfg(not(feature = "sync"))]
 pub use async_iter as iterate;
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 mod values;
 
 mod sorted_table;
 use sorted_table::{Key, Value};
 
-mod tasks;
 mod memtable;
+mod tasks;
 
 mod logic;
 use logic::DbLogic;
 
+mod data_blocks;
 mod disk;
+mod index_blocks;
 mod level;
 mod manifest;
-mod data_blocks;
-mod index_blocks;
 mod wal;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub enum WriteOp {
     Put(Key, Value),
-    Delete(Key)
+    Delete(Key),
 }
 
 impl WriteOp {
@@ -57,55 +56,60 @@ impl WriteOp {
     pub fn get_key(&self) -> &[u8] {
         match self {
             Self::Put(key, _) => key,
-            Self::Delete(key) => key
+            Self::Delete(key) => key,
         }
     }
 
     pub fn get_type(&self) -> u8 {
         match self {
             Self::Put(_, _) => Self::PUT_OP,
-            Self::Delete(_) => Self::DELETE_OP
+            Self::Delete(_) => Self::DELETE_OP,
         }
     }
 
     fn get_key_length(&self) -> u64 {
         match self {
-            Self::Put(key, _) | Self::Delete(key) => key.len() as u64
+            Self::Put(key, _) | Self::Delete(key) => key.len() as u64,
         }
     }
 
-    #[ allow(dead_code) ]
+    #[allow(dead_code)]
     fn get_value_length(&self) -> u64 {
         match self {
             Self::Put(_, value) => value.len() as u64,
-            Self::Delete(_) => 0u64
+            Self::Delete(_) => 0u64,
         }
     }
 }
-#[ cfg(not(feature="sync")) ]
+#[cfg(not(feature = "sync"))]
 mod async_api;
-#[ cfg(not(feature="sync")) ]
+#[cfg(not(feature = "sync"))]
 pub use async_api::Database;
 
-#[ cfg(feature="sync") ]
+#[cfg(feature = "sync")]
 mod sync_api;
-#[ cfg(feature="sync") ]
+#[cfg(feature = "sync")]
 pub use sync_api::Database;
 
 /// Keys and values must be (de-)serializable
-pub trait KvTrait = Send + serde::Serialize+serde::de::DeserializeOwned + 'static
-        +Unpin + Clone + std::fmt::Debug;
+pub trait KvTrait = Send
+    + serde::Serialize
+    + serde::de::DeserializeOwned
+    + 'static
+    + Unpin
+    + Clone
+    + std::fmt::Debug;
 
 /// A WriteBatch allows to bundle multiple updates together for higher throughput
 ///
 /// Note: The batch will not be applied to the database until it is passed to `Database::write`
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct WriteBatch<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K,V)>,
+    _marker: PhantomData<fn(K, V)>,
     writes: Vec<WriteOp>,
 }
 
-#[ derive(Clone, Debug) ]
+#[derive(Clone, Debug)]
 pub enum Error {
     Io(String),
     InvalidParams(String),
@@ -151,9 +155,9 @@ impl From<Box<bincode::ErrorKind>> for Error {
 
 impl<K: KvTrait, V: KvTrait> WriteBatch<K, V> {
     pub fn new() -> Self {
-        Self{
+        Self {
             writes: Vec::new(),
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 
@@ -161,16 +165,16 @@ impl<K: KvTrait, V: KvTrait> WriteBatch<K, V> {
     /// Will not be applied to the Database until the WriteBatch is written
     pub fn put(&mut self, key: &K, value: &V) {
         let enc = get_encoder();
-        self.writes.push(
-            WriteOp::Put(enc.serialize(key).unwrap(), enc.serialize(value).unwrap())
-        );
+        self.writes.push(WriteOp::Put(
+            enc.serialize(key).unwrap(),
+            enc.serialize(value).unwrap(),
+        ));
     }
 
     pub fn delete(&mut self, key: &K) {
         let enc = get_encoder();
-        self.writes.push(
-            WriteOp::Delete(enc.serialize(key).unwrap())
-        );
+        self.writes
+            .push(WriteOp::Delete(enc.serialize(key).unwrap()));
     }
 }
 
@@ -181,15 +185,15 @@ impl<K: KvTrait, V: KvTrait> Default for WriteBatch<K, V> {
 }
 
 /// Allows specifying details of a write
-#[ derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub struct WriteOptions {
     /// Should the call block until it is guaranteed to be written to disk?
-    pub sync: bool
+    pub sync: bool,
 }
 
 impl WriteOptions {
     pub const fn new() -> Self {
-        Self{ sync: true }
+        Self { sync: true }
     }
 }
 
@@ -200,18 +204,18 @@ impl Default for WriteOptions {
 }
 
 /// Allow specifying how the datastore behaves during startup
-#[ derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub enum StartMode {
     /// Reuse existing database, or create if non-existent
     CreateOrOpen,
     /// Open existing database, or fail if non-existent
     Open,
     /// Create a new, or override an existing, database
-    CreateOrOverride
+    CreateOrOverride,
 }
 
 /// Parameters to customize the creation of the database
-#[ derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub struct Params {
     /// Where in the filesystem should the databasse be stored?
     pub db_path: PathBuf,
@@ -233,7 +237,7 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             db_path: Path::new("./storage.lsm").to_path_buf(),
-            max_memtable_size: 64*1024,
+            max_memtable_size: 64 * 1024,
             num_levels: 5,
             max_open_files: 1000,
             max_key_block_size: 1024,
@@ -243,10 +247,8 @@ impl Default for Params {
 }
 
 #[inline]
-fn get_encoder() ->
-        bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
+fn get_encoder(
+) -> bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
     // Use BigEndian to make integers sortable properly
     bincode::options().with_big_endian()
 }
-
-

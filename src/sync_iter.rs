@@ -1,44 +1,45 @@
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::values::ValueLog;
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
 
-use crate::sorted_table::{Key, TableIterator, InternalIterator};
 use crate::memtable::MemtableIterator;
+use crate::sorted_table::{InternalIterator, Key, TableIterator};
 use crate::KvTrait;
 
 use bincode::Options;
 
+use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::cmp::Ordering;
 
 use cfg_if::cfg_if;
 
 /// Allows iterating over a consistent snapshot of the database
 pub struct DbIterator<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K,V)>,
+    _marker: PhantomData<fn(K, V)>,
 
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
 
     tokio_rt: Arc<tokio::runtime::Runtime>,
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     value_log: Arc<ValueLog>,
 }
 
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
-impl<K: KvTrait, V: KvTrait> DbIterator<K,V> {
-    #[ cfg(feature="sync") ]
-    pub(crate) fn new(tokio_rt: Arc<tokio::runtime::Runtime>,
-            mut mem_iters: Vec<MemtableIterator>,
-            mut table_iters: Vec<TableIterator>,
-            #[ cfg(feature="wisckey") ] value_log: Arc<ValueLog>,
-            ) -> Self {
-        let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
+impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
+    #[cfg(feature = "sync")]
+    pub(crate) fn new(
+        tokio_rt: Arc<tokio::runtime::Runtime>,
+        mut mem_iters: Vec<MemtableIterator>,
+        mut table_iters: Vec<TableIterator>,
+        #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
+    ) -> Self {
+        let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
 
         for iter in mem_iters.drain(..) {
             iterators.push(Box::new(iter));
@@ -48,15 +49,24 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K,V> {
             iterators.push(Box::new(iter));
         }
 
-        Self{
+        Self {
             _marker: PhantomData,
-            last_key: None, iterators, tokio_rt,
-            #[ cfg(feature="wisckey") ] value_log,
+            last_key: None,
+            iterators,
+            tokio_rt,
+            #[cfg(feature = "wisckey")]
+            value_log,
         }
     }
 
     #[inline]
-    async fn parse_iter(offset: usize, last_key: &Option<Key>, min_iter: Option<&dyn InternalIterator>, iter: &mut dyn InternalIterator, min_kv: MinKV) -> (bool, MinKV) {
+    async fn parse_iter(
+        offset: usize,
+        last_key: &Option<Key>,
+        min_iter: Option<&dyn InternalIterator>,
+        iter: &mut dyn InternalIterator,
+        min_kv: MinKV,
+    ) -> (bool, MinKV) {
         if let Some(last_key) = last_key {
             while !iter.at_end() && iter.get_key() <= last_key {
                 iter.step().await;
@@ -74,9 +84,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K,V> {
             let min_key = min_iter.unwrap().get_key();
 
             match key.cmp(min_key) {
-                Ordering::Less => {
-                    (true, Some((seq_number, offset)))
-                }
+                Ordering::Less => (true, Some((seq_number, offset))),
                 Ordering::Equal => {
                     if seq_number > min_seq_number {
                         (true, Some((seq_number, offset)))
@@ -84,7 +92,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K,V> {
                         (false, min_kv)
                     }
                 }
-                Ordering::Greater => (false, min_kv)
+                Ordering::Greater => (false, min_kv),
             }
         } else {
             (true, Some((seq_number, offset)))
@@ -101,7 +109,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
         let mut result = None;
 
         while result.is_none() {
-            #[cfg(feature="wisckey")]
+            #[cfg(feature = "wisckey")]
             let value_log = self.value_log.clone();
 
             let (out_result, out_last_key, out_iterators) = self.tokio_rt.block_on(async move {
@@ -112,8 +120,8 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                     // Split slices to make the borrow checker happy
                     let (prev, cur) = iterators[..].split_at_mut(offset);
 
-                    let min_iter = if let Some((_,offset)) = min_kv {
-                        #[ allow(clippy::borrowed_box) ]
+                    let min_iter = if let Some((_, offset)) = min_kv {
+                        #[allow(clippy::borrowed_box)]
                         let iter: &Box<dyn InternalIterator> = &prev[offset];
                         Some(&**iter)
                     } else {
@@ -121,8 +129,8 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                     };
 
                     let current_iter = &mut *cur[0];
-                    let (change, kv) = Self::parse_iter(offset, &last_key, min_iter,
-                                                        current_iter, min_kv).await;
+                    let (change, kv) =
+                        Self::parse_iter(offset, &last_key, min_iter, current_iter, min_kv).await;
 
                     if change {
                         min_kv = kv;

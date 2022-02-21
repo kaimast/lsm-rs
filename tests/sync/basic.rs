@@ -1,4 +1,4 @@
-use lsm::{Database, StartMode, KvTrait, Params, WriteBatch, WriteOptions};
+use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 use tempfile::{Builder, TempDir};
 
 const SM: StartMode = StartMode::CreateOrOverride;
@@ -10,9 +10,12 @@ fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
     let mut db_path = tmp_dir.path().to_path_buf();
     db_path.push("storage.lsm");
 
-    let params = Params{ db_path, ..Default::default() };
-    let database = Database::new_with_params(SM, params)
-        .expect("Failed to create database instance");
+    let params = Params {
+        db_path,
+        ..Default::default()
+    };
+    let database =
+        Database::new_with_params(SM, params).expect("Failed to create database instance");
 
     (tmp_dir, database)
 }
@@ -83,7 +86,10 @@ fn get_put_many() {
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_string_{}", pos)));
+        assert_eq!(
+            database.get(&pos).unwrap(),
+            Some(format!("some_string_{}", pos))
+        );
     }
 }
 
@@ -136,7 +142,10 @@ fn override_many() {
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos).unwrap(), Some(format!("some_other_string_{}", pos)));
+        assert_eq!(
+            database.get(&pos).unwrap(),
+            Some(format!("some_other_string_{}", pos))
+        );
     }
 }
 

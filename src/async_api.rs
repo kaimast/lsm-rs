@@ -1,7 +1,7 @@
-use crate::tasks::{TaskType, TaskManager};
 use crate::iterate::DbIterator;
 use crate::logic::DbLogic;
-use crate::{get_encoder, StartMode, KvTrait, Params, WriteBatch, Error, WriteOptions};
+use crate::tasks::{TaskManager, TaskType};
+use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 
 use std::sync::Arc;
 
@@ -10,13 +10,13 @@ use bincode::Options;
 /// The main database structure
 /// This struct can be accessed concurrently and you should
 /// never instantiate it more than once for the same on-disk files
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
-    tasks: Arc<TaskManager>
+    tasks: Arc<TaskManager>,
 }
 
-impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
+impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Create a new database instance with default parameters
     pub async fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
@@ -25,15 +25,15 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
 
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
-        let inner = Arc::new( DbLogic::new(mode, params).await? );
-        let tasks = Arc::new( TaskManager::new(inner.clone()).await );
+        let inner = Arc::new(DbLogic::new(mode, params).await?);
+        let tasks = Arc::new(TaskManager::new(inner.clone()).await);
 
-        Ok( Self{ inner, tasks } )
+        Ok(Self { inner, tasks })
     }
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
     #[inline]
-    pub async fn get(&self, key: &K)-> Result<Option<V>, Error> {
+    pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
         self.inner.get(&key_data).await
     }
@@ -97,7 +97,11 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
 
     /// Write a batch of updates to the database
     /// This version of write allows you to specfiy options such as "synchronous"
-    pub async fn write_opts(&self, write_batch: WriteBatch<K, V>, opts: &WriteOptions) -> Result<(), Error> {
+    pub async fn write_opts(
+        &self,
+        write_batch: WriteBatch<K, V>,
+        opts: &WriteOptions,
+    ) -> Result<(), Error> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
         if needs_compaction {
@@ -113,9 +117,8 @@ impl<K: 'static+KvTrait, V: 'static+KvTrait> Database<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Drop for Database<K,V> {
+impl<K: KvTrait, V: KvTrait> Drop for Database<K, V> {
     fn drop(&mut self) {
         self.tasks.terminate();
     }
 }
-
