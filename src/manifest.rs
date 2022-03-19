@@ -207,19 +207,19 @@ impl Manifest {
 
     pub async fn update_table_set(
         &self,
-        mut add: Vec<(LevelId, TableId)>,
-        mut remove: Vec<(LevelId, TableId)>,
+        add: Vec<(LevelId, TableId)>,
+        remove: Vec<(LevelId, TableId)>,
     ) {
         let mut tables = self.tables.lock().await;
 
-        for (level, id) in add.drain(..) {
+        for (level, id) in add.into_iter() {
             tables
                 .get_mut(level as usize)
                 .expect("No such level")
                 .insert(id);
         }
 
-        for (level, id) in remove.drain(..) {
+        for (level, id) in remove.into_iter() {
             tables
                 .get_mut(level as usize)
                 .expect("No such level")

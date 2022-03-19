@@ -164,8 +164,13 @@ impl TaskManager {
             hdl.sc_condition.notify_waiters();
         }
 
-        for (_, (fut, _hdl)) in self.tasks.iter() {
-            if let Some(future) = fut.lock().unwrap().take() {
+        for (_, (future, _hdl)) in self.tasks.iter() {
+            let inner = {
+                let mut lock = future.lock().unwrap();
+                lock.take()
+            };
+
+            if let Some(future) = inner {
                 // Ignore already terminated/aborted tasks
                 if let Ok(res) = future.await {
                     res?;

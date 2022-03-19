@@ -415,7 +415,7 @@ impl ValueLog {
                     file.write_all(&num_values.to_le_bytes()).await?;
                     file.write_all(&delete_markers).await?;
 
-                    for (old_offset, new_offset) in new_offsets.drain(..) {
+                    for (old_offset, new_offset) in new_offsets.into_iter() {
                         file.write_all(&old_offset.to_le_bytes()).await?;
                         file.write_all(&new_offset.to_le_bytes()).await?;
                         fold_table.insert(old_offset, new_offset);
@@ -426,7 +426,7 @@ impl ValueLog {
                     file.write_all(&num_values.to_le_bytes())?;
                     file.write_all(&delete_markers)?;
 
-                    for (old_offset, new_offset) in new_offsets.drain(..) {
+                    for (old_offset, new_offset) in new_offsets.into_iter() {
                         file.write_all(&old_offset.to_le_bytes())?;
                         file.write_all(&new_offset.to_le_bytes())?;
                         fold_table.insert(old_offset, new_offset);
@@ -608,7 +608,7 @@ impl ValueLog {
         }
 
         let mut num_active = 0;
-        for f in delete_flags.drain(..) {
+        for f in delete_flags.into_iter() {
             if f == 0u8 {
                 num_active += 1;
             }

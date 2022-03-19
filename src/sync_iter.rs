@@ -35,17 +35,17 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     #[cfg(feature = "sync")]
     pub(crate) fn new(
         tokio_rt: Arc<tokio::runtime::Runtime>,
-        mut mem_iters: Vec<MemtableIterator>,
-        mut table_iters: Vec<TableIterator>,
+        mem_iters: Vec<MemtableIterator>,
+        table_iters: Vec<TableIterator>,
         #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
     ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
 
-        for iter in mem_iters.drain(..) {
+        for iter in mem_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
 
-        for iter in table_iters.drain(..) {
+        for iter in table_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
 

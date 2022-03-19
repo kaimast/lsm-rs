@@ -106,15 +106,15 @@ type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
     fn new(
-        mut mem_iters: Vec<MemtableIterator>,
-        mut table_iters: Vec<TableIterator>,
+        mem_iters: Vec<MemtableIterator>,
+        table_iters: Vec<TableIterator>,
         #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
     ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
-        for iter in mem_iters.drain(..) {
+        for iter in mem_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
-        for iter in table_iters.drain(..) {
+        for iter in table_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
 

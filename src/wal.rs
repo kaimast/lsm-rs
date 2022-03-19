@@ -260,7 +260,7 @@ impl WriteAheadLog {
                         // self.log_file.write_all_vectored(&mut to_write)
                         //   .await.expect("Failed to write to log file");
 
-                        for slice in to_write.drain(..) {
+                        for slice in to_write.into_iter() {
                             self.log_file.write_all(&slice[..]).await
                                 .expect("Failed to write to log file");
                         }

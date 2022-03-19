@@ -451,13 +451,13 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 let l0 = self.levels.get(0).unwrap();
                 let mut table_builder = l0.build_table(min_key, max_key).await;
 
-                let mut memtable_entries = mem.get().get_entries();
+                let memtable_entries = mem.get().get_entries();
 
                 cfg_if! {
                     if #[cfg(feature="wisckey")] {
                         let mut vbuilder = self.value_log.make_batch().await;
 
-                        for (key, mem_entry) in memtable_entries.drain(..) {
+                        for (key, mem_entry) in memtable_entries.into_iter() {
                             match mem_entry {
                                 MemtableEntry::Value{seq_number, value} => {
                                     let value_ref = vbuilder.add_value(value).await;
@@ -471,7 +471,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
                         vbuilder.finish().await?;
                     } else {
-                        for (key, mem_entry) in memtable_entries.drain(..) {
+                        for (key, mem_entry) in memtable_entries.into_iter() {
                             match mem_entry {
                                 MemtableEntry::Value{seq_number, value} => {
                                     table_builder.add_value(&key, seq_number, &value).await?;
@@ -583,7 +583,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let max = max.to_vec();
 
         let mut table_iters = Vec::new();
-        for table in tables.drain(..) {
+        for table in tables.into_iter() {
             table_iters.push(TableIterator::new(table.clone()).await);
         }
 
@@ -721,7 +721,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         #[cfg(feature = "wisckey")]
-        for vid in deleted_values.drain(..) {
+        for vid in deleted_values.into_iter() {
             self.value_log.mark_value_deleted(vid).await?;
         }
 

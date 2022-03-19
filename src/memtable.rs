@@ -125,13 +125,7 @@ impl InternalIterator for MemtableIterator {
 
     #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]> {
-        let entry = self.entry.as_ref().unwrap();
-
-        if let Some(value) = entry.get_value() {
-            Some(value)
-        } else {
-            None
-        }
+        self.entry.as_ref().unwrap().get_value()
     }
 }
 
