@@ -365,7 +365,7 @@ impl SortedTable {
     }
 }
 
-#[ cfg(test) ]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -374,7 +374,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     #[tokio::test]
     async fn iterate() {
         let dir = tempdir().unwrap();
@@ -382,15 +382,15 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let key1 = vec![5];
         let key2 = vec![15];
 
-        let vref1 = (4,2);
-        let vref2 = (4,50);
+        let vref1 = (4, 2);
+        let vref2 = (4, 50);
 
         let id = 124234;
         let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     #[tokio::test]
     async fn iterate() {
         let dir = tempdir().unwrap();
@@ -426,15 +426,15 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let key1 = vec![5];
         let key2 = vec![15];
 
-        let value1 = vec![4,2];
-        let value2 = vec![4,50];
+        let value1 = vec![4, 2];
+        let value2 = vec![4, 50];
 
         let id = 124234;
         let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     #[tokio::test]
     async fn iterate_many() {
         const COUNT: u32 = 5_000;
@@ -472,9 +472,9 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let min_key = (0u32).to_le_bytes().to_vec();
         let max_key = (COUNT as u32).to_le_bytes().to_vec();
@@ -484,7 +484,7 @@ mod tests {
 
         for pos in 0..COUNT {
             let key = (pos as u32).to_le_bytes().to_vec();
-            let seq_num = (500+pos) as u64;
+            let seq_num = (500 + pos) as u64;
 
             builder.add_value(&key, seq_num, (100, pos)).await.unwrap();
         }
@@ -497,8 +497,8 @@ mod tests {
             assert_eq!(iter.at_end(), false);
 
             assert_eq!(iter.get_key(), &(pos as u32).to_le_bytes().to_vec());
-            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)) );
-            assert_eq!(iter.get_seq_number(), 500+pos as u64);
+            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)));
+            assert_eq!(iter.get_seq_number(), 500 + pos as u64);
 
             iter.step().await;
         }

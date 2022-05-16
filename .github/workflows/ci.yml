@@ -25,8 +25,9 @@ jobs:
       run: cargo install just
     - name: Tests (Async)
       run: just async-tests
-    - name: Tests (Async I/O)
-      run: just async-io-tests
+    # Skip until this is not super slow anymore
+    #- name: Tests (Async I/O)
+    #  run: just async-io-tests
     - name: Tests (Sync)
       run: just sync-tests
     - name: Tests (No compression)
