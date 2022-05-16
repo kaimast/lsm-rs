@@ -22,6 +22,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
 * Transactions: Modify multiple values at once and atomically
+* Custom sorting functions
 * More modularity and configuration options
 
 ## Feature Flags
@@ -29,6 +30,10 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * `snappy-compression`: Use the snappy to compress data on disk (enabled by default)
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 * `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
+
+## Sort Order
+This crate uses bincode to serialize keys and values. Keys are sorted by comparing their binary representation an ordering those [lexographically](https://doc.rust-lang.org/std/cmp/trait.Ord.html#lexicographical-comparison).
+We plan to add custom order and serialization mechanisms in the future.
 
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.

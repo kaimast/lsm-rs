@@ -11,8 +11,6 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct MemtableRef {
-    //TODO this rw lock is not really needed because there is another lock in DbInner
-    // Not sure how to remove the lock logic without using unsafe code though
     inner: Arc<Memtable>,
 }
 
@@ -175,7 +173,7 @@ impl MemtableRef {
 /// This data structure does not exist on disk, but can be recreated from the write-ahead log
 #[derive(Debug)]
 pub struct Memtable {
-    // Sorted upadtes
+    /// Sorted updates
     entries: Vec<(Key, MemtableEntry)>,
     size: usize,
     next_seq_number: SeqNumber,
