@@ -365,14 +365,12 @@ impl SortedTable {
     }
 }
 
-/*
 #[ cfg(test) ]
 mod tests {
     use super::*;
 
     use crate::manifest::Manifest;
     use crate::Params;
-    use crate::entry::Entry;
 
     use tempfile::tempdir;
 
@@ -389,26 +387,31 @@ mod tests {
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
 
         let key1 = vec![5];
-        let entry1 = Entry::Value{ seq_number: 1, value_ref: (4,2) };
-
         let key2 = vec![15];
-        let entry2 = Entry::Value{ seq_number: 4, value_ref: (4,50) };
+
+        let vref1 = (4,2);
+        let vref2 = (4,50);
 
         let id = 124234;
-        let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
 
-        let mut iter = TableIterator::new(table).await;
+        builder.add_value(&key1, 1, vref1).await.unwrap();
+
+        builder.add_value(&key2, 4, vref2).await.unwrap();
+
+        let table = builder.finish().await.unwrap();
+
+        let mut iter = TableIterator::new(Arc::new(table)).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_value(), ValueResult::Reference(*entry1.get_value_ref().unwrap()));
+        assert_eq!(iter.get_value(), ValueResult::Reference(vref1));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_value(), ValueResult::Reference(*entry2.get_value_ref().unwrap()));
+        assert_eq!(iter.get_value(), ValueResult::Reference(vref2));
 
         iter.step().await;
 
@@ -428,26 +431,31 @@ mod tests {
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
 
         let key1 = vec![5];
-        let entry1 = Entry::Value{ seq_number: 1, value: vec![4,2] };
-
         let key2 = vec![15];
-        let entry2 = Entry::Value{ seq_number: 4, value: vec![4, 50] };
+
+        let value1 = vec![4,2];
+        let value2 = vec![4,50];
 
         let id = 124234;
-        let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
+
+        builder.add_value(&key1, 1, &value1).await.unwrap();
+
+        builder.add_value(&key2, 4, &value2).await.unwrap();
+
+        let table = Arc::new(builder.finish().await.unwrap());
 
         let mut iter = TableIterator::new(table).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_value(), entry1.get_value());
+        assert_eq!(iter.get_value(), Some(&value1 as &[u8]));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_value(), entry2.get_value());
+        assert_eq!(iter.get_value(), Some(&value2 as &[u8]));
 
         iter.step().await;
 
@@ -468,20 +476,20 @@ mod tests {
 
         let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
 
-        let mut entries = vec![];
-
         let min_key = (0u32).to_le_bytes().to_vec();
         let max_key = (COUNT as u32).to_le_bytes().to_vec();
 
+        let id = 1;
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, min_key, max_key);
+
         for pos in 0..COUNT {
             let key = (pos as u32).to_le_bytes().to_vec();
-            let entry = Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) };
+            let seq_num = (500+pos) as u64;
 
-            entries.push((key, entry));
+            builder.add_value(&key, seq_num, (100, pos)).await.unwrap();
         }
 
-        let id = 1;
-        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await.unwrap() );
+        let table = Arc::new(builder.finish().await.unwrap());
 
         let mut iter = TableIterator::new(table).await;
 
@@ -497,4 +505,4 @@ mod tests {
 
         assert_eq!(iter.at_end(), true);
     }
-}*/
+}
