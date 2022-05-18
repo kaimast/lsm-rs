@@ -246,7 +246,6 @@ impl Default for Params {
     }
 }
 
-#[inline]
 fn get_encoder(
 ) -> bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
     // Use BigEndian to make integers sortable properly
