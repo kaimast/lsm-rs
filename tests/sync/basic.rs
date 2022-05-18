@@ -70,6 +70,38 @@ fn iterate() {
 }
 
 #[test]
+fn range_iterate() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init();
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{}", pos);
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    let mut pos = 0;
+    let mut iter = database.range_iter(&300, &10150);
+
+    while let Some((key, val)) = iter.next() {
+        let real_pos = pos + 300;
+        assert_eq!(real_pos as u64, key);
+        assert_eq!(format!("some_string_{}", real_pos), val);
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 9850);
+
+    database.stop().unwrap();
+}
+
+#[test]
 fn get_put_many() {
     const COUNT: u64 = 100_000;
 
