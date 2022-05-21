@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use std::time::Instant;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Instant;
 
 use super::KvTrait;
 
@@ -12,17 +12,17 @@ use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
 
-#[ async_trait ]
-pub trait Task: Sync+Send+std::fmt::Debug {
+#[async_trait]
+pub trait Task: Sync + Send + std::fmt::Debug {
     async fn run(&self) -> Result<bool, Error>;
 }
 
-#[ derive(Debug, PartialEq, Eq, Hash) ]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum TaskType {
     Compaction,
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
@@ -34,27 +34,27 @@ type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
 
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>
+    tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 struct CompactionTask<K: KvTrait, V: KvTrait> {
-   datastore: Arc<DbLogic<K, V>>
+    datastore: Arc<DbLogic<K, V>>,
 }
 
 impl<K: KvTrait, V: KvTrait> CompactionTask<K, V> {
     fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
-        Box::new(Self{ datastore })
+        Box::new(Self { datastore })
     }
 }
 
-#[ async_trait ]
+#[async_trait]
 impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
-        Ok( self.datastore.do_compaction().await? )
+        Ok(self.datastore.do_compaction().await?)
     }
 }
 
@@ -63,7 +63,12 @@ impl TaskHandle {
         let last_change = Mutex::new(Instant::now());
         let sc_condition = Notify::new();
 
-        Self{ stop_flag, task, last_change, sc_condition }
+        Self {
+            stop_flag,
+            task,
+            last_change,
+            sc_condition,
+        }
     }
 
     /// Notify the task that there is new work to do
@@ -73,7 +78,7 @@ impl TaskHandle {
         self.sc_condition.notify_one();
     }
 
-    #[ inline(always) ]
+    #[inline(always)]
     fn is_running(&self) -> bool {
         !self.stop_flag.load(Ordering::SeqCst)
     }
@@ -115,23 +120,24 @@ impl TaskHandle {
 }
 
 impl TaskManager {
-    pub async fn new<K: KvTrait, V: KvTrait>(datastore: Arc<DbLogic<K,V>>) -> Self {
+    pub async fn new<K: KvTrait, V: KvTrait>(datastore: Arc<DbLogic<K, V>>) -> Self {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let hdl = Arc::new(TaskHandle::new(stop_flag.clone(), CompactionTask::new_boxed(datastore) ));
+        let hdl = Arc::new(TaskHandle::new(
+            stop_flag.clone(),
+            CompactionTask::new_boxed(datastore),
+        ));
         let future = {
             let hdl = hdl.clone();
-            let future = tokio::spawn(async move {
-                hdl.work_loop().await
-            });
+            let future = tokio::spawn(async move { hdl.work_loop().await });
 
             StdMutex::new(Some(future))
         };
 
         tasks.insert(TaskType::Compaction, (future, hdl));
 
-        Self{ stop_flag, tasks }
+        Self { stop_flag, tasks }
     }
 
     pub async fn wake_up(&self, task_type: &TaskType) {
@@ -158,8 +164,13 @@ impl TaskManager {
             hdl.sc_condition.notify_waiters();
         }
 
-        for (_, (fut, _hdl)) in self.tasks.iter() {
-            if let Some(future) = fut.lock().unwrap().take() {
+        for (_, (future, _hdl)) in self.tasks.iter() {
+            let inner = {
+                let mut lock = future.lock().unwrap();
+                lock.take()
+            };
+
+            if let Some(future) = inner {
                 // Ignore already terminated/aborted tasks
                 if let Ok(res) = future.await {
                     res?;

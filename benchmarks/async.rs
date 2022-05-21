@@ -2,28 +2,30 @@ use std::{fs::File, io::BufWriter};
 
 use tempfile::{Builder, TempDir};
 
-use clap::{App, Arg};
+use clap::{Arg, Command};
 
+use tracing_flame::{FlameSubscriber, FlushGuard};
 use tracing_subscriber::fmt;
-use tracing_subscriber::registry::Registry;
 use tracing_subscriber::prelude::*;
-use tracing_flame::{FlushGuard, FlameSubscriber};
+use tracing_subscriber::registry::Registry;
 
-use lsm::{Database, StartMode, KvTrait, Params, WriteOptions};
+use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
-async fn bench_init<K: KvTrait, V: KvTrait>() -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
-    let arg_matches = App::new("lsm-benchmark")
+async fn bench_init<K: KvTrait, V: KvTrait>(
+) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
+    let arg_matches = Command::new("lsm-benchmark")
         .author("Kai Mast <kaimast@cs.cornell.edu>")
-        .arg(Arg::new("enable_tracing")
+        .arg(
+            Arg::new("enable_tracing")
                 .takes_value(false)
-                .long("enable_tracing")
-            )
+                .long("enable_tracing"),
+        )
         .get_matches();
 
     let tracing_guard = if arg_matches.is_present("enable_tracing") {
         let fmt_subscriber = fmt::Subscriber::default();
         let (flame_subscriber, tracing_guard) = FlameSubscriber::with_file("./tracing.folded")
-                .expect("Failed to set up flame subscriber");
+            .expect("Failed to set up flame subscriber");
 
         let collector = Registry::default()
             .with(fmt_subscriber)
@@ -38,15 +40,22 @@ async fn bench_init<K: KvTrait, V: KvTrait>() -> (Option<FlushGuard<BufWriter<Fi
     };
 
     let _ = env_logger::builder().is_test(true).try_init();
-    let tmp_dir = Builder::new().prefix("lsm-async-benchmark-").tempdir().unwrap();
+    let tmp_dir = Builder::new()
+        .prefix("lsm-async-benchmark-")
+        .tempdir()
+        .unwrap();
 
     let mut db_path = tmp_dir.path().to_path_buf();
     db_path.push("storage.lsm");
 
-    let params = Params{ db_path, ..Default::default() };
+    let params = Params {
+        db_path,
+        ..Default::default()
+    };
     const SM: StartMode = StartMode::CreateOrOverride;
 
-    let database = Database::new_with_params(SM, params).await
+    let database = Database::new_with_params(SM, params)
+        .await
         .expect("Failed to create database instance");
 
     (tracing_guard, tmp_dir, database)
@@ -68,7 +77,10 @@ async fn main() {
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos).await.unwrap(), Some(format!("some_string_{}", pos)));
+        assert_eq!(
+            database.get(&pos).await.unwrap(),
+            Some(format!("some_string_{}", pos))
+        );
     }
 
     database.stop().await.unwrap();

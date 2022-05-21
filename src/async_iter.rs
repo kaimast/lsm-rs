@@ -1,50 +1,54 @@
-#[ cfg(feature="wisckey") ]
-use crate::values::{ValueLog, ValueId};
+#[cfg(feature = "wisckey")]
+use crate::values::{ValueId, ValueLog};
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
 
-use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::memtable::MemtableIterator;
+use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::{Error, KvTrait};
 
 use bincode::Options;
 
+use std::cmp::Ordering;
 use std::future::Future;
-use std::task::{Context, Poll};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::cmp::Ordering;
+use std::task::{Context, Poll};
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use std::sync::Arc;
 
 use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
-type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K,V>, Option<(K,V)>), Error>>+Send;
+type IterFuture<K, V> =
+    dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>> + Send;
 
 pub struct DbIterator<K: KvTrait, V: KvTrait> {
-    state: Option<Pin<Box<IterFuture<K,V>>>>
+    state: Option<Pin<Box<IterFuture<K, V>>>>,
 }
 
 impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
-    #[ cfg(feature="wisckey") ]
-    pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>,
-                      value_log: Arc<ValueLog>) -> Self {
+    #[cfg(feature = "wisckey")]
+    pub(crate) fn new(
+        mem_iters: Vec<MemtableIterator>,
+        table_iters: Vec<TableIterator>,
+        value_log: Arc<ValueLog>,
+    ) -> Self {
         let inner = DbIteratorInner::new(mem_iters, table_iters, value_log);
         let state = Box::pin(DbIteratorInner::next(inner));
 
-        Self{ state: Some(state) }
+        Self { state: Some(state) }
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     pub(crate) fn new(mem_iters: Vec<MemtableIterator>, table_iters: Vec<TableIterator>) -> Self {
         let inner = DbIteratorInner::new(mem_iters, table_iters);
         let state = Box::pin(DbIteratorInner::next(inner));
 
-        Self{ state: Some(state) }
+        Self { state: Some(state) }
     }
 }
 
@@ -57,7 +61,7 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
                 // return and keep waiting for result
                 Poll::Pending => {
                     self.state = Some(fut);
-                    return Poll::Pending
+                    return Poll::Pending;
                 }
                 // item computation complete
                 Poll::Ready(result) => {
@@ -67,7 +71,7 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
             }
         } else {
             // no items left
-            return Poll::Ready(None)
+            return Poll::Ready(None);
         };
 
         // Prepare next state?
@@ -83,16 +87,16 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
 }
 
 struct DbIteratorInner<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K,V)>,
+    _marker: PhantomData<fn(K, V)>,
 
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     value_log: Arc<ValueLog>,
 }
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 enum IterResult<V: KvTrait> {
     Value(V),
     ValueRef(ValueId),
@@ -101,20 +105,25 @@ enum IterResult<V: KvTrait> {
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
-    fn new(mut mem_iters: Vec<MemtableIterator>, mut table_iters: Vec<TableIterator>,
-            #[ cfg(feature="wisckey") ]value_log: Arc<ValueLog>
-            ) -> Self {
-        let mut iterators: Vec<Box<dyn InternalIterator>>= vec![];
-        for iter in mem_iters.drain(..) {
+    fn new(
+        mem_iters: Vec<MemtableIterator>,
+        table_iters: Vec<TableIterator>,
+        #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
+    ) -> Self {
+        let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
+        for iter in mem_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
-        for iter in table_iters.drain(..) {
+        for iter in table_iters.into_iter() {
             iterators.push(Box::new(iter));
         }
 
-        Self{
-            iterators, last_key: None, _marker: PhantomData,
-            #[ cfg(feature="wisckey") ] value_log
+        Self {
+            iterators,
+            last_key: None,
+            _marker: PhantomData,
+            #[cfg(feature = "wisckey")]
+            value_log,
         }
     }
 
@@ -141,9 +150,7 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
             let min_key = min_iter.get_key();
 
             match key.cmp(min_key) {
-                Ordering::Less => {
-                    (true, Some((seq_number, offset)))
-                }
+                Ordering::Less => (true, Some((seq_number, offset))),
                 Ordering::Equal => {
                     if seq_number > min_seq_number {
                         (true, Some((seq_number, offset)))
@@ -151,15 +158,14 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
                         (false, min_kv)
                     }
                 }
-                Ordering::Greater => (false, min_kv)
+                Ordering::Greater => (false, min_kv),
             }
         } else {
             (true, Some((seq_number, offset)))
         }
     }
 
-
-    async fn next(mut self) -> Result<(Self, Option<(K,V)>), Error> {
+    async fn next(mut self) -> Result<(Self, Option<(K, V)>), Error> {
         let mut result = None;
 
         while result.is_none() {
@@ -213,10 +219,12 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
 
         let (key, result) = match result.unwrap() {
             Some(inner) => inner,
-            None => { return Ok((self, None)); }
+            None => {
+                return Ok((self, None));
+            }
         };
 
-        cfg_if!{
+        cfg_if! {
             if #[ cfg(feature="wisckey") ] {
                 match result {
                     IterResult::ValueRef(value_ref) => {

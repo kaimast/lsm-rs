@@ -8,7 +8,7 @@
  Please use the [leveldb](https://github.com/skade/leveldb) or [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb) crate for this purpose.
 
 This implementation does *not* aim to reimplement LevelDB. The major differences are:
-* *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are store separately to increase compaction speed
+* *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are stored separately to increase compaction speed
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput (not fully implemented yet)
 * *Async-support*: All API calls are exposed as async functions.
 
@@ -22,6 +22,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
 * Transactions: Modify multiple values at once and atomically
+* Custom sorting functions
 * More modularity and configuration options
 
 ## Feature Flags
@@ -30,12 +31,16 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 * `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
 
+## Sort Order
+This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values. Keys are sorted by comparing their binary representation an ordering those [lexographically](https://doc.rust-lang.org/std/cmp/trait.Ord.html#lexicographical-comparison).
+We plan to add custom order and serialization mechanisms in the future.
+
 ## Tests
 This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
 We provide a [justfile](https://github.com/casey/just) for convenience:
 
 ```sh
-just test #runs all tests
+just test #runs all tests for all configurations
 just lint #runs cargo clippy
 ```
 

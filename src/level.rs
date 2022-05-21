@@ -1,20 +1,19 @@
-use crate::{Error, Params};
-use crate::sorted_table::{SortedTable, TableBuilder, TableId, Key};
-use crate::manifest::{LevelId, Manifest};
 use crate::data_blocks::{DataBlocks, DataEntry};
+use crate::manifest::{LevelId, Manifest};
+use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
+use crate::{Error, Params};
 
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{Mutex, RwLock};
 
 /// TODO add slowdown writes trigger
 const L0_COMPACTION_TRIGGER: usize = 4;
 
 pub type TableVec = Vec<Arc<SortedTable>>;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct Level {
     index: LevelId,
-    #[ allow(clippy::mutex_atomic) ]
     next_compaction: Mutex<usize>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
@@ -23,13 +22,19 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(index: LevelId,  data_blocks: Arc<DataBlocks>, params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        #[ allow(clippy::mutex_atomic) ]
+    pub fn new(
+        index: LevelId,
+        data_blocks: Arc<DataBlocks>,
+        params: Arc<Params>,
+        manifest: Arc<Manifest>,
+    ) -> Self {
         Self {
-            index, params, manifest,
+            index,
+            params,
+            manifest,
             next_compaction: Mutex::new(0),
             data_blocks,
-            tables: RwLock::new(Vec::new())
+            tables: RwLock::new(Vec::new()),
         }
     }
 
@@ -45,7 +50,13 @@ impl Level {
 
     pub async fn build_table(&self, min_key: Key, max_key: Key) -> TableBuilder<'_> {
         let identifier = self.manifest.next_table_id().await;
-        TableBuilder::new(identifier, &*self.params, self.data_blocks.clone(), min_key, max_key)
+        TableBuilder::new(
+            identifier,
+            &*self.params,
+            self.data_blocks.clone(),
+            min_key,
+            max_key,
+        )
     }
 
     pub async fn add_l0_table(&self, table: SortedTable) {
@@ -103,7 +114,6 @@ impl Level {
 
     #[inline]
     pub async fn needs_compaction(&self) -> bool {
-
         if self.index == 0 {
             self.num_tables().await > L0_COMPACTION_TRIGGER
         } else {
@@ -112,7 +122,6 @@ impl Level {
     }
 
     pub async fn start_compaction(&self) -> (Vec<usize>, Vec<Arc<SortedTable>>) {
-        #[ allow(clippy::mutex_atomic) ]
         let mut next_compaction = self.next_compaction.lock().await;
         let all_tables = self.tables.read().await;
 

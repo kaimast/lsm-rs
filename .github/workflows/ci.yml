@@ -20,13 +20,14 @@ jobs:
          profile: minimal
          toolchain: nightly
          override: true
-         components: cargo, rustc, clippy
+         components: cargo, rustc, clippy, rustfmt
     - name: install just
       run: cargo install just
     - name: Tests (Async)
       run: just async-tests
-    - name: Tests (Async I/O)
-      run: just async-io-tests
+    # Skip until this is not super slow anymore
+    #- name: Tests (Async I/O)
+    #  run: just async-io-tests
     - name: Tests (Sync)
       run: just sync-tests
     - name: Tests (No compression)
@@ -45,3 +46,5 @@ jobs:
       run: just sync-lint
     - name: Linting (No WiscKey)
       run: just no-wisckey-lint
+    - name: Check formatting
+      run: cargo fmt --check

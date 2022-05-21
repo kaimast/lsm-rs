@@ -1,32 +1,32 @@
-use crate::Params;
 use crate::memtable::Memtable;
+use crate::Params;
 use crate::WriteOp;
 
-use std::path::Path;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::io::IoSlice;
+use std::path::Path;
+use std::sync::Arc;
 
-#[ cfg(feature="async-io") ]
-use tokio::fs::{OpenOptions, File, remove_file};
+#[cfg(feature = "async-io")]
+use tokio::fs::{remove_file, File, OpenOptions};
 
-#[ cfg(feature="async-io") ]
+#[cfg(feature = "async-io")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use std::convert::TryInto;
 
-#[ cfg(not(feature="async-io")) ]
-use std::fs::{OpenOptions, File, remove_file};
+#[cfg(not(feature = "async-io"))]
+use std::fs::{remove_file, File, OpenOptions};
 
-#[ cfg(not(feature="async-io")) ]
+#[cfg(not(feature = "async-io"))]
 use std::io::{Read, Seek, Write};
 
 use cfg_if::cfg_if;
 
-const PAGE_SIZE: u64 = 4*1024;
+const PAGE_SIZE: u64 = 4 * 1024;
 
-#[ derive(Debug) ]
-pub struct WriteAheadLog{
+#[derive(Debug)]
+pub struct WriteAheadLog {
     params: Arc<Params>,
     // The current log file
     log_file: File,
@@ -37,13 +37,22 @@ pub struct WriteAheadLog{
     position: u64,
 }
 
-impl WriteAheadLog{
+impl WriteAheadLog {
     pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
         let log_file = Self::create_file(&*params, 0).await?;
-        Ok( Self{ params, log_file, offset: 0, position: 0 } )
+        Ok(Self {
+            params,
+            log_file,
+            offset: 0,
+            position: 0,
+        })
     }
 
-    pub async fn open(params: Arc<Params>, offset: u64, memtable: &mut Memtable) -> Result<Self, std::io::Error> {
+    pub async fn open(
+        params: Arc<Params>,
+        offset: u64,
+        memtable: &mut Memtable,
+    ) -> Result<Self, std::io::Error> {
         let position = offset;
         let mut count: usize = 0;
 
@@ -60,7 +69,12 @@ impl WriteAheadLog{
             }
         }
 
-        let mut obj = Self{ params, log_file, offset, position };
+        let mut obj = Self {
+            params,
+            log_file,
+            offset,
+            position,
+        };
 
         // Re-insert ops into memtable
         loop {
@@ -88,7 +102,6 @@ impl WriteAheadLog{
 
                 obj.read_from_log(&mut value, false).await?;
                 memtable.put(key, value);
-
             } else if op_type == WriteOp::DELETE_OP {
                 memtable.delete(key);
             } else {
@@ -116,14 +129,15 @@ impl WriteAheadLog{
         let mut buffers: VecDeque<IoSlice> = vec![
             IoSlice::new(op_type.as_slice()),
             IoSlice::new(klen.as_slice()),
-            IoSlice::new(key)
-        ].into();
+            IoSlice::new(key),
+        ]
+        .into();
 
         match op {
             WriteOp::Put(_, value) => {
                 buffers.push_back(IoSlice::new(vlen.as_slice()));
                 buffers.push_back(IoSlice::new(value));
-            },
+            }
             WriteOp::Delete(_) => {}
         }
 
@@ -145,7 +159,7 @@ impl WriteAheadLog{
             let read_len = file_remaining.min(buffer_len - buffer_pos);
 
             let read_start = buffer_pos as usize;
-            let read_end = (read_len+buffer_pos) as usize;
+            let read_end = (read_len + buffer_pos) as usize;
 
             let read_slice = &mut out[read_start..read_end];
 
@@ -194,8 +208,10 @@ impl WriteAheadLog{
         Ok(true)
     }
 
-    #[ allow(clippy::needless_lifetimes) ] //clippy bug?
-    async fn write_all_vectored<'a>(&mut self, mut buffers: VecDeque<IoSlice<'a>>) -> Result<(), std::io::Error> {
+    async fn write_all_vectored<'a>(
+        &mut self,
+        mut buffers: VecDeque<IoSlice<'a>>,
+    ) -> Result<(), std::io::Error> {
         use std::cmp::Ordering;
 
         while !buffers.is_empty() {
@@ -244,7 +260,7 @@ impl WriteAheadLog{
                         // self.log_file.write_all_vectored(&mut to_write)
                         //   .await.expect("Failed to write to log file");
 
-                        for slice in to_write.drain(..) {
+                        for slice in to_write.into_iter() {
                             self.log_file.write_all(&slice[..]).await
                                 .expect("Failed to write to log file");
                         }
@@ -274,20 +290,24 @@ impl WriteAheadLog{
     }
 
     async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
-        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", file_pos+1)));
+        let fpath = params
+            .db_path
+            .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
         log::trace!("Creating new log file at {:?}", fpath);
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                Ok(File::create(fpath).await?)
+                File::create(fpath).await
             } else {
-                Ok(File::create(fpath)?)
+                File::create(fpath)
             }
         }
     }
 
     async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
-        let fpath = params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+        let fpath = params
+            .db_path
+            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
         log::trace!("Opening file at {:?}", fpath);
 
         cfg_if! {
@@ -331,7 +351,10 @@ impl WriteAheadLog{
         let new_file_pos = new_offset / PAGE_SIZE;
 
         for fpos in old_file_pos..new_file_pos {
-            let fpath = self.params.db_path.join(Path::new(&format!("log{:08}.data", fpos+1)));
+            let fpath = self
+                .params
+                .db_path
+                .join(Path::new(&format!("log{:08}.data", fpos + 1)));
             log::trace!("Removing file {:?}", fpath);
 
             cfg_if! {

@@ -1,13 +1,13 @@
-#[cfg(feature="async-io")]
+#[cfg(feature = "async-io")]
 use tokio::fs;
 
-#[cfg(not(feature="async-io"))]
+#[cfg(not(feature = "async-io"))]
 use std::fs;
 
-#[cfg(feature="async-io")]
+#[cfg(feature = "async-io")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-#[cfg(not(feature="async-io"))]
+#[cfg(not(feature = "async-io"))]
 use std::io::{Read, Seek, Write};
 
 use std::path::Path;
@@ -16,7 +16,7 @@ use cfg_if::cfg_if;
 
 //TODO add proper error handling
 
-#[ inline(always) ]
+#[inline(always)]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     let mut compressed = vec![];
 
@@ -50,7 +50,7 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
     }
 }
 
-#[ inline(always) ]
+#[inline(always)]
 pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io::Error> {
     //TODO it might be worth investigating if encoding/decoding
     // chunks is more efficient

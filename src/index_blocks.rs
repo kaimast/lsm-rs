@@ -1,16 +1,16 @@
 use crate::data_blocks::DataBlockId;
+use crate::sorted_table::TableId;
 use crate::{disk, Error};
 use crate::{Key, Params};
-use crate::sorted_table::TableId;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use std::path::Path;
 use std::cmp::Ordering;
+use std::path::Path;
 
 use bincode::Options;
 
-#[ derive(Debug, Serialize, Deserialize) ]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IndexBlock {
     index: Vec<(Key, DataBlockId)>,
     size: u64,
@@ -19,8 +19,20 @@ pub struct IndexBlock {
 }
 
 impl IndexBlock {
-    pub async fn new(params: &Params, id: TableId, index: Vec<(Key, DataBlockId)>, size: u64, min: Key, max: Key) -> Result<Self, Error> {
-        let block = Self{ index, size, min, max };
+    pub async fn new(
+        params: &Params,
+        id: TableId,
+        index: Vec<(Key, DataBlockId)>,
+        size: u64,
+        min: Key,
+        max: Key,
+    ) -> Result<Self, Error> {
+        let block = Self {
+            index,
+            size,
+            min,
+            max,
+        };
 
         // Store on disk before grabbing the lock
         let block_data = crate::get_encoder().serialize(&block)?;
@@ -35,7 +47,7 @@ impl IndexBlock {
         let fpath = Self::get_file_path(params, &id);
         let data = disk::read(&fpath, 0).await?;
 
-        Ok( crate::get_encoder().deserialize(&data)? )
+        Ok(crate::get_encoder().deserialize(&data)?)
     }
 
     #[inline]

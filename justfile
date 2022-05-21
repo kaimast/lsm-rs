@@ -2,7 +2,7 @@ LOG_LEVEL := "debug"
 
 all: test lint
 
-test: sync-tests async-tests no-wisckey-tests no-compression-tests async-io-tests
+test: sync-tests async-tests no-wisckey-tests no-compression-tests #async-io-tests
 
 sync-tests:
     env RUST_LOG={{LOG_LEVEL}} cargo test --features=sync

@@ -1,23 +1,23 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use std::io::SeekFrom;
-use std::sync::Arc;
-use std::path::Path;
 use std::collections::HashSet;
+use std::io::SeekFrom;
+use std::path::Path;
+use std::sync::Arc;
 
-#[ cfg(feature="async-io") ]
-use tokio::io::{AsyncSeekExt, AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "async-io")]
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-#[ cfg(not(feature="async-io")) ]
-use std::io::{Seek, Read, Write};
+#[cfg(not(feature = "async-io"))]
+use std::io::{Read, Seek, Write};
 
-use tokio::sync::{RwLock, Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
-use crate::{Error, Params};
-use crate::sorted_table::TableId;
 use crate::data_blocks::DataBlockId;
+use crate::sorted_table::TableId;
+use crate::{Error, Params};
 
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::values::ValueBatchId;
 
 use cfg_if::cfg_if;
@@ -25,15 +25,15 @@ use cfg_if::cfg_if;
 pub type SeqNumber = u64;
 pub type LevelId = u32;
 
-#[ derive(Debug, Default, Serialize, Deserialize) ]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct MetaData {
     next_table_id: TableId,
     seq_number_offset: SeqNumber,
     log_offset: u64,
     next_data_block_id: DataBlockId,
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     next_value_batch_id: ValueBatchId,
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     value_log_offset: ValueBatchId,
 }
 
@@ -41,7 +41,7 @@ pub type LevelData = HashSet<TableId>;
 
 /// Keeps track of the LSM meta-data
 /// Will persist to disk
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct Manifest {
     params: Arc<Params>,
     meta: RwLock<MetaData>,
@@ -53,19 +53,23 @@ const MANIFEST_NAME: &str = "Manifest";
 impl Manifest {
     /// Create new manifest for an empty database
     pub async fn new(params: Arc<Params>) -> Self {
-        let meta = MetaData{
+        let meta = MetaData {
             next_table_id: 1,
             seq_number_offset: 1,
             log_offset: 0,
             next_data_block_id: 1,
-            #[ cfg(feature="wisckey") ]
+            #[cfg(feature = "wisckey")]
             next_value_batch_id: 1,
-            #[ cfg(feature="wisckey") ]
+            #[cfg(feature = "wisckey")]
             value_log_offset: 0,
         };
 
-        let tables = Mutex::new( Vec::new() );
-        let obj = Self{ meta: RwLock::new(meta), params, tables };
+        let tables = Mutex::new(Vec::new());
+        let obj = Self {
+            meta: RwLock::new(meta),
+            params,
+            tables,
+        };
 
         {
             let meta = obj.meta.write().await;
@@ -114,8 +118,10 @@ impl Manifest {
 
         log::debug!("Found {} tables", tables.len());
 
-        Ok(Self{
-            meta: RwLock::new(meta), tables: Mutex::new(tables), params
+        Ok(Self {
+            meta: RwLock::new(meta),
+            tables: Mutex::new(tables),
+            params,
         })
     }
 
@@ -153,13 +159,13 @@ impl Manifest {
         self.sync_header(&*meta).await;
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn get_value_log_offset(&self) -> u64 {
         let meta = self.meta.read().await;
         meta.value_log_offset
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn set_value_log_offset(&self, offset: u64) {
         let mut meta = self.meta.write().await;
         assert!(meta.value_log_offset < offset);
@@ -178,7 +184,7 @@ impl Manifest {
         meta.seq_number_offset = offset;
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn next_value_batch_id(&self) -> ValueBatchId {
         let mut meta = self.meta.write().await;
         let id = meta.next_value_batch_id;
@@ -189,7 +195,7 @@ impl Manifest {
         id
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn most_recent_value_batch_id(&self) -> ValueBatchId {
         let meta = self.meta.read().await;
         meta.next_value_batch_id - 1
@@ -199,16 +205,24 @@ impl Manifest {
         self.tables.lock().await
     }
 
-    pub async fn update_table_set(&self, mut add: Vec<(LevelId, TableId)>, mut remove: Vec<(LevelId, TableId)>) {
+    pub async fn update_table_set(
+        &self,
+        add: Vec<(LevelId, TableId)>,
+        remove: Vec<(LevelId, TableId)>,
+    ) {
         let mut tables = self.tables.lock().await;
 
-        for (level, id) in add.drain(..) {
-            tables.get_mut(level as usize).expect("No such level")
+        for (level, id) in add.into_iter() {
+            tables
+                .get_mut(level as usize)
+                .expect("No such level")
                 .insert(id);
         }
 
-        for (level, id) in remove.drain(..) {
-            tables.get_mut(level as usize).expect("No such level")
+        for (level, id) in remove.into_iter() {
+            tables
+                .get_mut(level as usize)
+                .expect("No such level")
                 .remove(&id);
         }
 
@@ -278,4 +292,3 @@ impl Manifest {
         }
     }
 }
-

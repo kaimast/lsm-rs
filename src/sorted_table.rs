@@ -1,30 +1,32 @@
 use std::sync::Arc;
 
-use crate::{Error, KvTrait, Params, WriteOp};
-use crate::data_blocks::{PrefixedKey, DataBlockId, DataBlock, DataBlocks, DataBlockBuilder, DataEntry, DataEntryType};
+use crate::data_blocks::{
+    DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
+};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
+use crate::{Error, KvTrait, Params, WriteOp};
 
 use cfg_if::cfg_if;
 
-#[ cfg(feature="wisckey") ]
-use crate::values::ValueId;
-#[ cfg(feature="wisckey") ]
+#[cfg(feature = "wisckey")]
 use crate::data_blocks::ENTRY_LENGTH;
+#[cfg(feature = "wisckey")]
+use crate::values::ValueId;
 
 pub type Key = Vec<u8>;
 pub type TableId = u64;
 pub type Value = Vec<u8>;
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct SortedTable {
     identifier: TableId,
     index: IndexBlock,
-    data_blocks: Arc<DataBlocks>
+    data_blocks: Arc<DataBlocks>,
 }
 
-#[ cfg(feature="wisckey") ]
-#[ derive(Debug, PartialEq) ]
+#[cfg(feature = "wisckey")]
+#[derive(Debug, PartialEq)]
 pub enum ValueResult<'a> {
     Reference(ValueId),
     Value(&'a [u8]),
@@ -32,21 +34,21 @@ pub enum ValueResult<'a> {
 }
 
 #[async_trait::async_trait]
-pub trait InternalIterator: Send  {
+pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
     fn get_key(&self) -> &Key;
     fn get_seq_number(&self) -> SeqNumber;
     fn get_entry_type(&self) -> DataEntryType;
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     fn get_value(&self) -> ValueResult;
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]>;
 }
 
-#[ derive(Debug) ]
+#[derive(Debug)]
 pub struct TableIterator {
     block_pos: usize,
     block_offset: u32,
@@ -72,7 +74,13 @@ pub struct TableBuilder<'a> {
 }
 
 impl<'a> TableBuilder<'a> {
-    pub fn new(identifier: TableId, params: &'a Params, data_blocks: Arc<DataBlocks>, min_key: Key, max_key: Key) -> TableBuilder<'a> {
+    pub fn new(
+        identifier: TableId,
+        params: &'a Params,
+        data_blocks: Arc<DataBlocks>,
+        min_key: Key,
+        max_key: Key,
+    ) -> TableBuilder<'a> {
         let block_index = vec![];
         let last_key = vec![];
         let block_entry_count = 0;
@@ -81,36 +89,64 @@ impl<'a> TableBuilder<'a> {
         let index_key = None;
         let data_block = DataBlocks::build_block(data_blocks.clone());
 
-        Self{
-            identifier, params, data_blocks, block_index, data_block, last_key,
-            block_entry_count, size, restart_count, index_key, min_key, max_key,
+        Self {
+            identifier,
+            params,
+            data_blocks,
+            block_index,
+            data_block,
+            last_key,
+            block_entry_count,
+            size,
+            restart_count,
+            index_key,
+            min_key,
+            max_key,
         }
     }
 
-    #[cfg(feature="wisckey") ]
-    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value_ref: ValueId) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::PUT_OP, value_ref).await
+    #[cfg(feature = "wisckey")]
+    pub async fn add_value(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        value_ref: ValueId,
+    ) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value_ref)
+            .await
     }
 
-    #[cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default()).await
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default())
+            .await
     }
 
-    #[cfg(not(feature="wisckey")) ]
-    pub async fn add_value(&mut self, key: &[u8], seq_number: SeqNumber, value: &[u8]) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::PUT_OP, value).await
+    #[cfg(not(feature = "wisckey"))]
+    pub async fn add_value(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        self.add_entry(key, seq_number, WriteOp::PUT_OP, value)
+            .await
     }
 
-    #[cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
-        self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[]).await
+        self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[])
+            .await
     }
 
-    async fn add_entry(&mut self, key: &[u8], seq_number: SeqNumber, op_type: u8,
-                       #[ cfg(feature="wisckey") ] value: ValueId,
-                       #[ cfg(not(feature="wisckey")) ] value: &[u8],
-                       ) -> Result<(), Error> {
+    async fn add_entry(
+        &mut self,
+        key: &[u8],
+        seq_number: SeqNumber,
+        op_type: u8,
+        #[cfg(feature = "wisckey")] value: ValueId,
+        #[cfg(not(feature = "wisckey"))] value: &[u8],
+    ) -> Result<(), Error> {
         if self.index_key.is_none() {
             self.index_key = Some(key.to_vec());
         }
@@ -123,8 +159,9 @@ impl<'a> TableBuilder<'a> {
         } else {
             // Calculate key prefix length
             while prefix_len < key.len()
-                    && prefix_len < self.last_key.len()
-                    && key[prefix_len] == self.last_key[prefix_len] {
+                && prefix_len < self.last_key.len()
+                && key[prefix_len] == self.last_key[prefix_len]
+            {
                 prefix_len += 1;
             }
         }
@@ -171,10 +208,21 @@ impl<'a> TableBuilder<'a> {
 
         log::debug!("Created new table with {} blocks", self.block_index.len());
 
-        let index = IndexBlock::new(self.params, self.identifier, self.block_index,
-                                    self.size, self.min_key, self.max_key).await?;
+        let index = IndexBlock::new(
+            self.params,
+            self.identifier,
+            self.block_index,
+            self.size,
+            self.min_key,
+            self.max_key,
+        )
+        .await?;
 
-        Ok(SortedTable{ identifier: self.identifier, index, data_blocks: self.data_blocks })
+        Ok(SortedTable {
+            identifier: self.identifier,
+            index,
+            data_blocks: self.data_blocks,
+        })
     }
 }
 
@@ -193,8 +241,12 @@ impl TableIterator {
             (0, entry_len)
         };
 
-        Self{
-            block_pos, block_offset, key, entry, table,
+        Self {
+            block_pos,
+            block_offset,
+            key,
+            entry,
+            table,
         }
     }
 }
@@ -217,7 +269,7 @@ impl InternalIterator for TableIterator {
         self.entry.get_type()
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     fn get_value(&self) -> ValueResult {
         if let Some(value_ref) = self.entry.get_value_ref() {
             ValueResult::Reference(value_ref)
@@ -226,7 +278,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     fn get_value(&self) -> Option<&[u8]> {
         if let Some(value) = &self.entry.get_value() {
             Some(value)
@@ -235,9 +287,9 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[ tracing::instrument ]
+    #[tracing::instrument]
     async fn step(&mut self) {
-        #[ allow(clippy::comparison_chain) ]
+        #[allow(clippy::comparison_chain)]
         if self.block_pos == self.table.index.num_data_blocks() {
             self.block_pos += 1;
             return;
@@ -264,10 +316,17 @@ impl InternalIterator for TableIterator {
 }
 
 impl SortedTable {
-    pub async fn load(identifier: TableId, data_blocks: Arc<DataBlocks>, params: &Params)
-            -> Result<Self, Error> {
+    pub async fn load(
+        identifier: TableId,
+        data_blocks: Arc<DataBlocks>,
+        params: &Params,
+    ) -> Result<Self, Error> {
         let index = IndexBlock::load(params, identifier).await?;
-        Ok( Self{ identifier, index, data_blocks } )
+        Ok(Self {
+            identifier,
+            index,
+            data_blocks,
+        })
     }
 
     #[inline]
@@ -291,7 +350,7 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    #[ tracing::instrument ]
+    #[tracing::instrument]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         log::trace!("Checking table #{} for value", self.identifier);
         let block_id = self.index.binary_search(key)?;
@@ -306,18 +365,16 @@ impl SortedTable {
     }
 }
 
-/*
-#[ cfg(test) ]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::manifest::Manifest;
     use crate::Params;
-    use crate::entry::Entry;
 
     use tempfile::tempdir;
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     #[tokio::test]
     async fn iterate() {
         let dir = tempdir().unwrap();
@@ -325,38 +382,43 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let key1 = vec![5];
-        let entry1 = Entry::Value{ seq_number: 1, value_ref: (4,2) };
-
         let key2 = vec![15];
-        let entry2 = Entry::Value{ seq_number: 4, value_ref: (4,50) };
+
+        let vref1 = (4, 2);
+        let vref2 = (4, 50);
 
         let id = 124234;
-        let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
 
-        let mut iter = TableIterator::new(table).await;
+        builder.add_value(&key1, 1, vref1).await.unwrap();
+
+        builder.add_value(&key2, 4, vref2).await.unwrap();
+
+        let table = builder.finish().await.unwrap();
+
+        let mut iter = TableIterator::new(Arc::new(table)).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_value(), ValueResult::Reference(*entry1.get_value_ref().unwrap()));
+        assert_eq!(iter.get_value(), ValueResult::Reference(vref1));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_value(), ValueResult::Reference(*entry2.get_value_ref().unwrap()));
+        assert_eq!(iter.get_value(), ValueResult::Reference(vref2));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), true);
     }
 
-    #[ cfg(not(feature="wisckey")) ]
+    #[cfg(not(feature = "wisckey"))]
     #[tokio::test]
     async fn iterate() {
         let dir = tempdir().unwrap();
@@ -364,38 +426,43 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let key1 = vec![5];
-        let entry1 = Entry::Value{ seq_number: 1, value: vec![4,2] };
-
         let key2 = vec![15];
-        let entry2 = Entry::Value{ seq_number: 4, value: vec![4, 50] };
+
+        let value1 = vec![4, 2];
+        let value2 = vec![4, 50];
 
         let id = 124234;
-        let entries = vec![(key1.clone(), entry1.clone()), (key2.clone(), entry2.clone())];
-        let table = Arc::new( SortedTable::new(id, entries, key1.clone(), key2.clone(), data_blocks, &*params).await.unwrap() );
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
+
+        builder.add_value(&key1, 1, &value1).await.unwrap();
+
+        builder.add_value(&key2, 4, &value2).await.unwrap();
+
+        let table = Arc::new(builder.finish().await.unwrap());
 
         let mut iter = TableIterator::new(table).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
-        assert_eq!(iter.get_value(), entry1.get_value());
+        assert_eq!(iter.get_value(), Some(&value1 as &[u8]));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key2);
-        assert_eq!(iter.get_value(), entry2.get_value());
+        assert_eq!(iter.get_value(), Some(&value2 as &[u8]));
 
         iter.step().await;
 
         assert_eq!(iter.at_end(), true);
     }
 
-    #[ cfg(feature="wisckey") ]
+    #[cfg(feature = "wisckey")]
     #[tokio::test]
     async fn iterate_many() {
         const COUNT: u32 = 5_000;
@@ -405,24 +472,24 @@ mod tests {
         params.db_path = dir.path().to_path_buf();
 
         let params = Arc::new(params);
-        let manifest = Arc::new( Manifest::new(params.clone()).await );
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        let data_blocks = Arc::new( DataBlocks::new(params.clone(), manifest) );
-
-        let mut entries = vec![];
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
         let min_key = (0u32).to_le_bytes().to_vec();
         let max_key = (COUNT as u32).to_le_bytes().to_vec();
 
+        let id = 1;
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, min_key, max_key);
+
         for pos in 0..COUNT {
             let key = (pos as u32).to_le_bytes().to_vec();
-            let entry = Entry::Value{ seq_number: 500+pos as u64, value_ref: (100, pos) };
+            let seq_num = (500 + pos) as u64;
 
-            entries.push((key, entry));
+            builder.add_value(&key, seq_num, (100, pos)).await.unwrap();
         }
 
-        let id = 1;
-        let table = Arc::new( SortedTable::new(id, entries, min_key, max_key, data_blocks, &*params).await.unwrap() );
+        let table = Arc::new(builder.finish().await.unwrap());
 
         let mut iter = TableIterator::new(table).await;
 
@@ -430,12 +497,12 @@ mod tests {
             assert_eq!(iter.at_end(), false);
 
             assert_eq!(iter.get_key(), &(pos as u32).to_le_bytes().to_vec());
-            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)) );
-            assert_eq!(iter.get_seq_number(), 500+pos as u64);
+            assert_eq!(iter.get_value(), ValueResult::Reference((100, pos)));
+            assert_eq!(iter.get_seq_number(), 500 + pos as u64);
 
             iter.step().await;
         }
 
         assert_eq!(iter.at_end(), true);
     }
-}*/
+}
