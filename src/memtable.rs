@@ -19,7 +19,7 @@ pub struct ImmMemtableRef {
     inner: Arc<Memtable>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemtableEntry {
     Value { seq_number: u64, value: Vec<u8> },
     Deletion { seq_number: u64 },
