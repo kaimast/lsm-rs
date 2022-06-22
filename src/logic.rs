@@ -416,9 +416,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 if imm_mems.is_empty() {
                     break;
                 }
-                drop(imm_mems);
-                self.imm_cond.notified().await;
-                imm_mems = self.imm_memtables.lock().await;
+
+                imm_mems = self.imm_cond.wait(imm_mems).await;
             }
 
             imm_mems.push_back((wal_offset, imm));

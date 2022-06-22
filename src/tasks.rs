@@ -89,15 +89,12 @@ impl TaskHandle {
         let mut idle = false;
 
         loop {
-            loop {
-                {
-                    let lchange = self.last_change.lock().await;
-                    if !self.is_running() || !idle || *lchange >= last_update {
-                        break;
-                    }
-                }
+            {
+                let mut lchange = self.last_change.lock().await;
 
-                self.sc_condition.notified().await;
+                while self.is_running() && idle && *lchange < last_update {
+                    lchange = self.sc_condition.wait(lchange).await;
+                }
             }
 
             if !self.is_running() {
