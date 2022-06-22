@@ -684,8 +684,7 @@ dependencies = [
 [[package]]
 name = "tokio"
 version = "1.19.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c51a52ed6686dd62c320f9b89299e9dfb46f730c7a48e635c19f21d116cb1439"
+source = "git+https://github.com/kaimast/tokio?branch=notify_condvar#0dec1c7e7bdb3620b4b9fa6f1961a614a98a4858"
 dependencies = [
  "bytes",
  "memchr",
@@ -698,8 +697,7 @@ dependencies = [
 [[package]]
 name = "tokio-macros"
 version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9724f9a975fb987ef7a3cd9be0350edcbe130698af5b8f7a631e23d42d052484"
+source = "git+https://github.com/kaimast/tokio?branch=notify_condvar#0dec1c7e7bdb3620b4b9fa6f1961a614a98a4858"
 dependencies = [
  "proc-macro2",
  "quote",

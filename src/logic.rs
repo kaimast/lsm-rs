@@ -397,6 +397,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
+        // If the current memtable is full, mark it as immutable, so it can be flushed to L0
         if mem_inner.is_full(&*self.params) {
             let mut imm_mems = self.imm_memtables.lock().await;
 
@@ -405,9 +406,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             let wal_offset = wal.get_log_position();
 
-            // FIXME this might cause inconsistencies in the order the memtables are flushed
+            // Drop lock to write-ahead lock so compaction can continue while we are waiting
+            // (compaction flushes the WAL)
             drop(wal);
-            drop(memtable);
 
             // Currently only one immutable memtable is supported
             // Wait for it to be flushed...
