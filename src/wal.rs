@@ -344,7 +344,7 @@ impl WriteAheadLog {
     /// Once the memtable has been flushed we can remove old log entries
     pub async fn set_offset(&mut self, new_offset: u64) {
         if new_offset <= self.offset {
-            panic!("Not a valid offset");
+            panic!("Invalid offset: can only be increased");
         }
 
         let old_file_pos = self.offset / PAGE_SIZE;
