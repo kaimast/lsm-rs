@@ -101,7 +101,6 @@ fn range_iterate() {
     database.stop().unwrap();
 }
 
-
 #[test]
 fn range_iterate_empty() {
     let (_tmpdir, database) = test_init();
@@ -127,7 +126,6 @@ fn range_iterate_empty() {
 
     database.stop().unwrap();
 }
-
 
 #[test]
 fn get_put_many() {
