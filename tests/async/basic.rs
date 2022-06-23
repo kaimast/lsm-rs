@@ -78,6 +78,64 @@ async fn iterate() {
 }
 
 #[tokio::test]
+async fn range_iterate() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{}", pos);
+        database.put_opts(&key, &value, &options).await.unwrap();
+    }
+
+    let mut pos = 0;
+    let mut iter = database.range_iter(&300, &10150).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let real_pos = pos + 300;
+        assert_eq!(real_pos as u64, key);
+        assert_eq!(format!("some_string_{}", real_pos), val);
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 9850);
+
+    database.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn range_iterate_empty() {
+    let (_tmpdir, database) = test_init().await;
+
+    const COUNT: u64 = 5_000;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{}", pos);
+        database.put_opts(&key, &value, &options).await.unwrap();
+    }
+
+    // Pick a range that is outside of the put range
+    let mut iter = database.range_iter(&5300, &10150).await;
+
+    while let Some((_key, _val)) = iter.next().await {
+        panic!("Found a key where there should be none");
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn get_put_many() {
     const COUNT: u64 = 100_000;
 

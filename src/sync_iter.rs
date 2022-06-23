@@ -23,6 +23,9 @@ pub struct DbIterator<K: KvTrait, V: KvTrait> {
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
 
+    min_key: Option<Vec<u8>>,
+    max_key: Option<Vec<u8>>,
+
     tokio_rt: Arc<tokio::runtime::Runtime>,
 
     #[cfg(feature = "wisckey")]
@@ -32,12 +35,13 @@ pub struct DbIterator<K: KvTrait, V: KvTrait> {
 type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
-    #[cfg(feature = "sync")]
     pub(crate) fn new(
-        tokio_rt: Arc<tokio::runtime::Runtime>,
         mem_iters: Vec<MemtableIterator>,
         table_iters: Vec<TableIterator>,
+        min_key: Option<Vec<u8>>,
+        max_key: Option<Vec<u8>>,
         #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
+        tokio_rt: Arc<tokio::runtime::Runtime>,
     ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
 
@@ -54,14 +58,16 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
             last_key: None,
             iterators,
             tokio_rt,
+            min_key,
+            max_key,
             #[cfg(feature = "wisckey")]
             value_log,
         }
     }
 
-    #[inline]
     async fn parse_iter(
-        offset: usize,
+        &self,
+        pos: usize,
         last_key: &Option<Key>,
         min_iter: Option<&dyn InternalIterator>,
         iter: &mut dyn InternalIterator,
@@ -73,8 +79,27 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
             }
         }
 
+        // Don't pick a key that is smaller than the minimum
+        if let Some(min_key) = &self.min_key {
+            while !iter.at_end() && iter.get_key() < min_key {
+                iter.step().await;
+            }
+
+            // There might be no key in this iterator that is >=min_key
+            if iter.at_end() || iter.get_key() < min_key {
+                return (false, min_kv);
+            }
+        }
+
         if iter.at_end() {
             return (false, min_kv);
+        }
+
+        // Don't pick a key that is greater than the maximum
+        if let Some(max_key) = &self.max_key {
+            if iter.get_key().as_slice() >= max_key.as_slice() {
+                return (false, min_kv);
+            }
         }
 
         let key = iter.get_key();
@@ -84,10 +109,10 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
             let min_key = min_iter.unwrap().get_key();
 
             match key.cmp(min_key) {
-                Ordering::Less => (true, Some((seq_number, offset))),
+                Ordering::Less => (true, Some((seq_number, pos))),
                 Ordering::Equal => {
                     if seq_number > min_seq_number {
-                        (true, Some((seq_number, offset)))
+                        (true, Some((seq_number, pos)))
                     } else {
                         (false, min_kv)
                     }
@@ -95,7 +120,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
                 Ordering::Greater => (false, min_kv),
             }
         } else {
-            (true, Some((seq_number, offset)))
+            (true, Some((seq_number, pos)))
         }
     }
 }
@@ -109,37 +134,35 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
         let mut result = None;
 
         while result.is_none() {
-            #[cfg(feature = "wisckey")]
-            let value_log = self.value_log.clone();
-
-            let (out_result, out_last_key, out_iterators) = self.tokio_rt.block_on(async move {
+            let (out_result, out_last_key, out_iterators) = self.tokio_rt.block_on(async {
                 let mut min_kv = None;
                 let num_iterators = iterators.len();
 
-                for offset in 0..num_iterators {
+                for pos in 0..num_iterators {
                     // Split slices to make the borrow checker happy
-                    let (prev, cur) = iterators[..].split_at_mut(offset);
+                    let (prev, cur) = iterators[..].split_at_mut(pos);
 
-                    let min_iter = if let Some((_, offset)) = min_kv {
+                    let min_iter = if let Some((_, pos)) = min_kv {
                         #[allow(clippy::borrowed_box)]
-                        let iter: &Box<dyn InternalIterator> = &prev[offset];
+                        let iter: &Box<dyn InternalIterator> = &prev[pos];
                         Some(&**iter)
                     } else {
                         None
                     };
 
                     let current_iter = &mut *cur[0];
-                    let (change, kv) =
-                        Self::parse_iter(offset, &last_key, min_iter, current_iter, min_kv).await;
+                    let (change, kv) = self
+                        .parse_iter(pos, &last_key, min_iter, current_iter, min_kv)
+                        .await;
 
                     if change {
                         min_kv = kv;
                     }
                 }
 
-                let result = if let Some((_, offset)) = min_kv.take() {
+                let result = if let Some((_, pos)) = min_kv.take() {
                     let encoder = crate::get_encoder();
-                    let iter: &dyn InternalIterator = &*iterators[offset];
+                    let iter: &dyn InternalIterator = &*iterators[pos];
 
                     let res_key = encoder.deserialize(iter.get_key()).unwrap();
                     last_key = Some(iter.get_key().clone());
@@ -152,7 +175,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                                     Some(Some((res_key, encoder.deserialize(value).unwrap())))
                                 }
                                 ValueResult::Reference(value_ref) => {
-                                    let res_val = value_log.get(value_ref).await.unwrap();
+                                    let res_val = self.value_log.get(value_ref).await.unwrap();
                                     Some(Some((res_key, res_val)))
                                 }
                                 ValueResult::NoValue => {

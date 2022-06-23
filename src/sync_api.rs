@@ -80,7 +80,6 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent (which could be the first one) as deleted
-    #[inline]
     pub fn delete(&self, key: &K) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
@@ -90,7 +89,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.write_opts(batch, &OPTS)
     }
 
-    #[inline]
+    /// Delete an existing entry (with additional options)
     pub fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
@@ -98,19 +97,27 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.write_opts(batch, opts)
     }
 
-    #[inline]
+    /// Iterate over all entries in the database
     pub fn iter(&self) -> DbIterator<K, V> {
         let inner = &*self.inner;
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt
-            .block_on(async move { inner.iter(tokio_rt).await })
+            .block_on(async { inner.iter(None, None, tokio_rt).await })
+    }
+
+    /// Like iter(), but will only include entries with keys in [min_key;max_key)
+    pub fn range_iter(&self, min: &K, max: &K) -> DbIterator<K, V> {
+        let inner = &*self.inner;
+        let tokio_rt = self.tokio_rt.clone();
+
+        self.tokio_rt
+            .block_on(async { inner.iter(Some(min), Some(max), tokio_rt).await })
     }
 
     /// Write a batch of updates to the database
     ///
     /// If you only want to write to a single key, use `Database::put` instead
-    #[inline]
     pub fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS)

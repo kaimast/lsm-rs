@@ -32,7 +32,6 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
-    #[inline]
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
         self.inner.get(&key_data).await
@@ -41,7 +40,6 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent version(which could be the first one) as deleted
-    #[inline]
     pub async fn delete(&self, key: &K) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
@@ -58,7 +56,6 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Delete an existing entry (with additional options)
-    #[inline]
     pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
@@ -66,14 +63,12 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Insert or update a single entry
-    #[inline]
     pub async fn put(&self, key: &K, value: &V) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS).await
     }
 
     /// Insert or update a single entry (with additional options)
-    #[inline]
     pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
@@ -81,15 +76,18 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Iterate over all entries in the database
-    #[inline]
     pub async fn iter(&self) -> DbIterator<K, V> {
-        self.inner.iter().await
+        self.inner.iter(None, None).await
+    }
+
+    /// Like iter(), but will only include entries with keys in [min_key;max_key)
+    pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
+        self.inner.iter(Some(min_key), Some(max_key)).await
     }
 
     /// Write a batch of updates to the database
     ///
     /// If you only want to write to a single key, use `Database::put` instead
-    #[inline]
     pub async fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS).await

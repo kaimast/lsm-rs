@@ -26,7 +26,7 @@ pub struct SortedTable {
 }
 
 #[cfg(feature = "wisckey")]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ValueResult<'a> {
     Reference(ValueId),
     Value(&'a [u8]),

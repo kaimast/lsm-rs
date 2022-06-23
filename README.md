@@ -32,7 +32,8 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
 
 ## Sort Order
-This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values. Keys are sorted by comparing their binary representation an ordering those [lexographically](https://doc.rust-lang.org/std/cmp/trait.Ord.html#lexicographical-comparison).
+This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values.
+Keys are sorted by comparing their binary representation and ordering those [lexographically](https://doc.rust-lang.org/std/cmp/trait.Ord.html#lexicographical-comparison).
 We plan to add custom order and serialization mechanisms in the future.
 
 ## Tests
