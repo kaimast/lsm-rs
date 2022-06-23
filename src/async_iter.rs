@@ -152,7 +152,8 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
                 iter.step().await;
             }
 
-            if iter.get_key() < min_key {
+            // There might be no key in this iterator that is >=min_key
+            if iter.at_end() || iter.get_key() < min_key {
                 return (false, min_kv);
             }
         }

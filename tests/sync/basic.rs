@@ -101,6 +101,34 @@ fn range_iterate() {
     database.stop().unwrap();
 }
 
+
+#[test]
+fn range_iterate_empty() {
+    let (_tmpdir, database) = test_init();
+
+    const COUNT: u64 = 5_000;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{}", pos);
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    // Pick a range that is outside of the put range
+    let mut iter = database.range_iter(&5300, &10150);
+
+    while let Some((_key, _val)) = iter.next() {
+        panic!("Found a key where there should be none");
+    }
+
+    database.stop().unwrap();
+}
+
+
 #[test]
 fn get_put_many() {
     const COUNT: u64 = 100_000;
