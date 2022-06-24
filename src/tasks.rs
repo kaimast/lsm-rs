@@ -13,7 +13,7 @@ use crate::{DbLogic, Error};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait Task: Sync + Send + std::fmt::Debug {
+pub trait Task: Sync + Send {
     async fn run(&self) -> Result<bool, Error>;
 }
 
@@ -22,7 +22,6 @@ pub enum TaskType {
     Compaction,
 }
 
-#[derive(Debug)]
 struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
@@ -34,13 +33,11 @@ type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
 
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
-#[derive(Debug)]
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
     tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
 }
 
-#[derive(Debug)]
 struct CompactionTask<K: KvTrait, V: KvTrait> {
     datastore: Arc<DbLogic<K, V>>,
 }

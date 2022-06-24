@@ -30,6 +30,8 @@ mod values;
 mod sorted_table;
 use sorted_table::{Key, Value};
 
+mod level_logger;
+
 mod memtable;
 mod tasks;
 
@@ -231,6 +233,8 @@ pub struct Params {
     /// How often should the full key be stored in a data block?
     /// Larger numbers result in smaller on-disk files, but seeks will be slower
     pub block_restart_interval: usize,
+    /// Write the size of each level to a csv file
+    pub log_level_stats: Option<String>,
 }
 
 impl Default for Params {
@@ -242,6 +246,7 @@ impl Default for Params {
             max_open_files: 1000,
             max_key_block_size: 1024,
             block_restart_interval: 16,
+            log_level_stats: None,
         }
     }
 }
