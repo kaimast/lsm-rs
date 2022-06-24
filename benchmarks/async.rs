@@ -1,8 +1,8 @@
 use std::{fs::File, io::BufWriter};
 
-use tempfile::{Builder, TempDir};
+use clap::Parser;
 
-use clap::{Arg, Command};
+use tempfile::{Builder, TempDir};
 
 use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::fmt;
@@ -10,18 +10,22 @@ use tracing_subscriber::prelude::*;
 
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
-async fn bench_init<K: KvTrait, V: KvTrait>(
-) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
-    let arg_matches = Command::new("lsm-benchmark")
-        .author("Kai Mast <kaimast@cs.cornell.edu>")
-        .arg(
-            Arg::new("enable_tracing")
-                .takes_value(false)
-                .long("enable_tracing"),
-        )
-        .get_matches();
+#[derive(Parser)]
+#[clap(rename_all = "snake-case")]
+#[ clap(author, version, about, long_about = None) ]
+struct Args {
+    #[clap(long)]
+    enable_tracing: bool,
+    #[clap(long)]
+    log_level_stats: Option<String>,
+    #[clap(long, default_value = "100000")]
+    num_entries: usize,
+}
 
-    let tracing_guard = if arg_matches.is_present("enable_tracing") {
+async fn bench_init<K: KvTrait, V: KvTrait>(
+    args: &Args,
+) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
+    let tracing_guard = if args.enable_tracing {
         let fmt_layer = fmt::Layer::default();
 
         let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
@@ -46,6 +50,7 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
 
     let params = Params {
         db_path,
+        log_level_stats: args.log_level_stats.clone(),
         ..Default::default()
     };
     const SM: StartMode = StartMode::CreateOrOverride;
@@ -59,20 +64,26 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
 
 #[tokio::main]
 async fn main() {
-    const COUNT: u64 = 10_000;
+    let args = Args::parse();
 
-    let (_tracing, _tmpdir, database) = bench_init().await;
+    let (_tracing, _tmpdir, database) = bench_init(&args).await;
+
+    log::info!("Starting read/write benchmark");
 
     let mut options = WriteOptions::default();
     options.sync = false;
 
-    for pos in 0..COUNT {
+    log::debug!("Writing {} entries", args.num_entries);
+
+    for pos in 0..args.num_entries {
         let key = pos;
         let value = format!("some_string_{}", pos);
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
-    for pos in 0..COUNT {
+    log::debug!("Reading {} entries", args.num_entries);
+
+    for pos in 0..args.num_entries {
         assert_eq!(
             database.get(&pos).await.unwrap(),
             Some(format!("some_string_{}", pos))
