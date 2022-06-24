@@ -1,6 +1,7 @@
 use crate::data_blocks::{DataBlocks, DataEntryType};
 use crate::iterate::DbIterator;
 use crate::level::Level;
+use crate::level_logger::LevelLogger;
 use crate::manifest::{LevelId, Manifest};
 use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableRef};
 use crate::sorted_table::{InternalIterator, Key, TableIterator};
@@ -29,7 +30,6 @@ use bincode::Options;
 use cfg_if::cfg_if;
 
 /// The main database logic
-#[derive(Debug)]
 pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K, V)>,
 
@@ -40,6 +40,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     imm_cond: Notify,
     levels: Vec<Level>,
     wal: Mutex<WriteAheadLog>,
+    level_logger: Option<LevelLogger>,
 
     #[cfg(feature = "wisckey")]
     value_log: Arc<ValueLog>,
@@ -58,6 +59,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 "DB path must be a folder!".to_string(),
             ));
         }
+
+        let level_logger = if let Some(path) = &params.log_level_stats {
+            Some(LevelLogger::new(path, params.num_levels))
+        } else {
+            None
+        };
 
         let create = match start_mode {
             StartMode::CreateOrOpen => !params.db_path.exists(),
@@ -176,6 +183,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             imm_cond,
             levels,
             wal,
+            level_logger,
             #[cfg(feature = "wisckey")]
             value_log,
         })
@@ -480,6 +488,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 let table_id = table.get_id();
                 l0.add_l0_table(table).await;
 
+                if let Some(logger) = &self.level_logger {
+                    logger.l0_table_added();
+                }
+
                 // Then update manifest and flush WAL
                 let seq_offset = mem.get().get_next_seq_number();
                 self.manifest.set_seq_number_offset(seq_offset).await;
@@ -550,6 +562,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             child_tables.insert(new_pos, table);
             parent_tables.remove(offsets[0]);
+
+            if let Some(logger) = &self.level_logger {
+                logger.compaction(level_pos, 1, 1);
+            }
 
             log::trace!("Done moving table");
             return Ok(());
@@ -715,6 +731,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         for vid in deleted_values.into_iter() {
             self.value_log.mark_value_deleted(vid).await?;
+        }
+
+        if let Some(logger) = &self.level_logger {
+            logger.compaction(level_pos, add_set.len(), remove_set.len());
         }
 
         self.manifest.update_table_set(add_set, remove_set).await;
