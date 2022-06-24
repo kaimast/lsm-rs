@@ -511,9 +511,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
-            if level_pos < self.params.num_levels - 1 && level.needs_compaction().await {
-                self.compact(level_pos as LevelId, level).await?;
-                return Ok(true);
+            if level_pos < self.params.num_levels - 1 {
+                let did_work = self.compact(level_pos as LevelId, level).await?;
+
+                if did_work {
+                    return Ok(true);
+                }
             }
         }
 
@@ -521,8 +524,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[tracing::instrument(skip(self, level))]
-    async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<(), Error> {
-        let (offsets, mut tables) = level.start_compaction().await;
+    async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<bool, Error> {
+        let (offsets, mut tables) = match level.maybe_start_compaction().await {
+            Some(result) => result,
+            None => return Ok(false),
+        };
         assert!(!tables.is_empty());
 
         let mut min = tables[0].get_min();
@@ -560,6 +566,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
             }
 
+            let add_set = vec![(level_pos+1, table.get_id())];
+            let remove_set = vec![(level_pos, table.get_id())];
+
             child_tables.insert(new_pos, table);
             parent_tables.remove(offsets[0]);
 
@@ -567,8 +576,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 logger.compaction(level_pos, 1, 1);
             }
 
+            self.manifest.update_table_set(add_set, remove_set).await;
+            parent_level.finish_compaction();
+
             log::trace!("Done moving table");
-            return Ok(());
+            return Ok(true);
         }
 
         log::debug!(
@@ -738,8 +750,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         self.manifest.update_table_set(add_set, remove_set).await;
+        parent_level.finish_compaction();
 
         log::trace!("Done compacting tables");
-        Ok(())
+        Ok(true)
     }
 }

@@ -24,8 +24,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
+        let compaction_concurrency = params.compaction_concurrency;
+
         let inner = Arc::new(DbLogic::new(mode, params).await?);
-        let tasks = Arc::new(TaskManager::new(inner.clone()).await);
+        let tasks = Arc::new(TaskManager::new(inner.clone(), compaction_concurrency).await);
 
         Ok(Self { inner, tasks })
     }

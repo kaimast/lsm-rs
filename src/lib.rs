@@ -219,7 +219,7 @@ pub enum StartMode {
 /// Parameters to customize the creation of the database
 #[derive(Debug, Clone)]
 pub struct Params {
-    /// Where in the filesystem should the databasse be stored?
+    /// Where in the filesystem should the database be stored?
     pub db_path: PathBuf,
     /// Maximum size of a memtable (keys+values),
     /// This indirectly also defines how large a value block can be
@@ -235,6 +235,8 @@ pub struct Params {
     pub block_restart_interval: usize,
     /// Write the size of each level to a csv file
     pub log_level_stats: Option<String>,
+    /// How many concurrent compaction tasks should there be
+    pub compaction_concurrency: usize,
 }
 
 impl Default for Params {
@@ -247,6 +249,7 @@ impl Default for Params {
             max_key_block_size: 1024,
             block_restart_interval: 16,
             log_level_stats: None,
+            compaction_concurrency: 4,
         }
     }
 }

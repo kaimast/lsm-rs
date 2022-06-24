@@ -3,6 +3,7 @@ use crate::manifest::{LevelId, Manifest};
 use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -19,6 +20,7 @@ pub struct Level {
     tables: RwLock<TableVec>,
     params: Arc<Params>,
     manifest: Arc<Manifest>,
+    compaction_flag: AtomicBool,
 }
 
 impl Level {
@@ -32,8 +34,9 @@ impl Level {
             index,
             params,
             manifest,
-            next_compaction: Mutex::new(0),
             data_blocks,
+            next_compaction: Mutex::new(0),
+            compaction_flag: AtomicBool::new(false),
             tables: RwLock::new(Vec::new()),
         }
     }
@@ -78,18 +81,6 @@ impl Level {
         None
     }
 
-    pub async fn get_total_size(&self) -> usize {
-        let tables = self.tables.read().await;
-        let mut total_size = 0;
-
-        for t in tables.iter() {
-            total_size += t.get_size();
-        }
-
-        total_size
-    }
-
-    #[inline]
     pub fn max_size(&self) -> usize {
         // Note: the result for level zero is not really used since we set
         // the level-0 compaction threshold based on number of files.
@@ -106,24 +97,33 @@ impl Level {
         result
     }
 
-    #[inline]
-    pub async fn num_tables(&self) -> usize {
-        let tables = self.tables.read().await;
-        tables.len()
-    }
+    pub async fn maybe_start_compaction(&self) -> Option<(Vec<usize>, Vec<Arc<SortedTable>>)> {
+        let result = self.compaction_flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
 
-    #[inline]
-    pub async fn needs_compaction(&self) -> bool {
-        if self.index == 0 {
-            self.num_tables().await > L0_COMPACTION_TRIGGER
-        } else {
-            self.get_total_size().await > self.max_size()
+        // There is another compaction form this level going on
+        if result.is_err() {
+            return None;
         }
-    }
 
-    pub async fn start_compaction(&self) -> (Vec<usize>, Vec<Arc<SortedTable>>) {
         let mut next_compaction = self.next_compaction.lock().await;
-        let all_tables = self.tables.read().await;
+        let all_tables = self.tables.write().await;
+
+        let needs_compaction = if self.index == 0 {
+            all_tables.len() > L0_COMPACTION_TRIGGER
+        } else {
+            let mut total_size = 0;
+
+            for t in all_tables.iter() {
+                total_size += t.get_size();
+            }
+
+            total_size > self.max_size()
+        };
+
+        if !needs_compaction {
+            self.compaction_flag.store(false, Ordering::SeqCst);
+            return None;
+        }
 
         if all_tables.is_empty() {
             panic!("Cannot start compaction; level {} is empty", self.index);
@@ -175,7 +175,7 @@ impl Level {
         }
 
         offsets.sort_unstable();
-        (offsets, tables)
+        Some((offsets, tables))
     }
 
     pub async fn get_overlaps(&self, min: &[u8], max: &[u8]) -> Vec<(usize, Arc<SortedTable>)> {
@@ -199,5 +199,10 @@ impl Level {
     #[inline]
     pub async fn get_tables_ro(&self) -> tokio::sync::RwLockReadGuard<'_, TableVec> {
         self.tables.read().await
+    }
+
+    pub fn finish_compaction(&self) {
+        let prev = self.compaction_flag.swap(false, Ordering::SeqCst);
+        assert!(prev, "Compaction flag was not set!");
     }
 }

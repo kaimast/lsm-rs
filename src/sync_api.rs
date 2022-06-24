@@ -23,11 +23,14 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
-        let (inner, tasks) = tokio_rt.block_on(async move {
+        let (inner, tasks) = tokio_rt.block_on(async {
+            let compaction_concurrency = params.compaction_concurrency;
+
             match DbLogic::new(mode, params).await {
                 Ok(inner) => {
                     let inner = Arc::new(inner);
-                    let tasks = Arc::new(TaskManager::new(inner.clone()).await);
+                    let tasks =
+                        Arc::new(TaskManager::new(inner.clone(), compaction_concurrency).await);
 
                     Ok((inner, tasks))
                 }
