@@ -54,6 +54,7 @@ struct UpdateCond {
 
 struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
     datastore: Arc<DbLogic<K, V>>,
+    level_update_cond: Arc<UpdateCond>,
 }
 
 struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
@@ -61,8 +62,8 @@ struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
 }
 
 impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
-    fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
-        Box::new(Self { datastore })
+    fn new_boxed(datastore: Arc<DbLogic<K, V>>, level_update_cond: Arc<UpdateCond>) -> Box<dyn Task> {
+        Box::new(Self { datastore, level_update_cond })
     }
 }
 
@@ -75,7 +76,11 @@ impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
 #[async_trait]
 impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
-        Ok(self.datastore.do_memtable_compaction().await?)
+        let did_work = self.datastore.do_memtable_compaction().await?;
+        if did_work {
+            self.level_update_cond.wake_up().await;
+        }
+        Ok(did_work)
     }
 }
 
@@ -157,13 +162,15 @@ impl TaskManager {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
+        let level_update_cond = Arc::new(UpdateCond::new());
+
         {
-            let update_cond = Arc::new(UpdateCond::new());
+            let memtable_update_cond = Arc::new(UpdateCond::new());
 
             let hdl = Arc::new(TaskHandle::new(
                 stop_flag.clone(),
-                update_cond.clone(),
-                MemtableCompactionTask::new_boxed(datastore.clone()),
+                memtable_update_cond.clone(),
+                MemtableCompactionTask::new_boxed(datastore.clone(), level_update_cond.clone()),
             ));
             let future = {
                 let hdl = hdl.clone();
@@ -174,7 +181,7 @@ impl TaskManager {
 
             let task_group = TaskGroup {
                 tasks: vec![(future, hdl)],
-                condition: update_cond,
+                condition: memtable_update_cond,
             };
 
             tasks.insert(TaskType::MemtableCompaction, task_group);
@@ -182,12 +189,11 @@ impl TaskManager {
 
         {
             let mut compaction_tasks = vec![];
-            let update_cond = Arc::new(UpdateCond::new());
 
             for _ in 0..num_compaction_tasks {
                 let hdl = Arc::new(TaskHandle::new(
                     stop_flag.clone(),
-                    update_cond.clone(),
+                    level_update_cond.clone(),
                     LevelCompactionTask::new_boxed(datastore.clone()),
                 ));
                 let future = {
@@ -202,7 +208,7 @@ impl TaskManager {
 
             let task_group = TaskGroup {
                 tasks: compaction_tasks,
-                condition: update_cond,
+                condition: level_update_cond,
             };
 
             tasks.insert(TaskType::LevelCompaction, task_group);
@@ -213,7 +219,6 @@ impl TaskManager {
 
     pub async fn wake_up(&self, task_type: &TaskType) {
         let task_group = self.tasks.get(task_type).expect("No such task");
-
         task_group.condition.wake_up().await;
     }
 

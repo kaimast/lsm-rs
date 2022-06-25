@@ -57,7 +57,7 @@ impl Level {
         for (pos, placeholder) in placeholders.iter().enumerate() {
             if placeholder.id == id {
                 placeholders.remove(pos);
-                break;
+                return;
             }
         }
 
