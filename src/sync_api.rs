@@ -23,11 +23,14 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     pub fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
         let tokio_rt = Arc::new(TokioRuntime::new().expect("Failed to start tokio"));
-        let (inner, tasks) = tokio_rt.block_on(async move {
+        let (inner, tasks) = tokio_rt.block_on(async {
+            let compaction_concurrency = params.compaction_concurrency;
+
             match DbLogic::new(mode, params).await {
                 Ok(inner) => {
                     let inner = Arc::new(inner);
-                    let tasks = Arc::new(TaskManager::new(inner.clone()).await);
+                    let tasks =
+                        Arc::new(TaskManager::new(inner.clone(), compaction_concurrency).await);
 
                     Ok((inner, tasks))
                 }
@@ -48,8 +51,20 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let key_data = get_encoder().serialize(key)?;
         let inner = &*self.inner;
 
-        self.tokio_rt
-            .block_on(async move { inner.get(&key_data).await })
+        self.tokio_rt.block_on(async {
+            let result = inner.get(&key_data).await;
+
+            match result {
+                Ok((needs_compaction, data)) => {
+                    if needs_compaction {
+                        self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                    }
+
+                    Ok(data)
+                }
+                Err(err) => Err(err),
+            }
+        })
     }
 
     /// Ensure all data is written to disk
@@ -132,7 +147,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.tokio_rt.block_on(async move {
             let needs_compaction = inner.write_opts(write_batch, opts).await?;
             if needs_compaction {
-                self.tasks.wake_up(&TaskType::Compaction).await;
+                self.tasks.wake_up(&TaskType::MemtableCompaction).await;
             }
 
             Ok(())

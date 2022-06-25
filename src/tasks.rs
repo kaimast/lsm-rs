@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use std::time::Instant;
+
+use parking_lot::Mutex as StdMutex;
 
 use super::KvTrait;
 
@@ -19,14 +20,14 @@ pub trait Task: Sync + Send {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum TaskType {
-    Compaction,
+    MemtableCompaction,
+    LevelCompaction,
 }
 
 struct TaskHandle {
     stop_flag: Arc<AtomicBool>,
     task: Box<dyn Task>,
-    last_change: Mutex<Instant>,
-    sc_condition: Notify,
+    update_cond: Arc<UpdateCond>,
 }
 
 type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
@@ -35,36 +36,72 @@ type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
 /// Currently there is only compaction, but there might be more in the future
 pub struct TaskManager {
     stop_flag: Arc<AtomicBool>,
-    tasks: HashMap<TaskType, (StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
+    tasks: HashMap<TaskType, TaskGroup>,
 }
 
-struct CompactionTask<K: KvTrait, V: KvTrait> {
+/// Holds a group of tasks that do the same thing
+/// e.g., all compaction tasks
+struct TaskGroup {
+    condition: Arc<UpdateCond>,
+    tasks: Vec<(StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
+}
+
+/// Keeps track of a condition variables shared within a task group
+struct UpdateCond {
+    last_change: Mutex<Instant>,
+    condition: Notify,
+}
+
+struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
+    datastore: Arc<DbLogic<K, V>>,
+    level_update_cond: Arc<UpdateCond>,
+}
+
+struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
     datastore: Arc<DbLogic<K, V>>,
 }
 
-impl<K: KvTrait, V: KvTrait> CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
+    fn new_boxed(
+        datastore: Arc<DbLogic<K, V>>,
+        level_update_cond: Arc<UpdateCond>,
+    ) -> Box<dyn Task> {
+        Box::new(Self {
+            datastore,
+            level_update_cond,
+        })
+    }
+}
+
+impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
     fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
         Box::new(Self { datastore })
     }
 }
 
 #[async_trait]
-impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
-        Ok(self.datastore.do_compaction().await?)
+        let did_work = self.datastore.do_memtable_compaction().await?;
+        if did_work {
+            self.level_update_cond.wake_up().await;
+        }
+        Ok(did_work)
     }
 }
 
-impl TaskHandle {
-    fn new(stop_flag: Arc<AtomicBool>, task: Box<dyn Task>) -> Self {
-        let last_change = Mutex::new(Instant::now());
-        let sc_condition = Notify::new();
+#[async_trait]
+impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
+    async fn run(&self) -> Result<bool, Error> {
+        Ok(self.datastore.do_level_compaction().await?)
+    }
+}
 
+impl UpdateCond {
+    fn new() -> Self {
         Self {
-            stop_flag,
-            task,
-            last_change,
-            sc_condition,
+            last_change: Mutex::new(Instant::now()),
+            condition: Notify::new(),
         }
     }
 
@@ -72,7 +109,17 @@ impl TaskHandle {
     async fn wake_up(&self) {
         let mut last_change = self.last_change.lock().await;
         *last_change = Instant::now();
-        self.sc_condition.notify_one();
+        self.condition.notify_one();
+    }
+}
+
+impl TaskHandle {
+    fn new(stop_flag: Arc<AtomicBool>, update_cond: Arc<UpdateCond>, task: Box<dyn Task>) -> Self {
+        Self {
+            stop_flag,
+            update_cond,
+            task,
+        }
     }
 
     #[inline(always)]
@@ -87,10 +134,10 @@ impl TaskHandle {
 
         loop {
             {
-                let mut lchange = self.last_change.lock().await;
+                let mut lchange = self.update_cond.last_change.lock().await;
 
                 while self.is_running() && idle && *lchange < last_update {
-                    lchange = self.sc_condition.wait(lchange).await;
+                    lchange = self.update_cond.condition.wait(lchange).await;
                 }
             }
 
@@ -114,37 +161,81 @@ impl TaskHandle {
 }
 
 impl TaskManager {
-    pub async fn new<K: KvTrait, V: KvTrait>(datastore: Arc<DbLogic<K, V>>) -> Self {
+    pub async fn new<K: KvTrait, V: KvTrait>(
+        datastore: Arc<DbLogic<K, V>>,
+        num_compaction_tasks: usize,
+    ) -> Self {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let hdl = Arc::new(TaskHandle::new(
-            stop_flag.clone(),
-            CompactionTask::new_boxed(datastore),
-        ));
-        let future = {
-            let hdl = hdl.clone();
-            let future = tokio::spawn(async move { hdl.work_loop().await });
+        let level_update_cond = Arc::new(UpdateCond::new());
 
-            StdMutex::new(Some(future))
-        };
+        {
+            let memtable_update_cond = Arc::new(UpdateCond::new());
 
-        tasks.insert(TaskType::Compaction, (future, hdl));
+            let hdl = Arc::new(TaskHandle::new(
+                stop_flag.clone(),
+                memtable_update_cond.clone(),
+                MemtableCompactionTask::new_boxed(datastore.clone(), level_update_cond.clone()),
+            ));
+            let future = {
+                let hdl = hdl.clone();
+                let future = tokio::spawn(async move { hdl.work_loop().await });
+
+                StdMutex::new(Some(future))
+            };
+
+            let task_group = TaskGroup {
+                tasks: vec![(future, hdl)],
+                condition: memtable_update_cond,
+            };
+
+            tasks.insert(TaskType::MemtableCompaction, task_group);
+        }
+
+        {
+            let mut compaction_tasks = vec![];
+
+            for _ in 0..num_compaction_tasks {
+                let hdl = Arc::new(TaskHandle::new(
+                    stop_flag.clone(),
+                    level_update_cond.clone(),
+                    LevelCompactionTask::new_boxed(datastore.clone()),
+                ));
+                let future = {
+                    let hdl = hdl.clone();
+                    let future = tokio::spawn(async move { hdl.work_loop().await });
+
+                    StdMutex::new(Some(future))
+                };
+
+                compaction_tasks.push((future, hdl));
+            }
+
+            let task_group = TaskGroup {
+                tasks: compaction_tasks,
+                condition: level_update_cond,
+            };
+
+            tasks.insert(TaskType::LevelCompaction, task_group);
+        }
 
         Self { stop_flag, tasks }
     }
 
     pub async fn wake_up(&self, task_type: &TaskType) {
-        let (_fut, hdl) = self.tasks.get(task_type).expect("No such task");
-        hdl.wake_up().await;
+        let task_group = self.tasks.get(task_type).expect("No such task");
+        task_group.condition.wake_up().await;
     }
 
     pub fn terminate(&self) {
         self.stop_flag.store(false, Ordering::SeqCst);
 
-        for (_, (fut, _hdl)) in self.tasks.iter() {
-            if let Some(future) = fut.lock().unwrap().take() {
-                future.abort();
+        for (_, task_group) in self.tasks.iter() {
+            for (fut, _) in task_group.tasks.iter() {
+                if let Some(future) = fut.lock().take() {
+                    future.abort();
+                }
             }
         }
     }
@@ -154,20 +245,19 @@ impl TaskManager {
 
         self.stop_flag.store(true, Ordering::SeqCst);
 
-        for (_, (_fut, hdl)) in self.tasks.iter() {
-            hdl.sc_condition.notify_waiters();
+        for (_, task_group) in self.tasks.iter() {
+            task_group.condition.condition.notify_waiters();
         }
 
-        for (_, (future, _hdl)) in self.tasks.iter() {
-            let inner = {
-                let mut lock = future.lock().unwrap();
-                lock.take()
-            };
+        for (_, task_group) in self.tasks.iter() {
+            for (join_hdl, _) in task_group.tasks.iter() {
+                let inner = join_hdl.lock().take();
 
-            if let Some(future) = inner {
-                // Ignore already terminated/aborted tasks
-                if let Ok(res) = future.await {
-                    res?;
+                if let Some(future) = inner {
+                    // Ignore already terminated/aborted tasks
+                    if let Ok(res) = future.await {
+                        res?;
+                    }
                 }
             }
         }

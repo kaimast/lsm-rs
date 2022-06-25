@@ -9,7 +9,7 @@
 
 This implementation does *not* aim to reimplement LevelDB. The major differences are:
 * *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are stored separately to increase compaction speed
-* *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput (not fully implemented yet)
+* *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput
 * *Async-support*: All API calls are exposed as async functions.
 
 ## Latest Version:
@@ -21,13 +21,12 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 ## Planned Features:
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
-* Transactions: Modify multiple values at once and atomically
 * Custom sorting functions
 * More modularity and configuration options
 
 ## Feature Flags
 * `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
-* `snappy-compression`: Use the snappy to compress data on disk (enabled by default)
+* `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk (enabled by default)
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 * `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
 

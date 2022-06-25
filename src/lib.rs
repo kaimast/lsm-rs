@@ -6,6 +6,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(io_slice_advance)]
 #![feature(box_into_inner)]
+#![feature(let_chains)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -122,13 +123,13 @@ impl std::fmt::Display for Error {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         match self {
             Self::Io(msg) => {
-                fmt.write_fmt(format_args!("Io Error: {}", msg))?;
+                fmt.write_fmt(format_args!("Io Error: {msg}"))?;
             }
             Self::InvalidParams(msg) => {
-                fmt.write_fmt(format_args!("Invalid Parameter: {}", msg))?;
+                fmt.write_fmt(format_args!("Invalid Parameter: {msg}"))?;
             }
             Self::Serialization(msg) => {
-                fmt.write_fmt(format_args!("Serialization Error: {}", msg))?;
+                fmt.write_fmt(format_args!("Serialization Error: {msg}"))?;
             }
         }
 
@@ -219,7 +220,7 @@ pub enum StartMode {
 /// Parameters to customize the creation of the database
 #[derive(Debug, Clone)]
 pub struct Params {
-    /// Where in the filesystem should the databasse be stored?
+    /// Where in the filesystem should the database be stored?
     pub db_path: PathBuf,
     /// Maximum size of a memtable (keys+values),
     /// This indirectly also defines how large a value block can be
@@ -235,6 +236,10 @@ pub struct Params {
     pub block_restart_interval: usize,
     /// Write the size of each level to a csv file
     pub log_level_stats: Option<String>,
+    /// How many concurrent compaction tasks should there be
+    pub compaction_concurrency: usize,
+    /// How many seeks (per kb) before compaction is triggered?
+    pub seek_based_compaction: Option<u32>,
 }
 
 impl Default for Params {
@@ -247,6 +252,8 @@ impl Default for Params {
             max_key_block_size: 1024,
             block_restart_interval: 16,
             log_level_stats: None,
+            compaction_concurrency: 4,
+            seek_based_compaction: Some(10),
         }
     }
 }
