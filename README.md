@@ -26,7 +26,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 
 ## Feature Flags
 * `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
-* `snappy-compression`: Use the snappy to compress data on disk (enabled by default)
+* `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk (enabled by default)
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 * `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
 
