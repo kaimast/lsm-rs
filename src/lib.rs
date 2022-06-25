@@ -6,6 +6,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(io_slice_advance)]
 #![feature(box_into_inner)]
+#![feature(let_chains)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};

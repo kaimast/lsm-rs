@@ -436,77 +436,81 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
     }
 
-    /// Do compaction if necessary
-    /// Returns true if any work was done
-    #[tracing::instrument(skip(self))]
-    pub async fn do_compaction(&self) -> Result<bool, Error> {
-        // (Immutable) memtable to level compaction
-        {
-            let mut wal = self.wal.lock().await;
-            let mut imm_mems = self.imm_memtables.lock().await;
+    pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
+        let mut wal = self.wal.lock().await;
+        let mut imm_mems = self.imm_memtables.lock().await;
 
-            if let Some((log_offset, mem)) = imm_mems.pop_front() {
-                // First create table
-                let (min_key, max_key) = mem.get().get_min_max_key();
-                let l0 = self.levels.get(0).unwrap();
-                let mut table_builder = l0.build_table(min_key, max_key).await;
+        if let Some((log_offset, mem)) = imm_mems.pop_front() {
+            // First create table
+            let (min_key, max_key) = mem.get().get_min_max_key();
+            let l0 = self.levels.get(0).unwrap();
+            let table_id = self.manifest.next_table_id().await;
+            let mut table_builder = l0.build_table(table_id, min_key, max_key).await;
 
-                let memtable_entries = mem.get().get_entries();
+            let memtable_entries = mem.get().get_entries();
 
-                cfg_if! {
-                    if #[cfg(feature="wisckey")] {
-                        let mut vbuilder = self.value_log.make_batch().await;
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    let mut vbuilder = self.value_log.make_batch().await;
 
-                        for (key, mem_entry) in memtable_entries.into_iter() {
-                            match mem_entry {
-                                MemtableEntry::Value{seq_number, value} => {
-                                    let value_ref = vbuilder.add_value(value).await;
-                                    table_builder.add_value(&key, seq_number, value_ref).await?;
-                                }
-                                MemtableEntry::Deletion{seq_number} => {
-                                    table_builder.add_deletion(&key, seq_number).await?;
-                                }
+                    for (key, mem_entry) in memtable_entries.into_iter() {
+                        match mem_entry {
+                            MemtableEntry::Value{seq_number, value} => {
+                                let value_ref = vbuilder.add_value(value).await;
+                                table_builder.add_value(&key, seq_number, value_ref).await?;
+                            }
+                            MemtableEntry::Deletion{seq_number} => {
+                                table_builder.add_deletion(&key, seq_number).await?;
                             }
                         }
+                    }
 
-                        vbuilder.finish().await?;
-                    } else {
-                        for (key, mem_entry) in memtable_entries.into_iter() {
-                            match mem_entry {
-                                MemtableEntry::Value{seq_number, value} => {
-                                    table_builder.add_value(&key, seq_number, &value).await?;
-                                }
-                                MemtableEntry::Deletion{seq_number} => {
-                                    table_builder.add_deletion(&key, seq_number).await?;
-                                }
+                    vbuilder.finish().await?;
+                } else {
+                    for (key, mem_entry) in memtable_entries.into_iter() {
+                        match mem_entry {
+                            MemtableEntry::Value{seq_number, value} => {
+                                table_builder.add_value(&key, seq_number, &value).await?;
+                            }
+                            MemtableEntry::Deletion{seq_number} => {
+                                table_builder.add_deletion(&key, seq_number).await?;
                             }
                         }
                     }
                 }
-
-                let table = table_builder.finish().await?;
-                let table_id = table.get_id();
-                l0.add_l0_table(table).await;
-
-                if let Some(logger) = &self.level_logger {
-                    logger.l0_table_added();
-                }
-
-                // Then update manifest and flush WAL
-                let seq_offset = mem.get().get_next_seq_number();
-                self.manifest.set_seq_number_offset(seq_offset).await;
-                self.manifest
-                    .update_table_set(vec![(0, table_id)], vec![])
-                    .await;
-
-                wal.set_offset(log_offset).await;
-                self.manifest.set_log_offset(log_offset).await;
-
-                log::debug!("Created new L0 table");
-                self.imm_cond.notify_waiters();
-                return Ok(true);
             }
+
+            let table = table_builder.finish().await?;
+            let table_id = table.get_id();
+            l0.add_l0_table(table).await;
+
+            if let Some(logger) = &self.level_logger {
+                logger.l0_table_added();
+            }
+
+            // Then update manifest and flush WAL
+            let seq_offset = mem.get().get_next_seq_number();
+            self.manifest.set_seq_number_offset(seq_offset).await;
+            self.manifest
+                .update_table_set(vec![(0, table_id)], vec![])
+                .await;
+
+            wal.set_offset(log_offset).await;
+            self.manifest.set_log_offset(log_offset).await;
+
+            log::debug!("Created new L0 table");
+            self.imm_cond.notify_waiters();
+
+            Ok(true)
+        } else {
+            Ok(false)
         }
+    }
+
+    /// Do compaction if necessary
+    /// Returns true if any work was done
+    #[tracing::instrument(skip(self))]
+    pub async fn do_level_compaction(&self) -> Result<bool, Error> {
 
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
@@ -525,17 +529,17 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
     #[tracing::instrument(skip(self, level))]
     async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<bool, Error> {
-        let (offsets, mut tables) = match level.maybe_start_compaction().await {
+        let mut parent_tables = match level.maybe_start_compaction().await {
             Some(result) => result,
             None => return Ok(false),
         };
-        assert!(!tables.is_empty());
+        assert!(!parent_tables.is_empty());
 
-        let mut min = tables[0].get_min();
-        let mut max = tables[0].get_max();
+        let mut min = parent_tables[0].get_min();
+        let mut max = parent_tables[0].get_max();
 
-        if tables.len() > 1 {
-            for table in tables[1..].iter() {
+        if parent_tables.len() > 1 {
+            for table in parent_tables[1..].iter() {
                 min = std::cmp::min(min, table.get_min());
                 max = std::cmp::max(max, table.get_max());
             }
@@ -544,22 +548,32 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let parent_level = &self.levels[level_pos as usize];
         let child_level = &self.levels[(level_pos + 1) as usize];
 
-        let overlaps = child_level.get_overlaps(min, max).await;
+        let overlap_result = if parent_tables.len() == 1 {
+            child_level.get_overlaps(min, max, Some(parent_tables[0].get_id())).await
+        } else {
+            child_level.get_overlaps(min, max, None).await
+        };
+
+        // Abort due to concurrency?
+        let (table_id, child_tables) = match overlap_result {
+            Some(res) => res,
+            None => return Ok(false),
+        };
 
         // Fast path
-        if tables.len() == 1 && overlaps.is_empty() {
-            let mut parent_tables = level.get_tables().await;
-            let mut child_tables = child_level.get_tables().await;
+        if parent_tables.len() == 1 && child_tables.is_empty() {
+            let mut all_parent_tables = level.get_tables().await;
+            let mut all_child_tables = child_level.get_tables().await;
 
             log::debug!(
                 "Moving table from level {} to level {}",
                 level_pos,
                 level_pos + 1
             );
-            let table = tables.remove(0);
+            let table = parent_tables.remove(0);
 
             let mut new_pos = 0;
-            for (pos, other_table) in child_tables.iter().enumerate() {
+            for (pos, other_table) in all_child_tables.iter().enumerate() {
                 if other_table.get_min() > table.get_min() {
                     new_pos = pos;
                     break;
@@ -569,15 +583,22 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             let add_set = vec![(level_pos+1, table.get_id())];
             let remove_set = vec![(level_pos, table.get_id())];
 
-            child_tables.insert(new_pos, table);
-            parent_tables.remove(offsets[0]);
+            all_child_tables.insert(new_pos, table.clone());
+            child_level.remove_table_placeholder(table_id).await;
+
+            for (pos, other_table) in all_parent_tables.iter().enumerate() {
+                if table.get_id() == other_table.get_id() {
+                    all_parent_tables.remove(pos);
+                    break;
+                }
+            }
 
             if let Some(logger) = &self.level_logger {
                 logger.compaction(level_pos, 1, 1);
             }
 
             self.manifest.update_table_set(add_set, remove_set).await;
-            parent_level.finish_compaction();
+            table.finish_compaction();
 
             log::trace!("Done moving table");
             return Ok(true);
@@ -585,13 +606,13 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         log::debug!(
             "Compacting {} table(s) in level {} with {} table(s) in level {}",
-            tables.len(),
+            parent_tables.len(),
             level_pos,
-            overlaps.len(),
+            child_tables.len(),
             level_pos + 1
         );
 
-        for (_, table) in overlaps.iter() {
+        for table in child_tables.iter() {
             min = std::cmp::min(min, table.get_min());
             max = std::cmp::max(max, table.get_max());
         }
@@ -603,11 +624,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let max = max.to_vec();
 
         let mut table_iters = Vec::new();
-        for table in tables.into_iter() {
+        for table in parent_tables.iter() {
             table_iters.push(TableIterator::new(table.clone()).await);
         }
 
-        for (_, child) in overlaps.iter() {
+        for child in child_tables.iter() {
             table_iters.push(TableIterator::new(child.clone()).await);
         }
 
@@ -616,7 +637,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         let mut deleted_values = vec![];
 
-        let mut table_builder = child_level.build_table(min, max).await;
+        let mut table_builder = child_level.build_table(table_id, min, max).await;
 
         loop {
             log::trace!("Starting compaction for next key");
@@ -661,8 +682,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 if let Some(other_iter) = min_iter {
                     if table_iter.get_seq_number() > other_iter.get_seq_number() {
                         log::trace!(
-                            "Overriding key {:?}: new seq #{}, old seq #{}",
-                            key,
+                            "Overriding key {key:?}: new seq #{}, old seq #{}",
                             table_iter.get_seq_number(),
                             other_iter.get_seq_number()
                         );
@@ -716,28 +736,45 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let mut remove_set = vec![];
 
         // Install new tables atomically
-        let mut parent_tables = parent_level.get_tables().await;
-        let mut child_tables = child_level.get_tables().await;
+        let mut all_parent_tables = parent_level.get_tables().await;
+        let mut all_child_tables = child_level.get_tables().await;
 
         // iterate backwards to ensure oldest entries are removed first
-        for (offset, _) in overlaps.iter().rev() {
-            let id = child_tables.remove(*offset).get_id();
-            remove_set.push((level_pos + 1_u32, id));
+        for table in child_tables.iter() {
+            let mut found = false;
+            for (pos, other_table) in all_child_tables.iter().enumerate() {
+                if other_table.get_id() == table.get_id() {
+                    remove_set.push((level_pos + 1_u32, table.get_id()));
+                    all_child_tables.remove(pos);
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
         }
 
-        let mut new_pos = child_tables.len(); // insert at the end by default
-        for (pos, other_table) in child_tables.iter().enumerate() {
+        let mut new_pos = all_child_tables.len(); // insert at the end by default
+        for (pos, other_table) in all_child_tables.iter().enumerate() {
             if other_table.get_min() > new_table.get_min() {
                 new_pos = pos;
                 break;
             }
         }
 
-        child_tables.insert(new_pos, Arc::new(new_table));
+        all_child_tables.insert(new_pos, Arc::new(new_table));
+        child_level.remove_table_placeholder(table_id).await;
 
-        for offset in offsets.iter().rev() {
-            let id = parent_tables.remove(*offset).get_id();
-            remove_set.push((level_pos, id));
+        for table in parent_tables.iter() {
+            let mut found = false;
+            for (pos, other_table) in all_parent_tables.iter().enumerate() {
+                if other_table.get_id() == table.get_id() {
+                    remove_set.push((level_pos + 1_u32, table.get_id()));
+                    all_parent_tables.remove(pos);
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
         }
 
         #[cfg(feature = "wisckey")]
@@ -750,7 +787,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         self.manifest.update_table_set(add_set, remove_set).await;
-        parent_level.finish_compaction();
 
         log::trace!("Done compacting tables");
         Ok(true)

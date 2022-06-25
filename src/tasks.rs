@@ -20,12 +20,8 @@ pub trait Task: Sync + Send {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum TaskType {
-    Compaction,
-}
-
-struct UpdateCond {
-    last_change: Mutex<Instant>,
-    condition: Notify,
+    MemtableCompaction,
+    LevelCompaction,
 }
 
 struct TaskHandle {
@@ -43,25 +39,50 @@ pub struct TaskManager {
     tasks: HashMap<TaskType, TaskGroup>,
 }
 
+/// Holds a group of tasks that do the same thing
+/// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
     tasks: Vec<(StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
 }
 
-struct CompactionTask<K: KvTrait, V: KvTrait> {
+/// Keeps track of a condition variables shared within a task group
+struct UpdateCond {
+    last_change: Mutex<Instant>,
+    condition: Notify,
+}
+
+struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
     datastore: Arc<DbLogic<K, V>>,
 }
 
-impl<K: KvTrait, V: KvTrait> CompactionTask<K, V> {
+struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
+    datastore: Arc<DbLogic<K, V>>,
+}
+
+impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
+    fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
+        Box::new(Self { datastore })
+    }
+}
+
+impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
     fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
         Box::new(Self { datastore })
     }
 }
 
 #[async_trait]
-impl<K: KvTrait, V: KvTrait> Task for CompactionTask<K, V> {
+impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
-        Ok(self.datastore.do_compaction().await?)
+        Ok(self.datastore.do_memtable_compaction().await?)
+    }
+}
+
+#[async_trait]
+impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
+    async fn run(&self) -> Result<bool, Error> {
+        Ok(self.datastore.do_level_compaction().await?)
     }
 }
 
@@ -136,14 +157,13 @@ impl TaskManager {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let mut compaction_tasks = vec![];
-        let update_cond = Arc::new(UpdateCond::new());
+        {
+            let update_cond = Arc::new(UpdateCond::new());
 
-        for _ in 0..num_compaction_tasks {
             let hdl = Arc::new(TaskHandle::new(
                 stop_flag.clone(),
                 update_cond.clone(),
-                CompactionTask::new_boxed(datastore.clone()),
+                MemtableCompactionTask::new_boxed(datastore.clone()),
             ));
             let future = {
                 let hdl = hdl.clone();
@@ -152,15 +172,41 @@ impl TaskManager {
                 StdMutex::new(Some(future))
             };
 
-            compaction_tasks.push((future, hdl));
+            let task_group = TaskGroup {
+                tasks: vec![(future, hdl)],
+                condition: update_cond,
+            };
+
+            tasks.insert(TaskType::MemtableCompaction, task_group);
         }
 
-        let task_group = TaskGroup {
-            tasks: compaction_tasks,
-            condition: update_cond,
-        };
+        {
+            let mut compaction_tasks = vec![];
+            let update_cond = Arc::new(UpdateCond::new());
 
-        tasks.insert(TaskType::Compaction, task_group);
+            for _ in 0..num_compaction_tasks {
+                let hdl = Arc::new(TaskHandle::new(
+                    stop_flag.clone(),
+                    update_cond.clone(),
+                    LevelCompactionTask::new_boxed(datastore.clone()),
+                ));
+                let future = {
+                    let hdl = hdl.clone();
+                    let future = tokio::spawn(async move { hdl.work_loop().await });
+
+                    StdMutex::new(Some(future))
+                };
+
+                compaction_tasks.push((future, hdl));
+            }
+
+            let task_group = TaskGroup {
+                tasks: compaction_tasks,
+                condition: update_cond,
+            };
+
+            tasks.insert(TaskType::LevelCompaction, task_group);
+        }
 
         Self { stop_flag, tasks }
     }

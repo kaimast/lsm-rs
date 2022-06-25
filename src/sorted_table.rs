@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::data_blocks::{
     DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
@@ -23,6 +24,7 @@ pub struct SortedTable {
     identifier: TableId,
     index: IndexBlock,
     data_blocks: Arc<DataBlocks>,
+    compaction_flag: AtomicBool,
 }
 
 #[cfg(feature = "wisckey")]
@@ -219,8 +221,9 @@ impl<'a> TableBuilder<'a> {
         .await?;
 
         Ok(SortedTable {
-            identifier: self.identifier,
             index,
+            identifier: self.identifier,
+            compaction_flag: AtomicBool::new(false),
             data_blocks: self.data_blocks,
         })
     }
@@ -326,7 +329,20 @@ impl SortedTable {
             identifier,
             index,
             data_blocks,
+            compaction_flag: AtomicBool::new(false),
         })
+    }
+
+    pub fn maybe_start_compaction(&self) -> bool {
+        let order = Ordering::SeqCst;
+        let result = self.compaction_flag.compare_exchange(false, true, order, order);
+
+        result.is_ok()
+    }
+
+    pub fn finish_compaction(&self) {
+        let prev = self.compaction_flag.swap(false, Ordering::SeqCst);
+        assert!(prev, "Compaction flag was not set!");
     }
 
     #[inline]

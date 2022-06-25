@@ -9,7 +9,7 @@
 
 This implementation does *not* aim to reimplement LevelDB. The major differences are:
 * *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are stored separately to increase compaction speed
-* *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput (not fully implemented yet)
+* *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput
 * *Async-support*: All API calls are exposed as async functions.
 
 ## Latest Version:
@@ -21,7 +21,6 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 ## Planned Features:
 * Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
-* Transactions: Modify multiple values at once and atomically
 * Custom sorting functions
 * More modularity and configuration options
 

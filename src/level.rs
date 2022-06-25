@@ -3,7 +3,6 @@ use crate::manifest::{LevelId, Manifest};
 use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -12,7 +11,18 @@ const L0_COMPACTION_TRIGGER: usize = 4;
 
 pub type TableVec = Vec<Arc<SortedTable>>;
 
-#[derive(Debug)]
+pub struct TablePlaceholder {
+    min: Key,
+    max: Key,
+    id: TableId,
+}
+
+impl TablePlaceholder {
+    fn overlaps(&self, min: &[u8], max: &[u8]) -> bool {
+        self.max.as_slice() >= min && self.min.as_slice() <= max
+    }
+}
+
 pub struct Level {
     index: LevelId,
     next_compaction: Mutex<usize>,
@@ -20,7 +30,8 @@ pub struct Level {
     tables: RwLock<TableVec>,
     params: Arc<Params>,
     manifest: Arc<Manifest>,
-    compaction_flag: AtomicBool,
+    // Tables in the process of being created
+    table_placeholders: RwLock<Vec<TablePlaceholder>>,
 }
 
 impl Level {
@@ -36,9 +47,21 @@ impl Level {
             manifest,
             data_blocks,
             next_compaction: Mutex::new(0),
-            compaction_flag: AtomicBool::new(false),
-            tables: RwLock::new(Vec::new()),
+            tables: RwLock::new(vec![]),
+            table_placeholders: RwLock::new(vec![]),
         }
+    }
+
+    pub async fn remove_table_placeholder(&self, id: TableId) {
+        let mut placeholders = self.table_placeholders.write().await;
+        for (pos, placeholder) in placeholders.iter().enumerate() {
+            if placeholder.id == id {
+                placeholders.remove(pos);
+                break;
+            }
+        }
+
+        panic!("no such placeholder");
     }
 
     pub async fn load_table(&self, id: TableId) -> Result<(), Error> {
@@ -47,12 +70,11 @@ impl Level {
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
 
-        log::trace!("Loaded table {} on level {}", id, self.index);
+        log::trace!("Loaded table {id} on level {}", self.index);
         Ok(())
     }
 
-    pub async fn build_table(&self, min_key: Key, max_key: Key) -> TableBuilder<'_> {
-        let identifier = self.manifest.next_table_id().await;
+    pub async fn build_table(&self, identifier: TableId, min_key: Key, max_key: Key) -> TableBuilder<'_> {
         TableBuilder::new(
             identifier,
             &*self.params,
@@ -97,14 +119,7 @@ impl Level {
         result
     }
 
-    pub async fn maybe_start_compaction(&self) -> Option<(Vec<usize>, Vec<Arc<SortedTable>>)> {
-        let result = self.compaction_flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
-
-        // There is another compaction form this level going on
-        if result.is_err() {
-            return None;
-        }
-
+    pub async fn maybe_start_compaction(&self) -> Option<Vec<Arc<SortedTable>>> {
         let mut next_compaction = self.next_compaction.lock().await;
         let all_tables = self.tables.write().await;
 
@@ -121,7 +136,6 @@ impl Level {
         };
 
         if !needs_compaction {
-            self.compaction_flag.store(false, Ordering::SeqCst);
             return None;
         }
 
@@ -135,6 +149,11 @@ impl Level {
 
         let offset = *next_compaction;
         let table = all_tables[offset].clone();
+
+        if !table.maybe_start_compaction() {
+            return None;
+        }
+
         *next_compaction += 1;
 
         let mut tables = vec![table];
@@ -145,6 +164,7 @@ impl Level {
             let mut min = tables[0].get_min().to_vec();
             let mut max = tables[0].get_max().to_vec();
 
+            //TODO how greedy should this be?
             let mut change = true;
             while change {
                 change = false;
@@ -161,7 +181,7 @@ impl Level {
                         continue;
                     }
 
-                    if table.overlaps(&min, &max) {
+                    if table.overlaps(&min, &max) && table.maybe_start_compaction() {
                         min = std::cmp::min(&min[..], table.get_min()).to_vec();
                         max = std::cmp::max(&max[..], table.get_max()).to_vec();
 
@@ -174,21 +194,54 @@ impl Level {
             }
         }
 
-        offsets.sort_unstable();
-        Some((offsets, tables))
+        Some(tables)
     }
 
-    pub async fn get_overlaps(&self, min: &[u8], max: &[u8]) -> Vec<(usize, Arc<SortedTable>)> {
-        let mut overlaps = Vec::new();
+    pub async fn get_overlaps(&self, min: &[u8], max: &[u8], fast_path: Option<TableId>) -> Option<(TableId, Vec<Arc<SortedTable>>)> {
+        let mut overlaps: Vec<Arc<SortedTable>> = Vec::new();
         let tables = self.tables.read().await;
 
-        for (pos, table) in tables.iter().enumerate() {
+        let mut min = min;
+        let mut max = max;
+
+        for table in tables.iter() {
             if table.overlaps(min, max) {
-                overlaps.push((pos, table.clone()));
+                if !table.maybe_start_compaction() {
+                    // Abort
+                    for table in overlaps.into_iter() {
+                        table.finish_compaction();
+                    }
+                    return None;
+                }
+
+                overlaps.push(table.clone());
+                min = table.get_min().min(min);
+                max = table.get_max().max(max);
             }
         }
 
-        overlaps
+        // set placeholder to avoid race conditions
+        let mut placeholders = self.table_placeholders.write().await;
+
+        for placeholder in placeholders.iter() {
+            if placeholder.overlaps(min, max) {
+                return None;
+            }
+        }
+
+        let table_id = if let Some(table_id) = fast_path && overlaps.is_empty() {
+            table_id
+        } else {
+            self.manifest.next_table_id().await
+        };
+
+        placeholders.push(TablePlaceholder{
+            id: table_id,
+            min: min.to_vec(),
+            max: max.to_vec(),
+        });
+
+        Some((table_id, overlaps))
     }
 
     #[inline]
@@ -199,10 +252,5 @@ impl Level {
     #[inline]
     pub async fn get_tables_ro(&self) -> tokio::sync::RwLockReadGuard<'_, TableVec> {
         self.tables.read().await
-    }
-
-    pub fn finish_compaction(&self) {
-        let prev = self.compaction_flag.swap(false, Ordering::SeqCst);
-        assert!(prev, "Compaction flag was not set!");
     }
 }

@@ -135,7 +135,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.tokio_rt.block_on(async move {
             let needs_compaction = inner.write_opts(write_batch, opts).await?;
             if needs_compaction {
-                self.tasks.wake_up(&TaskType::Compaction).await;
+                self.tasks.wake_up(&TaskType::MemtableCompaction).await;
             }
 
             Ok(())
