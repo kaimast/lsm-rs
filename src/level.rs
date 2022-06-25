@@ -11,14 +11,29 @@ const L0_COMPACTION_TRIGGER: usize = 4;
 
 pub type TableVec = Vec<Arc<SortedTable>>;
 
-#[derive(Debug)]
+pub struct TablePlaceholder {
+    min: Key,
+    max: Key,
+    id: TableId,
+}
+
+impl TablePlaceholder {
+    fn overlaps(&self, min: &[u8], max: &[u8]) -> bool {
+        self.max.as_slice() >= min && self.min.as_slice() <= max
+    }
+}
+
 pub struct Level {
     index: LevelId,
-    next_compaction: Mutex<usize>,
+    next_compaction_offset: Mutex<usize>,
+    do_seek_based_compaction: bool,
+    seek_based_compaction: Mutex<Option<Arc<SortedTable>>>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
     manifest: Arc<Manifest>,
+    // Tables in the process of being created
+    table_placeholders: RwLock<Vec<TablePlaceholder>>,
 }
 
 impl Level {
@@ -30,12 +45,27 @@ impl Level {
     ) -> Self {
         Self {
             index,
+            do_seek_based_compaction: params.seek_based_compaction.is_some(),
             params,
             manifest,
-            next_compaction: Mutex::new(0),
             data_blocks,
-            tables: RwLock::new(Vec::new()),
+            seek_based_compaction: Mutex::new(None),
+            next_compaction_offset: Mutex::new(0),
+            tables: RwLock::new(vec![]),
+            table_placeholders: RwLock::new(vec![]),
         }
+    }
+
+    pub async fn remove_table_placeholder(&self, id: TableId) {
+        let mut placeholders = self.table_placeholders.write().await;
+        for (pos, placeholder) in placeholders.iter().enumerate() {
+            if placeholder.id == id {
+                placeholders.remove(pos);
+                return;
+            }
+        }
+
+        panic!("no such placeholder");
     }
 
     pub async fn load_table(&self, id: TableId) -> Result<(), Error> {
@@ -44,12 +74,16 @@ impl Level {
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
 
-        log::trace!("Loaded table {} on level {}", id, self.index);
+        log::trace!("Loaded table {id} on level {}", self.index);
         Ok(())
     }
 
-    pub async fn build_table(&self, min_key: Key, max_key: Key) -> TableBuilder<'_> {
-        let identifier = self.manifest.next_table_id().await;
+    pub async fn build_table(
+        &self,
+        identifier: TableId,
+        min_key: Key,
+        max_key: Key,
+    ) -> TableBuilder<'_> {
         TableBuilder::new(
             identifier,
             &*self.params,
@@ -64,32 +98,33 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
+    pub async fn get(&self, key: &[u8]) -> (bool, Option<DataEntry>) {
         let tables = self.tables.read().await;
+        let mut compaction_triggered = false;
 
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
             if let Some(entry) = table.get(key).await {
-                return Some(entry);
+                return (compaction_triggered, Some(entry));
+            }
+
+            if self.do_seek_based_compaction && table.has_maximum_seeks() {
+                let mut seek_based_compaction = self.seek_based_compaction.lock().await;
+                if seek_based_compaction.is_none() {
+                    log::debug!(
+                        "Seek-based compaction triggered for table #{}",
+                        table.get_id()
+                    );
+                    *seek_based_compaction = Some(table.clone());
+                    compaction_triggered = true;
+                }
             }
         }
 
-        None
+        (compaction_triggered, None)
     }
 
-    pub async fn get_total_size(&self) -> usize {
-        let tables = self.tables.read().await;
-        let mut total_size = 0;
-
-        for t in tables.iter() {
-            total_size += t.get_size();
-        }
-
-        total_size
-    }
-
-    #[inline]
     pub fn max_size(&self) -> usize {
         // Note: the result for level zero is not really used since we set
         // the level-0 compaction threshold based on number of files.
@@ -106,36 +141,61 @@ impl Level {
         result
     }
 
-    #[inline]
-    pub async fn num_tables(&self) -> usize {
-        let tables = self.tables.read().await;
-        tables.len()
-    }
+    pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
+        let mut next_offset = self.next_compaction_offset.lock().await;
+        let all_tables = self.tables.write().await;
 
-    #[inline]
-    pub async fn needs_compaction(&self) -> bool {
-        if self.index == 0 {
-            self.num_tables().await > L0_COMPACTION_TRIGGER
+        let size_based_compaction = if self.index == 0 {
+            all_tables.len() > L0_COMPACTION_TRIGGER
         } else {
-            self.get_total_size().await > self.max_size()
+            let mut total_size = 0;
+
+            for t in all_tables.iter() {
+                total_size += t.get_size();
+            }
+
+            total_size > self.max_size()
+        };
+
+        // Prefer size-based compaction over seek-based compaction
+        let (table, offset) = if size_based_compaction {
+            if all_tables.is_empty() {
+                panic!("Cannot start compaction; level {} is empty", self.index);
+            }
+
+            if *next_offset >= all_tables.len() {
+                *next_offset = 0;
+            }
+
+            let offset = *next_offset;
+            let table = all_tables[offset].clone();
+
+            *next_offset += 1;
+
+            (table, offset)
+        } else if let Some(table) = self.seek_based_compaction.lock().await.take() {
+            let mut offset = None;
+
+            for (pos, this_table) in all_tables.iter().enumerate() {
+                if this_table.get_id() == table.get_id() {
+                    offset = Some(pos);
+                    break;
+                }
+            }
+
+            if let Some(offset) = offset {
+                (table, offset)
+            } else {
+                return Ok(None);
+            }
+        } else {
+            return Ok(None);
+        };
+
+        // Abort due to concurrency?
+        if !table.maybe_start_compaction() {
+            return Err(());
         }
-    }
-
-    pub async fn start_compaction(&self) -> (Vec<usize>, Vec<Arc<SortedTable>>) {
-        let mut next_compaction = self.next_compaction.lock().await;
-        let all_tables = self.tables.read().await;
-
-        if all_tables.is_empty() {
-            panic!("Cannot start compaction; level {} is empty", self.index);
-        }
-
-        if *next_compaction >= all_tables.len() {
-            *next_compaction = 0;
-        }
-
-        let offset = *next_compaction;
-        let table = all_tables[offset].clone();
-        *next_compaction += 1;
 
         let mut tables = vec![table];
         let mut offsets = vec![offset];
@@ -145,6 +205,7 @@ impl Level {
             let mut min = tables[0].get_min().to_vec();
             let mut max = tables[0].get_max().to_vec();
 
+            //TODO how greedy should this be?
             let mut change = true;
             while change {
                 change = false;
@@ -161,7 +222,7 @@ impl Level {
                         continue;
                     }
 
-                    if table.overlaps(&min, &max) {
+                    if table.overlaps(&min, &max) && table.maybe_start_compaction() {
                         min = std::cmp::min(&min[..], table.get_min()).to_vec();
                         max = std::cmp::max(&max[..], table.get_max()).to_vec();
 
@@ -174,21 +235,59 @@ impl Level {
             }
         }
 
-        offsets.sort_unstable();
-        (offsets, tables)
+        Ok(Some(tables))
     }
 
-    pub async fn get_overlaps(&self, min: &[u8], max: &[u8]) -> Vec<(usize, Arc<SortedTable>)> {
-        let mut overlaps = Vec::new();
+    pub async fn get_overlaps(
+        &self,
+        min: &[u8],
+        max: &[u8],
+        fast_path: Option<TableId>,
+    ) -> Option<(TableId, Vec<Arc<SortedTable>>)> {
+        let mut overlaps: Vec<Arc<SortedTable>> = Vec::new();
         let tables = self.tables.read().await;
 
-        for (pos, table) in tables.iter().enumerate() {
+        let mut min = min;
+        let mut max = max;
+
+        for table in tables.iter() {
             if table.overlaps(min, max) {
-                overlaps.push((pos, table.clone()));
+                if !table.maybe_start_compaction() {
+                    // Abort
+                    for table in overlaps.into_iter() {
+                        table.finish_compaction();
+                    }
+                    return None;
+                }
+
+                overlaps.push(table.clone());
+                min = table.get_min().min(min);
+                max = table.get_max().max(max);
             }
         }
 
-        overlaps
+        // set placeholder to avoid race conditions
+        let mut placeholders = self.table_placeholders.write().await;
+
+        for placeholder in placeholders.iter() {
+            if placeholder.overlaps(min, max) {
+                return None;
+            }
+        }
+
+        let table_id = if let Some(table_id) = fast_path && overlaps.is_empty() {
+            table_id
+        } else {
+            self.manifest.next_table_id().await
+        };
+
+        placeholders.push(TablePlaceholder {
+            id: table_id,
+            min: min.to_vec(),
+            max: max.to_vec(),
+        });
+
+        Some((table_id, overlaps))
     }
 
     #[inline]

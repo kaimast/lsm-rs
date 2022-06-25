@@ -64,6 +64,8 @@ impl IndexBlock {
         self.index.len()
     }
 
+    /// The size of this table in bytes
+    /// (for WiscKey this just counts the references, not the values themselves)
     pub fn get_size(&self) -> usize {
         self.size as usize
     }

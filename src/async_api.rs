@@ -24,8 +24,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Create a new database instance with specific parameters
     pub async fn new_with_params(mode: StartMode, params: Params) -> Result<Self, Error> {
+        let compaction_concurrency = params.compaction_concurrency;
+
         let inner = Arc::new(DbLogic::new(mode, params).await?);
-        let tasks = Arc::new(TaskManager::new(inner.clone()).await);
+        let tasks = Arc::new(TaskManager::new(inner.clone(), compaction_concurrency).await);
 
         Ok(Self { inner, tasks })
     }
@@ -33,7 +35,17 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Will deserialize V from the raw data (avoids an additional data copy)
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
-        self.inner.get(&key_data).await
+
+        match self.inner.get(&key_data).await {
+            Ok((needs_compaction, data)) => {
+                if needs_compaction {
+                    self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                }
+
+                Ok(data)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Delete an existing entry
@@ -93,7 +105,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Write a batch of updates to the database
-    /// This version of write allows you to specfiy options such as "synchronous"
+    /// This version of write allows you to specifiy options such as "synchronous"
     pub async fn write_opts(
         &self,
         write_batch: WriteBatch<K, V>,
@@ -102,7 +114,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
         if needs_compaction {
-            self.tasks.wake_up(&TaskType::Compaction).await;
+            self.tasks.wake_up(&TaskType::MemtableCompaction).await;
         }
 
         Ok(())
