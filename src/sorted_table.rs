@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::data_blocks::{
     DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
@@ -335,7 +335,9 @@ impl SortedTable {
 
     pub fn maybe_start_compaction(&self) -> bool {
         let order = Ordering::SeqCst;
-        let result = self.compaction_flag.compare_exchange(false, true, order, order);
+        let result = self
+            .compaction_flag
+            .compare_exchange(false, true, order, order);
 
         result.is_ok()
     }

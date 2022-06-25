@@ -511,7 +511,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     /// Returns true if any work was done
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
-
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
@@ -549,7 +548,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let child_level = &self.levels[(level_pos + 1) as usize];
 
         let overlap_result = if parent_tables.len() == 1 {
-            child_level.get_overlaps(min, max, Some(parent_tables[0].get_id())).await
+            child_level
+                .get_overlaps(min, max, Some(parent_tables[0].get_id()))
+                .await
         } else {
             child_level.get_overlaps(min, max, None).await
         };
@@ -580,7 +581,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
             }
 
-            let add_set = vec![(level_pos+1, table.get_id())];
+            let add_set = vec![(level_pos + 1, table.get_id())];
             let remove_set = vec![(level_pos, table.get_id())];
 
             all_child_tables.insert(new_pos, table.clone());

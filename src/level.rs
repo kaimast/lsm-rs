@@ -74,7 +74,12 @@ impl Level {
         Ok(())
     }
 
-    pub async fn build_table(&self, identifier: TableId, min_key: Key, max_key: Key) -> TableBuilder<'_> {
+    pub async fn build_table(
+        &self,
+        identifier: TableId,
+        min_key: Key,
+        max_key: Key,
+    ) -> TableBuilder<'_> {
         TableBuilder::new(
             identifier,
             &*self.params,
@@ -197,7 +202,12 @@ impl Level {
         Some(tables)
     }
 
-    pub async fn get_overlaps(&self, min: &[u8], max: &[u8], fast_path: Option<TableId>) -> Option<(TableId, Vec<Arc<SortedTable>>)> {
+    pub async fn get_overlaps(
+        &self,
+        min: &[u8],
+        max: &[u8],
+        fast_path: Option<TableId>,
+    ) -> Option<(TableId, Vec<Arc<SortedTable>>)> {
         let mut overlaps: Vec<Arc<SortedTable>> = Vec::new();
         let tables = self.tables.read().await;
 
@@ -235,7 +245,7 @@ impl Level {
             self.manifest.next_table_id().await
         };
 
-        placeholders.push(TablePlaceholder{
+        placeholders.push(TablePlaceholder {
             id: table_id,
             min: min.to_vec(),
             max: max.to_vec(),

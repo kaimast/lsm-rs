@@ -62,8 +62,14 @@ struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
 }
 
 impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
-    fn new_boxed(datastore: Arc<DbLogic<K, V>>, level_update_cond: Arc<UpdateCond>) -> Box<dyn Task> {
-        Box::new(Self { datastore, level_update_cond })
+    fn new_boxed(
+        datastore: Arc<DbLogic<K, V>>,
+        level_update_cond: Arc<UpdateCond>,
+    ) -> Box<dyn Task> {
+        Box::new(Self {
+            datastore,
+            level_update_cond,
+        })
     }
 }
 

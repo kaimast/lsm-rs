@@ -206,7 +206,7 @@ impl Manifest {
     }
 
     /// Store updates to the tables in the manifest
-    /// 
+    ///
     /// Note, must be called while holding logs to the affected levels to prevent race conditions
     pub async fn update_table_set(
         &self,
