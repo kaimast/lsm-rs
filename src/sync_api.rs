@@ -51,8 +51,20 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let key_data = get_encoder().serialize(key)?;
         let inner = &*self.inner;
 
-        self.tokio_rt
-            .block_on(async move { inner.get(&key_data).await })
+        self.tokio_rt.block_on(async {
+            let result = inner.get(&key_data).await;
+
+            match result {
+                Ok((needs_compaction, data)) => {
+                    if needs_compaction {
+                        self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                    }
+
+                    Ok(data)
+                }
+                Err(err) => Err(err),
+            }
+        })
     }
 
     /// Ensure all data is written to disk

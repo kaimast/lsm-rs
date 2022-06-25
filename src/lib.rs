@@ -123,13 +123,13 @@ impl std::fmt::Display for Error {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         match self {
             Self::Io(msg) => {
-                fmt.write_fmt(format_args!("Io Error: {}", msg))?;
+                fmt.write_fmt(format_args!("Io Error: {msg}"))?;
             }
             Self::InvalidParams(msg) => {
-                fmt.write_fmt(format_args!("Invalid Parameter: {}", msg))?;
+                fmt.write_fmt(format_args!("Invalid Parameter: {msg}"))?;
             }
             Self::Serialization(msg) => {
-                fmt.write_fmt(format_args!("Serialization Error: {}", msg))?;
+                fmt.write_fmt(format_args!("Serialization Error: {msg}"))?;
             }
         }
 
@@ -238,6 +238,8 @@ pub struct Params {
     pub log_level_stats: Option<String>,
     /// How many concurrent compaction tasks should there be
     pub compaction_concurrency: usize,
+    /// How many seeks (per kb) before compaction is triggered?
+    pub seek_based_compaction: Option<u32>,
 }
 
 impl Default for Params {
@@ -251,6 +253,7 @@ impl Default for Params {
             block_restart_interval: 16,
             log_level_stats: None,
             compaction_concurrency: 4,
+            seek_based_compaction: Some(10),
         }
     }
 }

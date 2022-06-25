@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
 use crate::data_blocks::{
@@ -25,6 +25,7 @@ pub struct SortedTable {
     index: IndexBlock,
     data_blocks: Arc<DataBlocks>,
     compaction_flag: AtomicBool,
+    allowed_seeks: AtomicI32,
 }
 
 #[cfg(feature = "wisckey")]
@@ -220,8 +221,15 @@ impl<'a> TableBuilder<'a> {
         )
         .await?;
 
+        let allowed_seeks = if let Some(count) = self.params.seek_based_compaction {
+            ((index.get_size() / 1024).max(1) as i32) * (count as i32)
+        } else {
+            0
+        };
+
         Ok(SortedTable {
             index,
+            allowed_seeks: AtomicI32::new(allowed_seeks),
             identifier: self.identifier,
             compaction_flag: AtomicBool::new(false),
             data_blocks: self.data_blocks,
@@ -325,12 +333,24 @@ impl SortedTable {
         params: &Params,
     ) -> Result<Self, Error> {
         let index = IndexBlock::load(params, identifier).await?;
+
+        let allowed_seeks = if let Some(count) = params.seek_based_compaction {
+            ((index.get_size() / 1024).max(1) as i32) * (count as i32)
+        } else {
+            0
+        };
+
         Ok(Self {
             identifier,
             index,
             data_blocks,
+            allowed_seeks: AtomicI32::new(allowed_seeks),
             compaction_flag: AtomicBool::new(false),
         })
+    }
+
+    pub fn has_maximum_seeks(&self) -> bool {
+        self.allowed_seeks.load(Ordering::SeqCst) <= 0
     }
 
     pub fn maybe_start_compaction(&self) -> bool {
@@ -370,7 +390,8 @@ impl SortedTable {
 
     #[tracing::instrument]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
-        log::trace!("Checking table #{} for value", self.identifier);
+        self.allowed_seeks.fetch_sub(1, Ordering::Relaxed);
+
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
 

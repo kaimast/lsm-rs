@@ -25,7 +25,9 @@ impl TablePlaceholder {
 
 pub struct Level {
     index: LevelId,
-    next_compaction: Mutex<usize>,
+    next_compaction_offset: Mutex<usize>,
+    do_seek_based_compaction: bool,
+    seek_based_compaction: Mutex<Option<Arc<SortedTable>>>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
@@ -43,10 +45,12 @@ impl Level {
     ) -> Self {
         Self {
             index,
+            do_seek_based_compaction: params.seek_based_compaction.is_some(),
             params,
             manifest,
             data_blocks,
-            next_compaction: Mutex::new(0),
+            seek_based_compaction: Mutex::new(None),
+            next_compaction_offset: Mutex::new(0),
             tables: RwLock::new(vec![]),
             table_placeholders: RwLock::new(vec![]),
         }
@@ -94,18 +98,31 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
+    pub async fn get(&self, key: &[u8]) -> (bool, Option<DataEntry>) {
         let tables = self.tables.read().await;
+        let mut compaction_triggered = false;
 
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
             if let Some(entry) = table.get(key).await {
-                return Some(entry);
+                return (compaction_triggered, Some(entry));
+            }
+
+            if self.do_seek_based_compaction && table.has_maximum_seeks() {
+                let mut seek_based_compaction = self.seek_based_compaction.lock().await;
+                if seek_based_compaction.is_none() {
+                    log::debug!(
+                        "Seek-based compaction triggered for table #{}",
+                        table.get_id()
+                    );
+                    *seek_based_compaction = Some(table.clone());
+                    compaction_triggered = true;
+                }
             }
         }
 
-        None
+        (compaction_triggered, None)
     }
 
     pub fn max_size(&self) -> usize {
@@ -124,11 +141,11 @@ impl Level {
         result
     }
 
-    pub async fn maybe_start_compaction(&self) -> Option<Vec<Arc<SortedTable>>> {
-        let mut next_compaction = self.next_compaction.lock().await;
+    pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
+        let mut next_offset = self.next_compaction_offset.lock().await;
         let all_tables = self.tables.write().await;
 
-        let needs_compaction = if self.index == 0 {
+        let size_based_compaction = if self.index == 0 {
             all_tables.len() > L0_COMPACTION_TRIGGER
         } else {
             let mut total_size = 0;
@@ -140,26 +157,45 @@ impl Level {
             total_size > self.max_size()
         };
 
-        if !needs_compaction {
-            return None;
-        }
+        // Prefer size-based compaction over seek-based compaction
+        let (table, offset) = if size_based_compaction {
+            if all_tables.is_empty() {
+                panic!("Cannot start compaction; level {} is empty", self.index);
+            }
 
-        if all_tables.is_empty() {
-            panic!("Cannot start compaction; level {} is empty", self.index);
-        }
+            if *next_offset >= all_tables.len() {
+                *next_offset = 0;
+            }
 
-        if *next_compaction >= all_tables.len() {
-            *next_compaction = 0;
-        }
+            let offset = *next_offset;
+            let table = all_tables[offset].clone();
 
-        let offset = *next_compaction;
-        let table = all_tables[offset].clone();
+            *next_offset += 1;
 
+            (table, offset)
+        } else if let Some(table) = self.seek_based_compaction.lock().await.take() {
+            let mut offset = None;
+
+            for (pos, this_table) in all_tables.iter().enumerate() {
+                if this_table.get_id() == table.get_id() {
+                    offset = Some(pos);
+                    break;
+                }
+            }
+
+            if let Some(offset) = offset {
+                (table, offset)
+            } else {
+                return Ok(None);
+            }
+        } else {
+            return Ok(None);
+        };
+
+        // Abort due to concurrency?
         if !table.maybe_start_compaction() {
-            return None;
+            return Err(());
         }
-
-        *next_compaction += 1;
 
         let mut tables = vec![table];
         let mut offsets = vec![offset];
@@ -199,7 +235,7 @@ impl Level {
             }
         }
 
-        Some(tables)
+        Ok(Some(tables))
     }
 
     pub async fn get_overlaps(

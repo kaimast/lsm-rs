@@ -29,6 +29,12 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use bincode::Options;
 use cfg_if::cfg_if;
 
+enum CompactResult {
+    NothingToDo,
+    DidWork,
+    Locked,
+}
+
 /// The main database logic
 pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K, V)>,
@@ -252,9 +258,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
     #[cfg(feature = "wisckey")]
     #[tracing::instrument(skip(self))]
-    pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
+    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
+        let mut compaction_triggered = false;
 
         {
             let memtable = self.memtable.read().await;
@@ -263,10 +270,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 match entry {
                     MemtableEntry::Value { value, .. } => {
                         let val = encoder.deserialize(&value)?;
-                        return Ok(Some(val));
+                        return Ok((compaction_triggered, Some(val)));
                     }
                     MemtableEntry::Deletion { .. } => {
-                        return Ok(None);
+                        return Ok((compaction_triggered, None));
                     }
                 }
             };
@@ -280,10 +287,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                     match entry {
                         MemtableEntry::Value { value, .. } => {
                             let val = encoder.deserialize(&value)?;
-                            return Ok(Some(val));
+                            return Ok((compaction_triggered, Some(val)));
                         }
                         MemtableEntry::Deletion { .. } => {
-                            return Ok(None);
+                            return Ok((compaction_triggered, None));
                         }
                     }
                 }
@@ -291,28 +298,35 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         for level in self.levels.iter() {
-            if let Some(entry) = level.get(key).await {
+            let (level_compact_triggered, result) = level.get(key).await;
+            if level_compact_triggered {
+                compaction_triggered = true;
+            }
+
+            if let Some(entry) = result {
                 match entry.get_type() {
                     DataEntryType::Put => {
                         let value_ref = entry.get_value_ref().unwrap();
-                        return Ok(Some(self.value_log.get(value_ref).await?));
+                        let data = self.value_log.get(value_ref).await?;
+                        return Ok((compaction_triggered, Some(data)));
                     }
                     DataEntryType::Delete => {
-                        return Ok(None);
+                        return Ok((compaction_triggered, None));
                     }
                 }
             }
         }
 
         // Does not exist
-        Ok(None)
+        Ok((compaction_triggered, None))
     }
 
     #[cfg(not(feature = "wisckey"))]
     #[tracing::instrument(skip(self))]
-    pub async fn get(&self, key: &[u8]) -> Result<Option<V>, Error> {
+    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
+        let mut compaction_triggered = false;
 
         {
             let memtable = self.memtable.read().await;
@@ -321,10 +335,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 match entry {
                     MemtableEntry::Value { value, .. } => {
                         let value = encoder.deserialize(&value)?;
-                        return Ok(Some(value));
+                        return Ok((compaction_triggered, Some(value)));
                     }
                     MemtableEntry::Deletion { .. } => {
-                        return Ok(None);
+                        return Ok((compaction_triggered, None));
                     }
                 }
             };
@@ -338,10 +352,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                     match entry {
                         MemtableEntry::Value { value, .. } => {
                             let value = encoder.deserialize(&value)?;
-                            return Ok(Some(value));
+                            return Ok((compaction_triggered, Some(value)));
                         }
                         MemtableEntry::Deletion { .. } => {
-                            return Ok(None);
+                            return Ok((compaction_triggered, None));
                         }
                     }
                 }
@@ -349,21 +363,26 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         for level in self.levels.iter() {
-            if let Some(entry) = level.get(key).await {
+            let (level_compact_triggered, result) = level.get(key).await;
+            if level_compact_triggered {
+                compaction_triggered = true;
+            }
+
+            if let Some(entry) = result {
                 match entry.get_type() {
                     DataEntryType::Put => {
                         let data = entry.get_value().unwrap();
                         let value = encoder.deserialize(data)?;
-                        return Ok(Some(value));
+                        return Ok((compaction_triggered, Some(value)));
                     }
                     DataEntryType::Delete => {
-                        return Ok(None);
+                        return Ok((compaction_triggered, None));
                     }
                 }
             }
         }
 
-        Ok(None)
+        Ok((compaction_triggered, None))
     }
 
     pub async fn synchronize(&self) -> Result<(), Error> {
@@ -511,28 +530,40 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     /// Returns true if any work was done
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
+        let mut was_locked = false;
+
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels - 1 {
-                let did_work = self.compact(level_pos as LevelId, level).await?;
-
-                if did_work {
-                    return Ok(true);
+                match self.compact_level(level_pos as LevelId, level).await? {
+                    CompactResult::DidWork => return Ok(true),
+                    CompactResult::Locked => {
+                        was_locked = true;
+                    }
+                    CompactResult::NothingToDo => {}
                 }
             }
         }
 
-        Ok(false)
+        // We'll try again if it was locked
+        Ok(!was_locked)
     }
 
     #[tracing::instrument(skip(self, level))]
-    async fn compact(&self, level_pos: LevelId, level: &Level) -> Result<bool, Error> {
+    async fn compact_level(
+        &self,
+        level_pos: LevelId,
+        level: &Level,
+    ) -> Result<CompactResult, Error> {
         let mut parent_tables = match level.maybe_start_compaction().await {
-            Some(result) => result,
-            None => return Ok(false),
+            Ok(Some(result)) => result,
+            Ok(None) => return Ok(CompactResult::NothingToDo),
+            Err(()) => return Ok(CompactResult::Locked),
         };
         assert!(!parent_tables.is_empty());
+
+        log::trace!("Starting compaction on level {level_pos}");
 
         let mut min = parent_tables[0].get_min();
         let mut max = parent_tables[0].get_max();
@@ -558,7 +589,10 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         // Abort due to concurrency?
         let (table_id, child_tables) = match overlap_result {
             Some(res) => res,
-            None => return Ok(false),
+            None => {
+                log::trace!("Aborting compaction due to concurrency");
+                return Ok(CompactResult::NothingToDo);
+            }
         };
 
         // Fast path
@@ -602,7 +636,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             table.finish_compaction();
 
             log::trace!("Done moving table");
-            return Ok(true);
+            return Ok(CompactResult::DidWork);
         }
 
         log::debug!(
@@ -790,6 +824,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         self.manifest.update_table_set(add_set, remove_set).await;
 
         log::trace!("Done compacting tables");
-        Ok(true)
+        Ok(CompactResult::DidWork)
     }
 }

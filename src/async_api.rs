@@ -35,7 +35,17 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Will deserialize V from the raw data (avoids an additional data copy)
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
-        self.inner.get(&key_data).await
+
+        match self.inner.get(&key_data).await {
+            Ok((needs_compaction, data)) => {
+                if needs_compaction {
+                    self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                }
+
+                Ok(data)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Delete an existing entry
