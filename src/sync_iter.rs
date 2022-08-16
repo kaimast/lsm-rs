@@ -162,6 +162,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
 
                 let result = if let Some((_, pos)) = min_kv.take() {
                     let encoder = crate::get_encoder();
+                    #[ allow(clippy::explicit_auto_deref)]
                     let iter: &dyn InternalIterator = &*iterators[pos];
 
                     let res_key = encoder.deserialize(iter.get_key()).unwrap();

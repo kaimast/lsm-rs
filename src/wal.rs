@@ -39,7 +39,7 @@ pub struct WriteAheadLog {
 
 impl WriteAheadLog {
     pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
-        let log_file = Self::create_file(&*params, 0).await?;
+        let log_file = Self::create_file(&params, 0).await?;
         Ok(Self {
             params,
             log_file,
@@ -59,7 +59,7 @@ impl WriteAheadLog {
         let fpos = position / PAGE_SIZE;
         let file_offset = position % PAGE_SIZE;
 
-        let mut log_file = Self::open_file(&*params, fpos).await?;
+        let mut log_file = Self::open_file(&params, fpos).await?;
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -191,11 +191,11 @@ impl WriteAheadLog {
             if file_offset == PAGE_SIZE {
                 // Try open next file
                 let fpos = self.position / PAGE_SIZE;
-                self.log_file = match Self::open_file(&*self.params, fpos).await {
+                self.log_file = match Self::open_file(&self.params, fpos).await {
                     Ok(file) => file,
                     Err(err) => {
                         if maybe {
-                            self.log_file = Self::create_file(&*self.params, fpos).await?;
+                            self.log_file = Self::create_file(&self.params, fpos).await?;
                             return Ok(buffer_pos == buffer_len);
                         } else {
                             return Err(err);
@@ -282,7 +282,7 @@ impl WriteAheadLog {
             // Create a new file?
             if file_offset == PAGE_SIZE {
                 let file_pos = self.position / PAGE_SIZE;
-                self.log_file = Self::create_file(&*self.params, file_pos).await?;
+                self.log_file = Self::create_file(&self.params, file_pos).await?;
             }
         }
 

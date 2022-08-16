@@ -5,8 +5,6 @@
 #![feature(array_methods)]
 #![feature(get_mut_unchecked)]
 #![feature(io_slice_advance)]
-#![feature(box_into_inner)]
-#![feature(let_chains)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -151,8 +149,7 @@ impl From<bincode::ErrorKind> for Error {
 
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(inner: Box<bincode::ErrorKind>) -> Self {
-        let inner = Box::into_inner(inner);
-        Self::Serialization(inner.to_string())
+        Self::Serialization((*inner).to_string())
     }
 }
 

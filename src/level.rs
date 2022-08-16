@@ -69,7 +69,7 @@ impl Level {
     }
 
     pub async fn load_table(&self, id: TableId) -> Result<(), Error> {
-        let table = SortedTable::load(id, self.data_blocks.clone(), &*self.params).await?;
+        let table = SortedTable::load(id, self.data_blocks.clone(), &self.params).await?;
 
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
@@ -86,7 +86,7 @@ impl Level {
     ) -> TableBuilder<'_> {
         TableBuilder::new(
             identifier,
-            &*self.params,
+            &self.params,
             self.data_blocks.clone(),
             min_key,
             max_key,

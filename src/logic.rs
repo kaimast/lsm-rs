@@ -425,7 +425,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         // If the current memtable is full, mark it as immutable, so it can be flushed to L0
-        if mem_inner.is_full(&*self.params) {
+        if mem_inner.is_full(&self.params) {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();

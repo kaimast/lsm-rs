@@ -73,7 +73,7 @@ impl Manifest {
 
         {
             let meta = obj.meta.write().await;
-            obj.sync_header(&*meta).await;
+            obj.sync_header(&meta).await;
         }
 
         {
@@ -81,7 +81,7 @@ impl Manifest {
             let mut tables = obj.tables.lock().await;
             tables.resize(obj.params.num_levels, HashSet::default());
 
-            obj.write_table_set(&*tables).await;
+            obj.write_table_set(&tables).await;
         }
 
         obj
@@ -130,7 +130,7 @@ impl Manifest {
         let id = meta.next_data_block_id;
         meta.next_data_block_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -141,7 +141,7 @@ impl Manifest {
 
         meta.next_table_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -156,7 +156,7 @@ impl Manifest {
         assert!(meta.log_offset < offset);
 
         meta.log_offset = offset;
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
     }
 
     #[cfg(feature = "wisckey")]
@@ -171,7 +171,7 @@ impl Manifest {
         assert!(meta.value_log_offset < offset);
 
         meta.value_log_offset = offset;
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
@@ -190,7 +190,7 @@ impl Manifest {
         let id = meta.next_value_batch_id;
         meta.next_value_batch_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -229,7 +229,7 @@ impl Manifest {
                 .remove(&id);
         }
 
-        self.write_table_set(&*tables).await;
+        self.write_table_set(&tables).await;
     }
 
     async fn write_table_set(&self, tables: &[LevelData]) {

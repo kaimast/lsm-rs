@@ -129,7 +129,7 @@ impl InternalIterator for MemtableIterator {
 
 impl ImmMemtableRef {
     pub fn get(&self) -> &Memtable {
-        &*self.inner
+        &self.inner
     }
 
     pub async fn into_iter(self) -> MemtableIterator {
@@ -160,7 +160,7 @@ impl MemtableRef {
     }
 
     pub fn get(&self) -> &Memtable {
-        &*self.inner
+        &self.inner
     }
 
     /// This is only safe to call from the DbLogic while holding the memtable lock
