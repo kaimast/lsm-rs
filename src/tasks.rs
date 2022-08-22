@@ -130,13 +130,18 @@ impl TaskHandle {
     async fn work_loop(&self) -> Result<(), Error> {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
+
+        // Indicates whether work was done in the last iteration
         let mut idle = false;
 
         loop {
-            {
+            // Record the time we last checked for changes
+            let now = Instant::now();
+
+            if idle {
                 let mut lchange = self.update_cond.last_change.lock().await;
 
-                while self.is_running() && idle && *lchange < last_update {
+                while self.is_running() && !idle && *lchange < last_update {
                     lchange = self.update_cond.condition.wait(lchange).await;
                 }
             }
@@ -148,7 +153,7 @@ impl TaskHandle {
             let did_work = self.task.run().await?;
 
             if did_work {
-                last_update = Instant::now();
+                last_update = now;
                 idle = false;
             } else {
                 idle = true;
