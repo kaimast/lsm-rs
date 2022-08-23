@@ -209,7 +209,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
             if min_key >= max_key {
-                panic!("Got invalid range: min_key >=max_key");
+                panic!("Got invalid range: min_key >= max_key");
             }
         }
 
