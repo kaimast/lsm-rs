@@ -1,10 +1,10 @@
-// For writing to the log
 #![feature(map_first_last)]
 #![feature(trait_alias)]
 #![feature(write_all_vectored)]
 #![feature(array_methods)]
 #![feature(get_mut_unchecked)]
 #![feature(io_slice_advance)]
+#![feature(let_chains)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};

@@ -207,10 +207,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
-            if min_key >= max_key {
-                panic!("Got invalid range: min_key >= max_key");
-            }
+        if let Some(min_key) = &min_key && let Some(max_key) = &max_key &&
+            min_key >= max_key {
+           panic!("Got invalid range: min_key >= max_key");
         }
 
         {
