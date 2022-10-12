@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::size_of;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,7 +19,7 @@ use crate::values::{ValueBatchId, ValueId, ValueOffset};
 
 pub type DataBlockId = u64;
 
-const NUM_SHARDS: usize = 16;
+const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 
 #[derive(Debug)]
 pub struct PrefixedKey {
@@ -192,7 +193,7 @@ impl DataBlockBuilder {
             self.restart_list.push(self.data.len() as u32);
         }
 
-        let pkey_len = (key.prefix_len as u32).to_le_bytes();
+        let pkey_len = key.prefix_len.to_le_bytes();
         let skey_len = (key.suffix.len() as u32).to_le_bytes();
         let seq_number = seq_number.to_le_bytes();
 
@@ -262,12 +263,14 @@ impl DataBlockBuilder {
 
 impl DataBlocks {
     pub fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let max_data_files = params.max_open_files / 2;
-        let shard_size = max_data_files / NUM_SHARDS;
-        assert!(shard_size > 0);
+        let max_data_files = NonZeroUsize::new(params.max_open_files / 2)
+            .expect("Max open files needs to be greater than 2");
+
+        let shard_size = NonZeroUsize::new(max_data_files.get() / NUM_SHARDS)
+            .expect("Not enough open files to support the number of shards");
 
         let mut block_caches = Vec::new();
-        for _ in 0..NUM_SHARDS {
+        for _ in 0..NUM_SHARDS.get() {
             block_caches.push(Mutex::new(BlockShard::new(shard_size)));
         }
 
@@ -460,7 +463,7 @@ impl DataBlock {
         let end = if end + 1 == rl_len as u32 {
             self_ptr.byte_len()
         } else {
-            self_ptr.get_restart_offset(end) as u32
+            self_ptr.get_restart_offset(end)
         };
 
         SearchResult::Range(start, end)
@@ -475,7 +478,7 @@ impl DataBlock {
             SearchResult::Range(start, end) => (start, end),
         };
 
-        let mut pos = self_ptr.get_restart_offset(start) as u32;
+        let mut pos = self_ptr.get_restart_offset(start);
 
         let mut last_key = vec![];
         while pos < end {
@@ -485,7 +488,7 @@ impl DataBlock {
                 return Some(entry);
             }
 
-            pos = new_pos as u32;
+            pos = new_pos;
             last_key = this_key;
         }
 

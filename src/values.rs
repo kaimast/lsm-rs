@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::mem::size_of;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -36,7 +37,7 @@ pub type ValueBatchId = u64;
 
 pub type ValueId = (ValueBatchId, ValueOffset);
 
-const NUM_SHARDS: usize = 16;
+const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 
 pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
@@ -126,11 +127,13 @@ impl<'a> ValueBatchBuilder<'a> {
 impl ValueLog {
     pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
         let mut batch_caches = Vec::new();
-        let max_value_files = params.max_open_files / 2;
-        let shard_size = max_value_files / NUM_SHARDS;
-        assert!(shard_size > 0);
+        let max_value_files = NonZeroUsize::new(params.max_open_files / 2)
+            .expect("Max open files needs to be greater than 2");
 
-        for _ in 0..NUM_SHARDS {
+        let shard_size = NonZeroUsize::new(max_value_files.get() / NUM_SHARDS)
+            .expect("Not enough open files to support the number of shards");
+
+        for _ in 0..NUM_SHARDS.get() {
             let cache = Mutex::new(BatchShard::new(shard_size));
             batch_caches.push(cache);
         }
@@ -203,7 +206,7 @@ impl ValueLog {
                 }
 
                 let offset_pos = offset_pos.expect("Not a valid offset");
-                file.seek(SeekFrom::Start((HEADER_LEN as u64) + (offset_pos as u64))).await?;
+                file.seek(SeekFrom::Start(HEADER_LEN + (offset_pos as u64))).await?;
                 file.write_all(&[1u8]).await?;
             } else {
                 file.seek(SeekFrom::Current(num_values as i64))?;
@@ -235,7 +238,7 @@ impl ValueLog {
                 }
 
                 let offset_pos = offset_pos.expect("Not a valid offset");
-                file.seek(SeekFrom::Start((HEADER_LEN as u64) + (offset_pos as u64)))?;
+                file.seek(SeekFrom::Start(HEADER_LEN + (offset_pos as u64)))?;
                 file.write_all(&[1u8])?;
             }
         }
