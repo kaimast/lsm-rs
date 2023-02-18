@@ -8,8 +8,14 @@ use std::sync::Arc;
 #[cfg(feature = "async-io")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+#[cfg(feature = "async-io")]
+use tokio_uring::fs::OpenOptions;
+
 #[cfg(not(feature = "async-io"))]
 use std::io::{Read, Seek, Write};
+
+#[cfg(not(feature = "async-io"))]
+use std::fs::OpenOptions;
 
 use tokio::sync::{Mutex, MutexGuard, RwLock};
 
@@ -94,13 +100,13 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
                     .open(manifest_path).await?;
 
                 file.read_to_end(&mut data).await?;
             } else {
-                let mut file = std::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
                     .open(manifest_path)?;
 
@@ -240,7 +246,7 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(manifest_path).await.expect("Failed to open MANIFEST file");
 
@@ -250,7 +256,7 @@ impl Manifest {
 
                 file.write_all(&data).await.unwrap();
             } else {
-                let mut file = std::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(manifest_path).expect("Failed to open MANIFEST file");
 
@@ -270,7 +276,7 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(true).create(true).truncate(false)
                     .open(manifest_path).await
                     .expect("Failed to create or open MANIFEST file");
@@ -279,7 +285,7 @@ impl Manifest {
                 file.write_all(&data).await.unwrap();
 
             } else {
-                let mut file = match std::fs::OpenOptions::new()
+                let mut file = match OpenOptions::new()
                         .read(true).write(true).create(true).truncate(false)
                         .open(manifest_path) {
                     Ok(file) => file,

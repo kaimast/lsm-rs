@@ -22,6 +22,7 @@ cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = "0.1"
+tokio-uring = { version="0.4", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -47,7 +48,7 @@ snappy-compression = ["snap"]
 async = []
 sync = []
 wisckey = []
-async-io = ["tokio/fs"]
+async-io = ["tokio-uring"]
 
 [[test]]
 name = "sync-basic"

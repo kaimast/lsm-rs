@@ -1,5 +1,5 @@
 #[cfg(feature = "async-io")]
-use tokio::fs;
+use tokio_uring::fs;
 
 #[cfg(not(feature = "async-io"))]
 use std::fs;

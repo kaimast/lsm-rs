@@ -18,9 +18,6 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-#[cfg(feature = "async-io")]
-use tokio::fs;
-
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
@@ -91,8 +88,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
                     cfg_if! {
                         if #[ cfg(feature="async-io") ] {
-                            fs::remove_dir_all(&params.db_path)
-                                .await.expect("Failed to remove existing database");
+                            // Not yet supported in tokio_uring
+                            std::fs::remove_dir_all(&params.db_path)
+                                .expect("Failed to remove existing database");
                         } else {
                             fs::remove_dir_all(&params.db_path)
                                 .expect("Failed to remove existing database");
@@ -112,7 +110,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         if create {
             cfg_if! {
                 if #[ cfg(feature="async-io") ] {
-                    match fs::create_dir(&params.db_path).await {
+                    // Not yet supported in tokio_uring
+                    match std::fs::create_dir(&params.db_path) {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }

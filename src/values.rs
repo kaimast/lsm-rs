@@ -17,7 +17,7 @@ use lru::LruCache;
 #[cfg(feature = "async-io")]
 use futures::io::SeekFrom;
 #[cfg(feature = "async-io")]
-use tokio::fs::{remove_file, File, OpenOptions};
+use tokio_uring::fs::{remove_file, File, OpenOptions};
 #[cfg(feature = "async-io")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
