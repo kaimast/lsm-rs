@@ -24,7 +24,8 @@ use tokio::fs;
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, RwLock};
+use tokio_condvar::Condvar;
 
 use bincode::Options;
 use cfg_if::cfg_if;
@@ -43,7 +44,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Notify,
+    imm_cond: Condvar,
     levels: Vec<Level>,
     wal: Mutex<WriteAheadLog>,
     level_logger: Option<LevelLogger>,
@@ -156,7 +157,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
         let imm_memtables = Mutex::new(VecDeque::new());
-        let imm_cond = Notify::new();
+        let imm_cond = Condvar::new();
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
         if params.num_levels == 0 {
@@ -523,7 +524,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             self.manifest.set_log_offset(log_offset).await;
 
             log::debug!("Created new L0 table");
-            self.imm_cond.notify_waiters();
+            self.imm_cond.notify_all();
 
             Ok(true)
         } else {

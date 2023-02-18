@@ -24,6 +24,9 @@ no-wisckey-sync-tests:
 
 lint: sync-lint async-lint no-wisckey-lint async-io-lint
 
+fix-formatting:
+    cargo fmt
+
 clean:
     rm -rf target/
 

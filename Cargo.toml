@@ -21,11 +21,10 @@ async-trait = "0.1"
 cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
+tokio-condvar = "0.1"
 
 [dependencies.tokio]
-#version="1"
-git="https://github.com/kaimast/tokio"
-branch="notify_condvar"
+version="1"
 default-features=false
 features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
 

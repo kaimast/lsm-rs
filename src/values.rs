@@ -571,10 +571,10 @@ impl ValueLog {
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::open(&fpath).await?;
+                let mut file = File::open(fpath).await?;
                 file.read_exact(&mut data).await?;
             } else {
-                let mut file = File::open(&fpath)?;
+                let mut file = File::open(fpath)?;
                 file.read_exact(&mut data)?;
             }
         }
@@ -627,11 +627,11 @@ impl ValueLog {
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::open(&fpath).await?;
+                let mut file = File::open(fpath).await?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
                 file.read_exact(&mut data).await?;
             } else {
-                let mut file = File::open(&fpath)?;
+                let mut file = File::open(fpath)?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
                 file.read_exact(&mut data)?;
             }

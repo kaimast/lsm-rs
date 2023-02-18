@@ -7,7 +7,8 @@ use parking_lot::Mutex as StdMutex;
 
 use super::KvTrait;
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
+use tokio_condvar::Condvar;
 
 use crate::{DbLogic, Error};
 
@@ -49,7 +50,7 @@ struct TaskGroup {
 /// Keeps track of a condition variables shared within a task group
 struct UpdateCond {
     last_change: Mutex<Instant>,
-    condition: Notify,
+    condition: Condvar,
 }
 
 struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
@@ -101,7 +102,7 @@ impl UpdateCond {
     fn new() -> Self {
         Self {
             last_change: Mutex::new(Instant::now()),
-            condition: Notify::new(),
+            condition: Condvar::new(),
         }
     }
 
@@ -251,7 +252,7 @@ impl TaskManager {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
-            task_group.condition.condition.notify_waiters();
+            task_group.condition.condition.notify_all();
         }
 
         for (_, task_group) in self.tasks.iter() {
