@@ -24,8 +24,17 @@ no-wisckey-sync-tests:
 
 lint: sync-lint async-lint no-wisckey-lint async-io-lint
 
+fix-formatting:
+    cargo fmt
+
+check-formatting:
+    cargo fmt --check
+
 clean:
     rm -rf target/
+
+udeps:
+    cargo udeps
 
 sync-lint:
     cargo clippy --features=sync -- -D warnings

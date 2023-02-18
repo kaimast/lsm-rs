@@ -15,29 +15,31 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install rustc and clippy nightly
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-         profile: minimal
          toolchain: nightly
-         override: true
          components: cargo, rustc, clippy, rustfmt
     - name: install just
       run: cargo install just
     - name: Tests (Async)
       run: just async-tests
+      timeout-minutes: 10
     # Skip until this is not super slow anymore
     #- name: Tests (Async I/O)
     #  run: just async-io-tests
     - name: Tests (Sync)
       run: just sync-tests
+      timeout-minutes: 10
     - name: Tests (No compression)
       run: just no-compression-tests
+      timeout-minutes: 10
     - name: Tests (No wisckey)
       run: just no-wisckey-tests
+      timeout-minutes: 10
     - name: Tests (No wisckey + sync)
       run: just no-wisckey-tests
-
-    #Do liniting last because it is most likely to fail
+      timeout-minutes: 10
+        #Do liniting last because it is most likely to fail
     - name: Linting (Async)
       run: just async-lint
     - name: Linting (Async I/O)
@@ -46,5 +48,9 @@ jobs:
       run: just sync-lint
     - name: Linting (No WiscKey)
       run: just no-wisckey-lint
-    - name: Check formatting
-      run: cargo fmt --check
+    - name: Formatting Checks
+      run: just check-formatting
+    - name: Check for unused dependencies
+      run: |
+         cargo install cargo-udeps
+         just udeps

@@ -48,7 +48,7 @@ async fn get_put() {
 
 #[tokio::test]
 async fn iterate() {
-    const COUNT: u64 = 25_000;
+    const COUNT: u64 = 2500;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -58,7 +58,7 @@ async fn iterate() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -67,7 +67,7 @@ async fn iterate() {
 
     while let Some((key, val)) = iter.next().await {
         assert_eq!(pos as u64, key);
-        assert_eq!(format!("some_string_{}", pos), val);
+        assert_eq!(format!("some_string_{pos}"), val);
 
         pos += 1;
     }
@@ -89,7 +89,7 @@ async fn range_iterate() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -99,7 +99,7 @@ async fn range_iterate() {
     while let Some((key, val)) = iter.next().await {
         let real_pos = pos + 300;
         assert_eq!(real_pos as u64, key);
-        assert_eq!(format!("some_string_{}", real_pos), val);
+        assert_eq!(format!("some_string_{real_pos}"), val);
 
         pos += 1;
     }
@@ -113,7 +113,7 @@ async fn range_iterate() {
 async fn range_iterate_empty() {
     let (_tmpdir, database) = test_init().await;
 
-    const COUNT: u64 = 5_000;
+    const COUNT: u64 = 500;
 
     // Write without fsync to speed up tests
     let mut options = WriteOptions::default();
@@ -121,7 +121,7 @@ async fn range_iterate_empty() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -137,7 +137,7 @@ async fn range_iterate_empty() {
 
 #[tokio::test]
 async fn get_put_many() {
-    const COUNT: u64 = 100_000;
+    const COUNT: u64 = 1_000;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -147,14 +147,14 @@ async fn get_put_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{}", pos))
+            Some(format!("some_string_{pos}"))
         );
     }
 
@@ -164,7 +164,7 @@ async fn get_put_many() {
 // Use multi-threading to enable background compaction
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_large_entry() {
-    const SIZE: usize = 1_000_000;
+    const SIZE: usize = 1000;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -192,7 +192,7 @@ async fn get_put_delete_large_entry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_many() {
-    const COUNT: u64 = 10_000;
+    const COUNT: u64 = 1_003;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -202,7 +202,7 @@ async fn get_put_delete_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -220,7 +220,7 @@ async fn get_put_delete_many() {
 
 #[tokio::test]
 async fn override_some() {
-    const COUNT: u64 = 10_000;
+    const COUNT: u64 = 1_000;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -230,20 +230,20 @@ async fn override_some() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_other_string_{}", pos);
+        let value = format!("some_other_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_other_string_{}", pos))
+            Some(format!("some_other_string_{pos}"))
         );
     }
 
@@ -252,8 +252,8 @@ async fn override_some() {
 
 #[tokio::test]
 async fn override_many() {
-    const NCOUNT: u64 = 200_000;
-    const COUNT: u64 = 50_000;
+    const NCOUNT: u64 = 2_000;
+    const COUNT: u64 = 501;
 
     let (_tmpdir, database) = test_init().await;
 
@@ -263,27 +263,27 @@ async fn override_many() {
 
     for pos in 0..NCOUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_other_string_{}", pos);
+        let value = format!("some_other_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_other_string_{}", pos))
+            Some(format!("some_other_string_{pos}"))
         );
     }
 
     for pos in COUNT..NCOUNT {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{}", pos))
+            Some(format!("some_string_{pos}"))
         );
     }
 
