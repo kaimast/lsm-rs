@@ -23,6 +23,7 @@ jobs:
       run: cargo install just
     - name: Tests (Async)
       run: just async-tests
+      timeout-minutes: 10
     # Skip until this is not super slow anymore
     #- name: Tests (Async I/O)
     #  run: just async-io-tests
