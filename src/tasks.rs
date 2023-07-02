@@ -14,13 +14,13 @@ use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
 
-#[cfg(feature="async-io")]
+#[cfg(feature = "async-io")]
 #[async_trait]
 pub trait Task {
     async fn run(&self) -> Result<bool, Error>;
 }
 
-#[cfg(not(feature="async-io"))]
+#[cfg(not(feature = "async-io"))]
 #[async_trait]
 pub trait Task: Sync + Send {
     async fn run(&self) -> Result<bool, Error>;

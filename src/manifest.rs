@@ -5,8 +5,8 @@ use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+//#[cfg(feature = "async-io")]
+//use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::OpenOptions;

@@ -16,8 +16,8 @@ use lru::LruCache;
 
 #[cfg(feature = "async-io")]
 use futures::io::SeekFrom;
-#[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+//#[cfg(feature = "async-io")]
+//use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{remove_file, File, OpenOptions};
 
@@ -66,23 +66,24 @@ pub struct ValueBatchBuilder<'a> {
 impl<'a> ValueBatchBuilder<'a> {
     pub async fn finish(self) -> Result<ValueBatchId, Error> {
         let fpath = self.vlog.get_file_path(&self.identifier);
-        let fold_flag = 0u8;
         let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
-        let delete_markers = vec![0u8; num_values as usize];
+
+        // The first byte is the fold flag
+        let prefix_len = 1 + std::mem::size_of::<u32>() + (num_values as usize);
+        let mut prefix = vec![0u8; prefix_len];
+        prefix[1..].copy_from_slice(num_values.to_le_bytes().as_slice());
 
         // write file header
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::create(&fpath).await?;
-                file.write_all(&fold_flag.to_le_bytes()).await?;
-                file.write_all(&num_values.to_le_bytes()).await?;
-                file.write_all(&delete_markers).await?;
-                file.write_all(self.offsets[..].into()).await?;
+                let file = File::create(&fpath).await?;
+                let (res, _buf) = file.write_all_at(prefix, 0).await;
+                res?;
+                let (res, _buf) = file.write_all_at(self.offsets, prefix_len as u64).await;
+                res?;
             } else {
                 let mut file = File::create(&fpath)?;
-                file.write_all(&fold_flag.to_le_bytes())?;
-                file.write_all(&num_values.to_le_bytes())?;
-                file.write_all(&delete_markers)?;
+                file.write_all(&prefix)?;
                 file.write_all(self.offsets[..].try_into().unwrap())?;
             }
         }
@@ -151,7 +152,7 @@ impl ValueLog {
         let fpath = self.get_file_path(&batch_id);
 
         const HEADER_LEN: u64 = (size_of::<u8>() + size_of::<u32>()) as u64;
-        let mut header_data = [0u8; HEADER_LEN as usize];
+        let mut header_data = vec![0u8; HEADER_LEN as usize];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -159,7 +160,9 @@ impl ValueLog {
                     .read(true).write(true).create(false).truncate(false)
                     .open(&fpath).await?;
 
-                file.read_exact(&mut header_data).await?;
+                let (res, buf) = file.read_exact_at(header_data, 0).await;
+                res?;
+                header_data = buf;
             } else {
                 let mut file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
@@ -206,8 +209,8 @@ impl ValueLog {
                 }
 
                 let offset_pos = offset_pos.expect("Not a valid offset");
-                file.seek(SeekFrom::Start(HEADER_LEN + (offset_pos as u64))).await?;
-                file.write_all(&[1u8]).await?;
+                let (res, _buf) = file.write_all_at(vec![1u8], offset_pos as u64).await;
+                res?;
             } else {
                 file.seek(SeekFrom::Current(num_values as i64))?;
 
@@ -267,7 +270,7 @@ impl ValueLog {
         let fpath = self.get_file_path(&batch_id);
 
         const HEADER_LEN: u64 = (size_of::<u8>() + size_of::<u32>()) as u64;
-        let mut header_data = [0u8; HEADER_LEN as usize];
+        let mut header_data = vec![0u8; HEADER_LEN as usize];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -275,7 +278,9 @@ impl ValueLog {
                     .read(true).write(true).create(false).truncate(false)
                     .open(&fpath).await?;
 
-                file.read_exact(&mut header_data).await?;
+                let (res, buf) = file.read_exact_at(header_data, 0).await;
+                res?;
+                header_data = buf;
             } else {
                 let mut file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
@@ -491,12 +496,14 @@ impl ValueLog {
             log::trace!("Loading value batch #{} from disk", identifier);
 
             let fpath = self.get_file_path(&identifier);
-            let mut header_data = [0u8; HEADER_LEN as usize];
+            let mut header_data = vec![0u8; HEADER_LEN as usize];
 
             cfg_if! {
                 if #[cfg(feature="async-io")] {
-                    let mut file = File::open(&fpath).await?;
-                    file.read_exact(&mut header_data).await?;
+                    let file = File::open(&fpath).await?;
+                    let (res, buf) = file.read_exact_at(header_data, 0).await;
+                    res?;
+                    header_data = buf;
                 } else {
                     let mut file = File::open(&fpath)?;
                     file.read_exact(&mut header_data)?;
@@ -517,8 +524,9 @@ impl ValueLog {
 
                 cfg_if! {
                     if #[cfg(feature="async-io")] {
-                        file.seek(SeekFrom::Start(df_offset)).await?;
-                        file.read_exact(&mut data).await?;
+                        let (res, buf) = file.read_exact_at(data, df_offset).await;
+                        res?;
+                        data = buf;
                     } else {
                         file.seek(SeekFrom::Start(df_offset))?;
                         file.read_exact(&mut data)?;
@@ -555,7 +563,7 @@ impl ValueLog {
         &self,
         value_ref: ValueId,
     ) -> Result<V, Error> {
-        log::trace!("Getting value at {:?}", value_ref);
+        log::trace!("Getting value at {value_ref:?}");
 
         let (id, offset) = value_ref;
         let batch = self.get_batch(id).await?;
@@ -567,12 +575,14 @@ impl ValueLog {
     #[allow(dead_code)]
     async fn is_batch_folded(&self, identifier: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&identifier);
-        let mut data = [0u8];
+        let mut data = vec![0u8; 0];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::open(fpath).await?;
-                file.read_exact(&mut data).await?;
+                let file = File::open(fpath).await?;
+                let (res, buf) = file.read_exact_at(data, 0).await;
+                res?;
+                data = buf;
             } else {
                 let mut file = File::open(fpath)?;
                 file.read_exact(&mut data)?;
@@ -585,13 +595,15 @@ impl ValueLog {
     #[allow(dead_code)]
     async fn get_active_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let fpath = self.get_file_path(&identifier);
-        let mut data = [0u8; size_of::<u32>()];
+        let mut data = vec![0u8; size_of::<u32>()];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::open(&fpath).await?;
-                file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
-                file.read_exact(&mut data).await?;
+                let file = File::open(&fpath).await?;
+                let pos = size_of::<u8>() as u64;
+                let (res, buf) = file.read_exact_at(data, pos).await;
+                res?;
+                data = buf;
             } else {
                 let mut file = File::open(&fpath)?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
@@ -599,12 +611,15 @@ impl ValueLog {
             }
         }
 
-        let num_values = u32::from_le_bytes(data);
+        let num_values = u32::from_le_bytes(data.as_slice().try_into().unwrap());
         let mut delete_flags = vec![0u8; num_values as usize];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                file.read_exact(&mut delete_flags).await?;
+                let pos = (size_of::<u8>()+size_of::<u32>()) as u64;
+                let (res, buf) = file.read_exact_at(delete_flags, pos).await;
+                res?;
+                delete_flags = buf;
             } else {
                 file.read_exact(&mut delete_flags)?;
             }
@@ -622,14 +637,16 @@ impl ValueLog {
 
     #[allow(dead_code)]
     async fn get_total_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
-        let mut data = [0u8; size_of::<u32>()];
+        let mut data = vec![0u8; size_of::<u32>()];
         let fpath = self.get_file_path(&identifier);
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let mut file = File::open(fpath).await?;
-                file.seek(SeekFrom::Start(size_of::<u8>() as u64)).await?;
-                file.read_exact(&mut data).await?;
+                let file = File::open(fpath).await?;
+                let pos = size_of::<u8>() as u64;
+                let (res, buf) = file.read_exact_at(data, pos).await;
+                res?;
+                data = buf;
             } else {
                 let mut file = File::open(fpath)?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
@@ -637,7 +654,7 @@ impl ValueLog {
             }
         }
 
-        Ok(u32::from_le_bytes(data))
+        Ok(u32::from_le_bytes(data.as_slice().try_into().unwrap()))
     }
 }
 

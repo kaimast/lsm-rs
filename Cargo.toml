@@ -22,7 +22,8 @@ cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = "0.1"
-tokio-uring = { version="0.4", optional=true }
+#tokio-uring = { version="0.4", optional=true }
+tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", branch="read-to-end", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -40,7 +41,7 @@ tracing-flame = { version="0.2", default-features=false }
 path = "src/lib.rs"
 
 [features]
-default = ["wisckey", "snappy-compression"]
+default = ["wisckey", "snappy-compression", "async-io"]
 snappy-compression = ["snap"]
 # cargo doesn't support mutually exclusive features
 # so all this does is enable async test, async APIs are always enabled
