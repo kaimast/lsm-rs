@@ -193,7 +193,15 @@ impl TaskManager {
             ));
             let future = {
                 let hdl = hdl.clone();
-                let future = tokio::spawn(async move { hdl.work_loop().await });
+                let task = async move { hdl.work_loop().await };
+
+                cfg_if::cfg_if! {
+                    if #[cfg(feature="async-io")] {
+                        let future = tokio_uring::spawn(task);
+                    } else {
+                        let future = tokio::spawn(task);
+                    }
+                }
 
                 StdMutex::new(Some(future))
             };
@@ -217,7 +225,15 @@ impl TaskManager {
                 ));
                 let future = {
                     let hdl = hdl.clone();
-                    let future = tokio::spawn(async move { hdl.work_loop().await });
+                    let task = async move { hdl.work_loop().await };
+
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature="async-io")] {
+                            let future = tokio_uring::spawn(task);
+                        } else {
+                            let future = tokio::spawn(task);
+                        }
+                    }
 
                     StdMutex::new(Some(future))
                 };

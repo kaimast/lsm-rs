@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashSet;
-use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use std::sync::Arc;
 use tokio_uring::fs::OpenOptions;
 
 #[cfg(not(feature = "async-io"))]
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 #[cfg(not(feature = "async-io"))]
 use std::fs::OpenOptions;
@@ -100,11 +99,13 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
                     .open(manifest_path).await?;
 
-                file.read_to_end(&mut data).await?;
+                let (res, buf) = file.read_at_to_end(0, data).await;
+                res?;
+                data = buf;
             } else {
                 let mut file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
@@ -246,15 +247,15 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(manifest_path).await.expect("Failed to open MANIFEST file");
 
                 // Truncate old table list
-                file.set_len(header_len).await.unwrap();
-                file.seek(SeekFrom::Start(header_len)).await.unwrap();
+                //FIXME file.set_len(header_len).await.unwrap();
 
-                file.write_all(&data).await.unwrap();
+                let (res, _buf) = file.write_all_at(data, header_len).await;
+                res.unwrap();
             } else {
                 let mut file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
@@ -270,20 +271,19 @@ impl Manifest {
     }
 
     async fn sync_header(&self, meta: &MetaData) {
-        //TODO make this an atomic filesystem operation
+        //TODO make this an atomic file system operation
         let data = bincode::serialize(meta).unwrap();
         let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(true).create(true).truncate(false)
                     .open(manifest_path).await
                     .expect("Failed to create or open MANIFEST file");
 
-                file.seek(SeekFrom::Start(0)).await.unwrap();
-                file.write_all(&data).await.unwrap();
-
+                let (res, _buf) = file.write_all_at(data, 0).await;
+                res.expect("Writing manifest failed");
             } else {
                 let mut file = match OpenOptions::new()
                         .read(true).write(true).create(true).truncate(false)

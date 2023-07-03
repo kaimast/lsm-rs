@@ -10,9 +10,6 @@ use std::sync::Arc;
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{remove_file, File, OpenOptions};
 
-#[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-
 use std::convert::TryInto;
 
 #[cfg(not(feature = "async-io"))]
@@ -23,17 +20,21 @@ use std::io::{Read, Seek, Write};
 
 use cfg_if::cfg_if;
 
+/// The log is split individual files (pages) that can be
+/// garbage collected once the logged data is not needed anymore
 const PAGE_SIZE: u64 = 4 * 1024;
 
+/// The write-ahead log keeps track of the most recent changes
+/// It can be used to recover from crashes
 #[derive(Debug)]
 pub struct WriteAheadLog {
     params: Arc<Params>,
-    // The current log file
+    /// The current log file
     log_file: File,
-    // Everything below offset can be garbage collected
+    /// Everything below offset can be garbage collected
     offset: u64,
-    // The absolute position of the log we are at
-    // (must be >= offset)
+    /// The absolute position of the log we are at
+    /// (must be >= offset)
     position: u64,
 }
 
@@ -57,14 +58,13 @@ impl WriteAheadLog {
         let mut count: usize = 0;
 
         let fpos = position / PAGE_SIZE;
-        let file_offset = position % PAGE_SIZE;
-
-        let mut log_file = Self::open_file(&params, fpos).await?;
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                log_file.seek(futures::io::SeekFrom::Start(file_offset)).await.unwrap();
+                let log_file = Self::open_file(&params, fpos).await?;
             } else {
+                let file_offset = position % PAGE_SIZE;
+                let mut log_file = Self::open_file(&params, fpos).await?;
                 log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
             }
         }
@@ -111,7 +111,7 @@ impl WriteAheadLog {
             count += 1;
         }
 
-        log::debug!("Found {} entries in Write-Ahead-Log", count);
+        log::debug!("Found {count} entries in Write-Ahead-Log");
 
         Ok(obj)
     }
@@ -165,7 +165,7 @@ impl WriteAheadLog {
 
             cfg_if! {
                 if #[cfg(feature="async-io")] {
-                    let read_result = self.log_file.read_exact(read_slice).await;
+                    let read_result = self.log_file.read_exact_at(read_slice, self.position).await;
                 } else {
                     let read_result = self.log_file.read_exact(read_slice);
                 }
@@ -308,7 +308,7 @@ impl WriteAheadLog {
         let fpath = params
             .db_path
             .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-        log::trace!("Opening file at {:?}", fpath);
+        log::trace!("Opening file at {fpath:?}");
 
         cfg_if! {
             if #[cfg(feature="async-io")] {

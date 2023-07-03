@@ -40,7 +40,7 @@ sync-lint:
     cargo clippy --features=sync -- -D warnings
 
 async-lint:
-    cargo clippy -- -D warnings
+    cargo clippy --no-default-features --features=async -- -D warnings
 
 async-io-lint:
     cargo clippy --features=async-io -- -D warnings

@@ -87,7 +87,7 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
 }
 
 struct DbIteratorInner<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
+    _marker: PhantomData<(K, V)>,
 
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
