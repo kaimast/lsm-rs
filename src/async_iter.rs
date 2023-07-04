@@ -23,6 +23,10 @@ use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
+#[cfg(feature = "async-io")]
+type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>>;
+
+#[cfg(not(feature = "async-io"))]
 type IterFuture<K, V> =
     dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>> + Send;
 

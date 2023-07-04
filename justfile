@@ -2,7 +2,7 @@ LOG_LEVEL := "debug"
 
 all: test lint
 
-test: sync-tests async-tests no-wisckey-tests no-compression-tests #async-io-tests
+test: sync-tests async-tests no-wisckey-tests no-compression-tests async-io-tests
 
 sync-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync
@@ -43,7 +43,7 @@ async-lint:
     cargo clippy --no-default-features --features=async -- -D warnings
 
 async-io-lint:
-    cargo clippy  --no-default-features--features=async,async-io -- -D warnings
+    cargo clippy --no-default-features --features=async,async-io -- -D warnings
 
 no-wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression -- -D warnings

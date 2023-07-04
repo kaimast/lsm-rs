@@ -2,10 +2,17 @@ use crate::memtable::Memtable;
 use crate::Params;
 use crate::WriteOp;
 
-use std::collections::VecDeque;
-use std::io::IoSlice;
 use std::path::Path;
 use std::sync::Arc;
+
+#[cfg(feature = "async-io")]
+use tokio_uring::buf::BoundedBuf;
+
+#[cfg(not(feature = "async-io"))]
+use std::collections::VecDeque;
+
+#[cfg(not(feature = "async-io"))]
+use std::io::IoSlice;
 
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{remove_file, File, OpenOptions};
@@ -117,6 +124,32 @@ impl WriteAheadLog {
     }
 
     /// Stores an operation and returns the new position in the logfile
+    #[cfg(feature = "async-io")]
+    pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
+        let op_type = op.get_type().to_le_bytes();
+
+        let key = op.get_key();
+        let klen = op.get_key_length().to_le_bytes();
+        let vlen = op.get_value_length().to_le_bytes();
+
+        let mut data = vec![];
+        data.extend_from_slice(op_type.as_slice());
+        data.extend_from_slice(klen.as_slice());
+        data.extend_from_slice(key);
+
+        match op {
+            WriteOp::Put(_, value) => {
+                data.extend_from_slice(vlen.as_slice());
+                data.extend_from_slice(value);
+            }
+            WriteOp::Delete(_) => {}
+        }
+
+        self.write_all(data).await?;
+        Ok(self.position)
+    }
+
+    #[cfg(not(feature = "async-io"))]
     pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         // we do not use serde here to avoid copying data
 
@@ -165,7 +198,9 @@ impl WriteAheadLog {
 
             cfg_if! {
                 if #[cfg(feature="async-io")] {
-                    let read_result = self.log_file.read_exact_at(read_slice, self.position).await;
+                    let buf = vec![0u8; read_slice.len()];
+                    let (read_result, buf) = self.log_file.read_exact_at(buf, self.position).await;
+                    read_slice.copy_from_slice(&buf);
                 } else {
                     let read_result = self.log_file.read_exact(read_slice);
                 }
@@ -208,6 +243,40 @@ impl WriteAheadLog {
         Ok(true)
     }
 
+    #[cfg(feature = "async-io")]
+    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
+        let mut buf_pos = 0;
+        while buf_pos < data.len() {
+            let file_offset = self.position % PAGE_SIZE;
+
+            // Figure out how much we can fit into the current file
+            assert!(file_offset < PAGE_SIZE);
+
+            let page_remaining = PAGE_SIZE - file_offset;
+            let buffer_remaining = data.len() - buf_pos;
+            let write_len = (buffer_remaining).min(page_remaining as usize);
+
+            let to_write = data.slice(buf_pos..buf_pos + write_len);
+            let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+            res.expect("Failed to write to log file");
+
+            data = buf.into_inner();
+            buf_pos += write_len;
+            self.position += write_len as u64;
+
+            assert!(file_offset <= PAGE_SIZE);
+
+            // Create a new file?
+            if file_offset == PAGE_SIZE {
+                let file_pos = self.position / PAGE_SIZE;
+                self.log_file = Self::create_file(&self.params, file_pos).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "async-io"))]
     async fn write_all_vectored<'a>(
         &mut self,
         mut buffers: VecDeque<IoSlice<'a>>,
@@ -218,6 +287,8 @@ impl WriteAheadLog {
             let mut file_offset = self.position % PAGE_SIZE;
             let mut to_write = vec![];
             let mut advance_by = None;
+
+            let start = file_offset;
 
             // Figure out how much we can fit into the current file
             while let Some(buffer) = buffers.pop_front() {
@@ -256,18 +327,15 @@ impl WriteAheadLog {
             if !to_write.is_empty() {
                 cfg_if! {
                     if #[ cfg(feature="async-io") ] {
-                        // TODO Not supported yet by tokio...
-                        // self.log_file.write_all_vectored(&mut to_write)
-                        //   .await.expect("Failed to write to log file");
-
-                        for slice in to_write.into_iter() {
-                            self.log_file.write_all(&slice[..]).await
-                                .expect("Failed to write to log file");
-                        }
+                        let (res, buf) = self.log_file.writev_at_all(to_write, start).await;
+                        buf.expect("Failed to write to log file");
+                        to_write = buf;
                     } else {
                         // Try doing one write syscall if possible
                         self.log_file.write_all_vectored(&mut to_write)
                             .expect("Failed to write to log file");
+
+                        let _ = start;
                     }
                 }
 

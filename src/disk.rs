@@ -55,7 +55,8 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
             let compressed = encoder.compress_vec(data)
                 .expect("Failed to compress data");
         } else {
-            let compressed = data;
+            let mut compressed = vec![];
+            compressed.extend_from_slice(data);
         }
     }
 
@@ -76,7 +77,7 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
                 file.seek(std::io::SeekFrom::Start(offset))?;
             }
 
-            file.write_all(compressed)?;
+            file.write_all(&compressed)?;
             file.sync_all()?;
         }
     }

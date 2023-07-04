@@ -252,7 +252,7 @@ impl DataBlockBuilder {
         let block_data = &block.data;
         let fpath = self.data_blocks.get_file_path(&identifier);
 
-        disk::write(&fpath, block_data, 0).await?;
+        disk::write(&fpath, block_data, 1).await?;
 
         let mut cache = self.data_blocks.block_caches[shard_id].lock().await;
         cache.put(identifier, block);

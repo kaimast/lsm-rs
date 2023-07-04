@@ -15,7 +15,7 @@ use crate::{DbLogic, Error};
 use async_trait::async_trait;
 
 #[cfg(feature = "async-io")]
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Task {
     async fn run(&self) -> Result<bool, Error>;
 }
@@ -87,7 +87,8 @@ impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
@@ -98,7 +99,8 @@ impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         Ok(self.datastore.do_level_compaction().await?)

@@ -1,3 +1,8 @@
+use std::cmp::Ordering;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
 use crate::data_blocks::DataEntryType;
 use crate::manifest::SeqNumber;
 use crate::sorted_table::{InternalIterator, Key};
@@ -5,9 +10,6 @@ use crate::{KvTrait, Params};
 
 #[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
-
-use std::cmp::Ordering;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct MemtableRef {
@@ -57,7 +59,8 @@ impl MemtableIterator {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl InternalIterator for MemtableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {

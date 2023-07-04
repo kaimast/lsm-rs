@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::data_blocks::{
     DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
 };
@@ -36,7 +38,8 @@ pub enum ValueResult<'a> {
     NoValue,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
@@ -262,7 +265,8 @@ impl TableIterator {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
         self.block_pos > self.table.index.num_data_blocks()
