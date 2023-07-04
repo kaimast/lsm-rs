@@ -62,8 +62,7 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
     (tracing_guard, tmp_dir, database)
 }
 
-#[tokio::main]
-async fn main() {
+async fn main_inner() {
     let args = Args::parse();
 
     let (_tracing, _tmpdir, database) = bench_init(&args).await;
@@ -77,7 +76,7 @@ async fn main() {
 
     for pos in 0..args.num_entries {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -86,9 +85,22 @@ async fn main() {
     for pos in 0..args.num_entries {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{}", pos))
+            Some(format!("some_string_{pos}"))
         );
     }
 
     database.stop().await.unwrap();
+}
+
+#[cfg(feature="async-io")]
+fn main() {
+    tokio_uring::start(async {
+        main_inner().await;
+    });
+}
+
+#[cfg(not(feature="async-io"))]
+#[tokio::main]
+async fn main() {
+    main_inner().await;
 }

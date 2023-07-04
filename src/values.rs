@@ -67,7 +67,7 @@ impl<'a> ValueBatchBuilder<'a> {
         // The first byte is the fold flag
         let prefix_len = 1 + std::mem::size_of::<u32>() + (num_values as usize);
         let mut prefix = vec![0u8; prefix_len];
-        prefix[1..].copy_from_slice(num_values.to_le_bytes().as_slice());
+        prefix[1..5].copy_from_slice(num_values.to_le_bytes().as_slice());
 
         // write file header
         cfg_if! {

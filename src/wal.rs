@@ -247,7 +247,7 @@ impl WriteAheadLog {
     async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut buf_pos = 0;
         while buf_pos < data.len() {
-            let file_offset = self.position % PAGE_SIZE;
+            let mut file_offset = self.position % PAGE_SIZE;
 
             // Figure out how much we can fit into the current file
             assert!(file_offset < PAGE_SIZE);
@@ -263,6 +263,7 @@ impl WriteAheadLog {
             data = buf.into_inner();
             buf_pos += write_len;
             self.position += write_len as u64;
+            file_offset += write_len as u64;
 
             assert!(file_offset <= PAGE_SIZE);
 
@@ -361,7 +362,7 @@ impl WriteAheadLog {
         let fpath = params
             .db_path
             .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
-        log::trace!("Creating new log file at {:?}", fpath);
+        log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -423,13 +424,19 @@ impl WriteAheadLog {
                 .params
                 .db_path
                 .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-            log::trace!("Removing file {:?}", fpath);
+            log::trace!("Removing file {fpath:?}");
 
             cfg_if! {
                 if #[cfg(feature="async-io") ] {
-                    remove_file(fpath).await.expect("Failed to remove log file");
+                    remove_file(&fpath).await
+                        .unwrap_or_else(|err| {
+                            panic!("Failed to remove log file {fpath:?}: {err}");
+                        });
                 } else {
-                    remove_file(fpath).expect("Failed to remove log file");
+                    remove_file(&fpath)
+                        .unwrap_or_else(|err| {
+                            panic!("Failed to remove log file {fpath:?}: {err}");
+                        });
                 }
             }
         }

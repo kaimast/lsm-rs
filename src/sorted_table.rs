@@ -421,7 +421,7 @@ mod tests {
     use tokio_uring::test as async_test;
 
     #[cfg(not(feature = "async-io"))]
-    use async_test;
+    use tokio::test as async_test;
 
     #[cfg(feature = "wisckey")]
     #[async_test]

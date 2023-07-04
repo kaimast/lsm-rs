@@ -9,7 +9,7 @@ const SM: StartMode = StartMode::CreateOrOverride;
 use tokio_uring::test as async_test;
 
 #[cfg(not(feature = "async-io"))]
-use async_test;
+use tokio::test as async_test;
 
 async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
     let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
