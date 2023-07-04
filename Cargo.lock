@@ -838,7 +838,7 @@ dependencies = [
 [[package]]
 name = "tokio-uring"
 version = "0.4.0"
-source = "git+https://github.com/kaimast/tokio-uring.git?branch=read-to-end#2a3bed72c339ce27f127dbc891b8c0f372967f01"
+source = "git+https://github.com/kaimast/tokio-uring.git?branch=master#30ad50551a038f6c2ee9405dd1972d33d279a062"
 dependencies = [
  "futures-util",
  "io-uring",
@@ -846,6 +846,17 @@ dependencies = [
  "slab",
  "socket2",
  "tokio",
+ "tokio-uring-macros",
+]
+
+[[package]]
+name = "tokio-uring-macros"
+version = "0.1.0"
+source = "git+https://github.com/kaimast/tokio-uring.git?branch=master#30ad50551a038f6c2ee9405dd1972d33d279a062"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

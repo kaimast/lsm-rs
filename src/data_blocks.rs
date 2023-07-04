@@ -502,8 +502,14 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[cfg(feature="async-io")]
+    use tokio_uring::test as async_test;
+
+    #[cfg(not(feature="async-io"))]
+    use async_test as async_test;
+
     #[cfg(feature = "wisckey")]
-    #[tokio::test]
+    #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
@@ -549,7 +555,7 @@ mod tests {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tokio::test]
+    #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
