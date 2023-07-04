@@ -417,11 +417,11 @@ mod tests {
 
     use tempfile::tempdir;
 
-    #[cfg(feature="async-io")]
+    #[cfg(feature = "async-io")]
     use tokio_uring::test as async_test;
 
-    #[cfg(not(feature="async-io"))]
-    use async_test as async_test;
+    #[cfg(not(feature = "async-io"))]
+    use async_test;
 
     #[cfg(feature = "wisckey")]
     #[async_test]

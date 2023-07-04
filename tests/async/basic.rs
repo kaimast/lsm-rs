@@ -5,11 +5,11 @@ use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 
 const SM: StartMode = StartMode::CreateOrOverride;
 
-#[cfg(feature="async-io")]
+#[cfg(feature = "async-io")]
 use tokio_uring::test as async_test;
 
-#[cfg(not(feature="async-io"))]
-use async_test as async_test;
+#[cfg(not(feature = "async-io"))]
+use async_test;
 
 async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
     let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
