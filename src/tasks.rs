@@ -166,6 +166,7 @@ impl TaskHandle {
                 last_update = now;
                 idle = false;
             } else {
+                log::trace!("Task did not do any work");
                 idle = true;
             }
         }

@@ -460,11 +460,16 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
+        log::trace!("Attempting memtable compaction");
+
         let mut wal = self.wal.lock().await;
         let mut imm_mems = self.imm_memtables.lock().await;
 
         if let Some((log_offset, mem)) = imm_mems.pop_front() {
+            log::trace!("Found memtable to compact");
+
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.get(0).unwrap();
@@ -527,6 +532,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             Ok(true)
         } else {
+            log::trace!("Found no memtable to compact");
             Ok(false)
         }
     }
@@ -536,14 +542,19 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
         let mut was_locked = false;
+        log::trace!("Attempting level compaction");
 
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels - 1 {
                 match self.compact_level(level_pos as LevelId, level).await? {
-                    CompactResult::DidWork => return Ok(true),
+                    CompactResult::DidWork => {
+                        log::trace!("Compacted level {level_pos}");
+                        return Ok(true);
+                    }
                     CompactResult::Locked => {
+                        log::trace!("Cannot compact level {level_pos} right now; lock was held");
                         was_locked = true;
                     }
                     CompactResult::NothingToDo => {}
@@ -552,7 +563,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         // We'll try again if it was locked
-        Ok(!was_locked)
+        Ok(was_locked)
     }
 
     #[tracing::instrument(skip(self, level))]

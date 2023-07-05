@@ -25,12 +25,12 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
     args: &Args,
 ) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
     let tracing_guard = if args.enable_tracing {
-        let fmt_layer = fmt::Layer::default();
+        //let fmt_layer = fmt::Layer::default();
 
 //        let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
 
         tracing_subscriber::registry()
-            .with(fmt_layer)
+         //   .with(fmt_layer)
             .with(tracing_tracy::TracyLayer::new())
            // .with(flame_layer)
             .init();
@@ -41,7 +41,7 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
         None
     };
 
-    //let _ = env_logger::builder().is_test(true).try_init();
+    let _ = env_logger::builder().is_test(true).try_init();
     let tmp_dir = Builder::new()
         .prefix("lsm-async-benchmark-")
         .tempdir()
