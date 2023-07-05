@@ -1,9 +1,7 @@
-
 use clap::Parser;
 
 use tempfile::{Builder, TempDir};
 
-use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
@@ -19,9 +17,7 @@ struct Args {
     num_entries: usize,
 }
 
-async fn bench_init<K: KvTrait, V: KvTrait>(
-    args: &Args,
-) -> (TempDir, Database<K, V>) {
+async fn bench_init<K: KvTrait, V: KvTrait>(args: &Args) -> (TempDir, Database<K, V>) {
     if args.enable_tracing {
         tracing_subscriber::registry()
             .with(tracing_tracy::TracyLayer::new())
@@ -82,14 +78,14 @@ async fn main_inner() {
     log::info!("Done");
 }
 
-#[cfg(feature="async-io")]
+#[cfg(feature = "async-io")]
 fn main() {
     tokio_uring::start(async {
         main_inner().await;
     });
 }
 
-#[cfg(not(feature="async-io"))]
+#[cfg(not(feature = "async-io"))]
 #[tokio::main]
 async fn main() {
     main_inner().await;
