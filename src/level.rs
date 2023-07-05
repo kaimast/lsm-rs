@@ -115,7 +115,7 @@ impl Level {
             if self.do_seek_based_compaction && table.has_maximum_seeks() {
                 let mut seek_based_compaction = self.seek_based_compaction.lock();
                 if seek_based_compaction.is_none() {
-                    log::debug!(
+                    log::trace!(
                         "Seek-based compaction triggered for table #{}",
                         table.get_id()
                     );
@@ -147,7 +147,7 @@ impl Level {
     pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
         let all_tables = self.tables.write().await;
 
-        let (table, offset) = { 
+        let (table, offset) = {
             let mut next_offset = self.next_compaction_offset.lock();
 
             let size_based_compaction = if self.index == 0 {

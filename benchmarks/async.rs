@@ -1,10 +1,8 @@
-use std::{fs::File, io::BufWriter};
 
 use clap::Parser;
 
 use tempfile::{Builder, TempDir};
 
-use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
@@ -23,23 +21,12 @@ struct Args {
 
 async fn bench_init<K: KvTrait, V: KvTrait>(
     args: &Args,
-) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
-    let tracing_guard = if args.enable_tracing {
-        //let fmt_layer = fmt::Layer::default();
-
-//        let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
-
+) -> (TempDir, Database<K, V>) {
+    if args.enable_tracing {
         tracing_subscriber::registry()
-         //   .with(fmt_layer)
             .with(tracing_tracy::TracyLayer::new())
-           // .with(flame_layer)
             .init();
-
-        None
-        //Some(_guard)
-    } else {
-        None
-    };
+    }
 
     let _ = env_logger::builder().is_test(true).try_init();
     let tmp_dir = Builder::new()
@@ -61,13 +48,13 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
         .await
         .expect("Failed to create database instance");
 
-    (tracing_guard, tmp_dir, database)
+    (tmp_dir, database)
 }
 
 async fn main_inner() {
     let args = Args::parse();
 
-    let (_tracing, _tmpdir, database) = bench_init(&args).await;
+    let (_tmpdir, database) = bench_init(&args).await;
 
     log::info!("Starting read/write benchmark");
 

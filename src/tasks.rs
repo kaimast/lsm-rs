@@ -161,9 +161,9 @@ impl TaskHandle {
             }
 
             let did_work = self.task.run().await?;
+            last_update = now;
 
             if did_work {
-                last_update = now;
                 idle = false;
             } else {
                 log::trace!("Task did not do any work");
