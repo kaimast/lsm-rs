@@ -11,7 +11,6 @@ use tracing_subscriber::prelude::*;
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
 #[derive(Parser)]
-#[clap(rename_all = "snake-case")]
 #[ clap(author, version, about, long_about = None) ]
 struct Args {
     #[clap(long)]
@@ -28,18 +27,21 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
     let tracing_guard = if args.enable_tracing {
         let fmt_layer = fmt::Layer::default();
 
-        let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
+//        let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
 
         tracing_subscriber::registry()
             .with(fmt_layer)
-            .with(flame_layer)
+            .with(tracing_tracy::TracyLayer::new())
+           // .with(flame_layer)
             .init();
-        Some(_guard)
+
+        None
+        //Some(_guard)
     } else {
         None
     };
 
-    let _ = env_logger::builder().is_test(true).try_init();
+    //let _ = env_logger::builder().is_test(true).try_init();
     let tmp_dir = Builder::new()
         .prefix("lsm-async-benchmark-")
         .tempdir()
@@ -90,6 +92,7 @@ async fn main_inner() {
     }
 
     database.stop().await.unwrap();
+    log::info!("Done");
 }
 
 #[cfg(feature="async-io")]

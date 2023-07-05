@@ -254,6 +254,7 @@ impl TaskManager {
         Self { stop_flag, tasks }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn wake_up(&self, task_type: &TaskType) {
         let task_group = self.tasks.get(task_type).expect("No such task");
         task_group.condition.wake_up().await;

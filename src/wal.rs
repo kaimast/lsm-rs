@@ -125,6 +125,7 @@ impl WriteAheadLog {
 
     /// Stores an operation and returns the new position in the logfile
     #[cfg(feature = "async-io")]
+    #[tracing::instrument(skip(self))]
     pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         let op_type = op.get_type().to_le_bytes();
 
@@ -150,6 +151,7 @@ impl WriteAheadLog {
     }
 
     #[cfg(not(feature = "async-io"))]
+    #[tracing::instrument(skip(self))]
     pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         // we do not use serde here to avoid copying data
 

@@ -14,6 +14,7 @@ use cfg_if::cfg_if;
 //TODO add proper error handling
 
 #[inline(always)]
+#[tracing::instrument]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     let mut compressed = vec![];
 
@@ -44,6 +45,7 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
     }
 }
 
+#[tracing::instrument(skip(data))]
 #[inline(always)]
 pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io::Error> {
     //TODO it might be worth investigating if encoding/decoding

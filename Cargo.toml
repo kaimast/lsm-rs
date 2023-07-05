@@ -20,6 +20,7 @@ snap = { version="1", optional=true }
 async-trait = "0.1"
 cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
+tracing-tracy = "0.10"
 csv = "1"
 tokio-condvar = "0.1"
 #tokio-uring = { version="0.4", optional=true }
@@ -32,7 +33,7 @@ features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
-env_logger = "0.10"
+#env_logger = "0.10"
 tempfile = "3"
 tracing-subscriber = { version="0.3", default-features=false }
 tracing-flame = { version="0.2", default-features=false }
@@ -41,7 +42,7 @@ tracing-flame = { version="0.2", default-features=false }
 path = "src/lib.rs"
 
 [features]
-default = ["wisckey", "snappy-compression", "async-io"]
+default = ["snappy-compression", "async-io"]
 snappy-compression = ["snap"]
 # cargo doesn't support mutually exclusive features
 # so all this does is enable async test, async APIs are always enabled
