@@ -8,7 +8,7 @@ use tracing_tracy::TracyLayer;
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
 #[derive(Parser)]
-#[ clap(author, version, about, long_about = None) ]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     #[clap(long)]
     enable_tracing: bool,

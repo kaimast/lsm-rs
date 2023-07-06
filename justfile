@@ -34,7 +34,7 @@ clean:
     rm -rf target/
 
 udeps:
-    cargo udeps
+    cargo udeps --all-targets
 
 sync-lint:
     cargo clippy --no-default-features --features=sync -- -D warnings
