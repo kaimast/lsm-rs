@@ -11,8 +11,6 @@ use std::path::Path;
 
 use cfg_if::cfg_if;
 
-//TODO add proper error handling
-
 #[inline(always)]
 #[tracing::instrument]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {

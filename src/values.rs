@@ -422,20 +422,24 @@ impl ValueLog {
             let mut fold_table = HashMap::new();
             assert!(num_values as usize == new_offsets.len());
 
-            let prefix_len = 1 + std::mem::size_of::<u32>() + (num_values as usize);
+            let fold_flag_len = std::mem::size_of::<u8>();
+            let num_vals_len = std::mem::size_of::<u32>();
+
+            let prefix_len = fold_flag_len + num_vals_len + (num_values as usize);
             let mut prefix = vec![0u8; prefix_len];
             prefix[0] = fold_flag;
-            prefix[1..4].copy_from_slice(&num_values.to_le_bytes());
+            prefix[fold_flag_len..fold_flag_len+num_vals_len]
+                .copy_from_slice(&num_values.to_le_bytes());
 
-            let mut offsets = vec![0u8; std::mem::size_of::<u32>() * 2];
+            let nsize = std::mem::size_of::<u32>();
+            let mut offsets = vec![0u8; (num_values as usize) * 2 * nsize];
 
-            for (pos, (old_offset, new_offset)) in new_offsets.into_iter().enumerate() {
-                let nsize = std::mem::size_of::<u32>();
+            for (pos, (old_offset, new_offset)) in new_offsets.iter().enumerate() {
                 let start = pos * 2 * nsize;
                 offsets[start..start + nsize].copy_from_slice(&old_offset.to_le_bytes());
                 offsets[start + nsize..start + 2 * nsize]
                     .copy_from_slice(&new_offset.to_le_bytes());
-                fold_table.insert(old_offset, new_offset);
+                fold_table.insert(*old_offset, *new_offset);
             }
 
             cfg_if! {
@@ -448,8 +452,8 @@ impl ValueLog {
                     res?;
                 } else {
                     let mut file = File::create(&fpath)?;
-                    file.write_all(prefix)?;
-                    file.write_all(offsets)?:
+                    file.write_all(&prefix)?;
+                    file.write_all(&offsets)?;
                     for (old_offset, new_offset) in new_offsets.into_iter() {
                         file.write_all(&old_offset.to_le_bytes())?;
                         file.write_all(&new_offset.to_le_bytes())?;
@@ -587,10 +591,9 @@ impl ValueLog {
         Ok(super::get_encoder().deserialize(val)?)
     }
 
-    #[allow(dead_code)]
     async fn is_batch_folded(&self, identifier: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&identifier);
-        let mut data = vec![0u8; 0];
+        let mut data = vec![0u8; 1];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -607,7 +610,6 @@ impl ValueLog {
         Ok(data[0] != 0u8)
     }
 
-    #[allow(dead_code)]
     async fn get_active_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let fpath = self.get_file_path(&identifier);
         let mut data = vec![0u8; size_of::<u32>()];
