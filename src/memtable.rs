@@ -1,3 +1,8 @@
+use std::cmp::Ordering;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
 use crate::data_blocks::DataEntryType;
 use crate::manifest::SeqNumber;
 use crate::sorted_table::{InternalIterator, Key};
@@ -5,9 +10,6 @@ use crate::{KvTrait, Params};
 
 #[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
-
-use std::cmp::Ordering;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct MemtableRef {
@@ -57,7 +59,8 @@ impl MemtableIterator {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl InternalIterator for MemtableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {
@@ -206,6 +209,7 @@ impl Memtable {
         (self.entries[0].0.clone(), self.entries[len - 1].0.clone())
     }
 
+    #[tracing::instrument(skip(self, key))]
     pub fn get(&self, key: &[u8]) -> Option<MemtableEntry> {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
             Ok(pos) => Some(self.entries[pos].1.clone()),
@@ -234,6 +238,7 @@ impl Memtable {
         }
     }
 
+    #[tracing::instrument(skip(self, key, value))]
     pub fn put(&mut self, key: Key, value: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
         let entry_len = key.len() + value.len();
@@ -253,6 +258,7 @@ impl Memtable {
         self.next_seq_number += 1;
     }
 
+    #[tracing::instrument(skip(self, key))]
     pub fn delete(&mut self, key: Key) {
         let pos = self.get_key_pos(key.as_slice());
         let entry_len = key.len();

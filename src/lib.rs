@@ -1,10 +1,11 @@
 #![feature(trait_alias)]
 #![feature(write_all_vectored)]
-#![feature(array_methods)]
 #![feature(get_mut_unchecked)]
 #![feature(io_slice_advance)]
 #![feature(let_chains)]
 #![feature(const_option)]
+// Temporary workaround for the io_uring code
+#![allow(clippy::arc_with_non_send_sync)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};

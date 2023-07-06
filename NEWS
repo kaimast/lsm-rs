@@ -1,8 +1,11 @@
+0.3:
+    - Support for io_uring
+
 0.2:
     - Support for tracing to benchmark the library
     - Removed custom Condition Variable implementation
     - Databases can be reopened
-    - Wisckey now uses a more efficient "folding"-based implementation
+    - WiscKey now uses a more efficient "folding"-based implementation
     - Allow disabling key-value separation using the "wisckey" feature flag
     - Implemented proper garbage collection for the value log
     - The Write-Ahead-Log is properly truncated after writes are flushed to L0
