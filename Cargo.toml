@@ -32,6 +32,7 @@ features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
+env_logger = "0.10"
 tempfile = "3"
 tracing-tracy = "0.10"
 tracing-subscriber = { version="0.3", default-features=false }
