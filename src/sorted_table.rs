@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::data_blocks::{
     DataBlock, DataBlockBuilder, DataBlockId, DataBlocks, DataEntry, DataEntryType, PrefixedKey,
 };
@@ -36,7 +38,8 @@ pub enum ValueResult<'a> {
     NoValue,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
@@ -262,7 +265,8 @@ impl TableIterator {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
         self.block_pos > self.table.index.num_data_blocks()
@@ -388,7 +392,7 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         self.allowed_seeks.fetch_sub(1, Ordering::Relaxed);
 
@@ -413,8 +417,14 @@ mod tests {
 
     use tempfile::tempdir;
 
+    #[cfg(feature = "async-io")]
+    use tokio_uring::test as async_test;
+
+    #[cfg(not(feature = "async-io"))]
+    use tokio::test as async_test;
+
     #[cfg(feature = "wisckey")]
-    #[tokio::test]
+    #[async_test]
     async fn iterate() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
@@ -458,7 +468,7 @@ mod tests {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tokio::test]
+    #[async_test]
     async fn iterate() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
@@ -502,7 +512,7 @@ mod tests {
     }
 
     #[cfg(feature = "wisckey")]
-    #[tokio::test]
+    #[async_test]
     async fn iterate_many() {
         const COUNT: u32 = 5_000;
 

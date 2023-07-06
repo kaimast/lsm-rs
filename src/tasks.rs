@@ -14,6 +14,13 @@ use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
 
+#[cfg(feature = "async-io")]
+#[async_trait(?Send)]
+pub trait Task {
+    async fn run(&self) -> Result<bool, Error>;
+}
+
+#[cfg(not(feature = "async-io"))]
 #[async_trait]
 pub trait Task: Sync + Send {
     async fn run(&self) -> Result<bool, Error>;
@@ -80,7 +87,8 @@ impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
@@ -91,7 +99,8 @@ impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         Ok(self.datastore.do_level_compaction().await?)
@@ -152,11 +161,12 @@ impl TaskHandle {
             }
 
             let did_work = self.task.run().await?;
+            last_update = now;
 
             if did_work {
-                last_update = now;
                 idle = false;
             } else {
+                log::trace!("Task did not do any work");
                 idle = true;
             }
         }
@@ -186,7 +196,15 @@ impl TaskManager {
             ));
             let future = {
                 let hdl = hdl.clone();
-                let future = tokio::spawn(async move { hdl.work_loop().await });
+                let task = async move { hdl.work_loop().await };
+
+                cfg_if::cfg_if! {
+                    if #[cfg(feature="async-io")] {
+                        let future = tokio_uring::spawn(task);
+                    } else {
+                        let future = tokio::spawn(task);
+                    }
+                }
 
                 StdMutex::new(Some(future))
             };
@@ -210,7 +228,15 @@ impl TaskManager {
                 ));
                 let future = {
                     let hdl = hdl.clone();
-                    let future = tokio::spawn(async move { hdl.work_loop().await });
+                    let task = async move { hdl.work_loop().await };
+
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature="async-io")] {
+                            let future = tokio_uring::spawn(task);
+                        } else {
+                            let future = tokio::spawn(task);
+                        }
+                    }
 
                     StdMutex::new(Some(future))
                 };
@@ -229,6 +255,7 @@ impl TaskManager {
         Self { stop_flag, tasks }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn wake_up(&self, task_type: &TaskType) {
         let task_group = self.tasks.get(task_type).expect("No such task");
         task_group.condition.wake_up().await;

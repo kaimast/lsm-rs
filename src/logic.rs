@@ -18,9 +18,6 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-#[cfg(feature = "async-io")]
-use tokio::fs;
-
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
@@ -91,8 +88,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
                     cfg_if! {
                         if #[ cfg(feature="async-io") ] {
-                            fs::remove_dir_all(&params.db_path)
-                                .await.expect("Failed to remove existing database");
+                            // Not yet supported in tokio_uring
+                            std::fs::remove_dir_all(&params.db_path)
+                                .expect("Failed to remove existing database");
                         } else {
                             fs::remove_dir_all(&params.db_path)
                                 .expect("Failed to remove existing database");
@@ -112,7 +110,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         if create {
             cfg_if! {
                 if #[ cfg(feature="async-io") ] {
-                    match fs::create_dir(&params.db_path).await {
+                    // Not yet supported in tokio_uring
+                    match std::fs::create_dir(&params.db_path) {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
@@ -263,7 +262,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(feature = "wisckey")]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -328,7 +327,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -398,7 +397,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, write_batch, opt))]
     pub async fn write_opts(
         &self,
         mut write_batch: WriteBatch<K, V>,
@@ -461,11 +460,16 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
+        log::trace!("Attempting memtable compaction");
+
         let mut wal = self.wal.lock().await;
         let mut imm_mems = self.imm_memtables.lock().await;
 
         if let Some((log_offset, mem)) = imm_mems.pop_front() {
+            log::trace!("Found memtable to compact");
+
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.get(0).unwrap();
@@ -528,6 +532,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             Ok(true)
         } else {
+            log::trace!("Found no memtable to compact");
             Ok(false)
         }
     }
@@ -537,14 +542,19 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
         let mut was_locked = false;
+        log::trace!("Attempting level compaction");
 
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels - 1 {
                 match self.compact_level(level_pos as LevelId, level).await? {
-                    CompactResult::DidWork => return Ok(true),
+                    CompactResult::DidWork => {
+                        log::trace!("Compacted level {level_pos}");
+                        return Ok(true);
+                    }
                     CompactResult::Locked => {
+                        log::trace!("Cannot compact level {level_pos} right now; lock was held");
                         was_locked = true;
                     }
                     CompactResult::NothingToDo => {}
@@ -553,7 +563,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         // We'll try again if it was locked
-        Ok(!was_locked)
+        Ok(was_locked)
     }
 
     #[tracing::instrument(skip(self, level))]

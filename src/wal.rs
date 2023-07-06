@@ -2,16 +2,20 @@ use crate::memtable::Memtable;
 use crate::Params;
 use crate::WriteOp;
 
-use std::collections::VecDeque;
-use std::io::IoSlice;
 use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "async-io")]
-use tokio::fs::{remove_file, File, OpenOptions};
+use tokio_uring::buf::BoundedBuf;
+
+#[cfg(not(feature = "async-io"))]
+use std::collections::VecDeque;
+
+#[cfg(not(feature = "async-io"))]
+use std::io::IoSlice;
 
 #[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_uring::fs::{remove_file, File, OpenOptions};
 
 use std::convert::TryInto;
 
@@ -23,17 +27,21 @@ use std::io::{Read, Seek, Write};
 
 use cfg_if::cfg_if;
 
+/// The log is split individual files (pages) that can be
+/// garbage collected once the logged data is not needed anymore
 const PAGE_SIZE: u64 = 4 * 1024;
 
+/// The write-ahead log keeps track of the most recent changes
+/// It can be used to recover from crashes
 #[derive(Debug)]
 pub struct WriteAheadLog {
     params: Arc<Params>,
-    // The current log file
+    /// The current log file
     log_file: File,
-    // Everything below offset can be garbage collected
+    /// Everything below offset can be garbage collected
     offset: u64,
-    // The absolute position of the log we are at
-    // (must be >= offset)
+    /// The absolute position of the log we are at
+    /// (must be >= offset)
     position: u64,
 }
 
@@ -57,14 +65,13 @@ impl WriteAheadLog {
         let mut count: usize = 0;
 
         let fpos = position / PAGE_SIZE;
-        let file_offset = position % PAGE_SIZE;
-
-        let mut log_file = Self::open_file(&params, fpos).await?;
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                log_file.seek(futures::io::SeekFrom::Start(file_offset)).await.unwrap();
+                let log_file = Self::open_file(&params, fpos).await?;
             } else {
+                let file_offset = position % PAGE_SIZE;
+                let mut log_file = Self::open_file(&params, fpos).await?;
                 log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
             }
         }
@@ -111,12 +118,40 @@ impl WriteAheadLog {
             count += 1;
         }
 
-        log::debug!("Found {} entries in Write-Ahead-Log", count);
+        log::debug!("Found {count} entries in Write-Ahead-Log");
 
         Ok(obj)
     }
 
     /// Stores an operation and returns the new position in the logfile
+    #[cfg(feature = "async-io")]
+    #[tracing::instrument(skip(self))]
+    pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
+        let op_type = op.get_type().to_le_bytes();
+
+        let key = op.get_key();
+        let klen = op.get_key_length().to_le_bytes();
+        let vlen = op.get_value_length().to_le_bytes();
+
+        let mut data = vec![];
+        data.extend_from_slice(op_type.as_slice());
+        data.extend_from_slice(klen.as_slice());
+        data.extend_from_slice(key);
+
+        match op {
+            WriteOp::Put(_, value) => {
+                data.extend_from_slice(vlen.as_slice());
+                data.extend_from_slice(value);
+            }
+            WriteOp::Delete(_) => {}
+        }
+
+        self.write_all(data).await?;
+        Ok(self.position)
+    }
+
+    #[cfg(not(feature = "async-io"))]
+    #[tracing::instrument(skip(self))]
     pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
         // we do not use serde here to avoid copying data
 
@@ -165,7 +200,9 @@ impl WriteAheadLog {
 
             cfg_if! {
                 if #[cfg(feature="async-io")] {
-                    let read_result = self.log_file.read_exact(read_slice).await;
+                    let buf = vec![0u8; read_slice.len()];
+                    let (read_result, buf) = self.log_file.read_exact_at(buf, self.position).await;
+                    read_slice.copy_from_slice(&buf);
                 } else {
                     let read_result = self.log_file.read_exact(read_slice);
                 }
@@ -208,6 +245,41 @@ impl WriteAheadLog {
         Ok(true)
     }
 
+    #[cfg(feature = "async-io")]
+    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
+        let mut buf_pos = 0;
+        while buf_pos < data.len() {
+            let mut file_offset = self.position % PAGE_SIZE;
+
+            // Figure out how much we can fit into the current file
+            assert!(file_offset < PAGE_SIZE);
+
+            let page_remaining = PAGE_SIZE - file_offset;
+            let buffer_remaining = data.len() - buf_pos;
+            let write_len = (buffer_remaining).min(page_remaining as usize);
+
+            let to_write = data.slice(buf_pos..buf_pos + write_len);
+            let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+            res.expect("Failed to write to log file");
+
+            data = buf.into_inner();
+            buf_pos += write_len;
+            self.position += write_len as u64;
+            file_offset += write_len as u64;
+
+            assert!(file_offset <= PAGE_SIZE);
+
+            // Create a new file?
+            if file_offset == PAGE_SIZE {
+                let file_pos = self.position / PAGE_SIZE;
+                self.log_file = Self::create_file(&self.params, file_pos).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "async-io"))]
     async fn write_all_vectored<'a>(
         &mut self,
         mut buffers: VecDeque<IoSlice<'a>>,
@@ -218,6 +290,8 @@ impl WriteAheadLog {
             let mut file_offset = self.position % PAGE_SIZE;
             let mut to_write = vec![];
             let mut advance_by = None;
+
+            let start = file_offset;
 
             // Figure out how much we can fit into the current file
             while let Some(buffer) = buffers.pop_front() {
@@ -256,18 +330,15 @@ impl WriteAheadLog {
             if !to_write.is_empty() {
                 cfg_if! {
                     if #[ cfg(feature="async-io") ] {
-                        // TODO Not supported yet by tokio...
-                        // self.log_file.write_all_vectored(&mut to_write)
-                        //   .await.expect("Failed to write to log file");
-
-                        for slice in to_write.into_iter() {
-                            self.log_file.write_all(&slice[..]).await
-                                .expect("Failed to write to log file");
-                        }
+                        let (res, buf) = self.log_file.writev_at_all(to_write, start).await;
+                        buf.expect("Failed to write to log file");
+                        to_write = buf;
                     } else {
                         // Try doing one write syscall if possible
                         self.log_file.write_all_vectored(&mut to_write)
                             .expect("Failed to write to log file");
+
+                        let _ = start;
                     }
                 }
 
@@ -293,7 +364,7 @@ impl WriteAheadLog {
         let fpath = params
             .db_path
             .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
-        log::trace!("Creating new log file at {:?}", fpath);
+        log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -308,7 +379,7 @@ impl WriteAheadLog {
         let fpath = params
             .db_path
             .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-        log::trace!("Opening file at {:?}", fpath);
+        log::trace!("Opening file at {fpath:?}");
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -355,13 +426,19 @@ impl WriteAheadLog {
                 .params
                 .db_path
                 .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-            log::trace!("Removing file {:?}", fpath);
+            log::trace!("Removing file {fpath:?}");
 
             cfg_if! {
                 if #[cfg(feature="async-io") ] {
-                    remove_file(fpath).await.expect("Failed to remove log file");
+                    remove_file(&fpath).await
+                        .unwrap_or_else(|err| {
+                            panic!("Failed to remove log file {fpath:?}: {err}");
+                        });
                 } else {
-                    remove_file(fpath).expect("Failed to remove log file");
+                    remove_file(&fpath)
+                        .unwrap_or_else(|err| {
+                            panic!("Failed to remove log file {fpath:?}: {err}");
+                        });
                 }
             }
         }

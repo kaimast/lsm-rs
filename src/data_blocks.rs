@@ -5,6 +5,8 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
 use lru::LruCache;
 
 use crate::manifest::{Manifest, SeqNumber};
@@ -12,14 +14,12 @@ use crate::sorted_table::Key;
 use crate::Params;
 use crate::{disk, Error, WriteOp};
 
-use tokio::sync::Mutex;
-
 #[cfg(feature = "wisckey")]
 use crate::values::{ValueBatchId, ValueId, ValueOffset};
 
 pub type DataBlockId = u64;
 
-const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 #[derive(Debug)]
 pub struct PrefixedKey {
@@ -201,26 +201,24 @@ impl DataBlockBuilder {
         self.data.extend_from_slice(&skey_len[..]);
         self.data.append(&mut key.suffix);
 
-        #[cfg(feature = "wisckey")]
-        {
-            let block_id = value_ref.0.to_le_bytes();
-            let offset = value_ref.1.to_le_bytes();
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "wisckey")] {
+                let block_id = value_ref.0.to_le_bytes();
+                let offset = value_ref.1.to_le_bytes();
 
-            self.data.extend_from_slice(&seq_number[..]);
-            self.data.extend_from_slice(&[entry_type]);
-            self.data.extend_from_slice(&block_id[..]);
-            self.data.extend_from_slice(&offset[..]);
-        }
+                self.data.extend_from_slice(&seq_number[..]);
+                self.data.extend_from_slice(&[entry_type]);
+                self.data.extend_from_slice(&block_id[..]);
+                self.data.extend_from_slice(&offset[..]);
+            } else {
+                let entry_len = std::mem::size_of::<SeqNumber>() + 1 + entry_data.len();
 
-        #[cfg(not(feature = "wisckey"))]
-        {
-            let entry_len = std::mem::size_of::<SeqNumber>() + 1 + entry_data.len();
-
-            let mut entry_len = (entry_len as DataLen).to_le_bytes().to_vec();
-            self.data.append(&mut entry_len);
-            self.data.extend_from_slice(&seq_number[..]);
-            self.data.extend_from_slice(&[entry_type]);
-            self.data.extend_from_slice(entry_data);
+                let mut entry_len = (entry_len as DataLen).to_le_bytes().to_vec();
+                self.data.append(&mut entry_len);
+                self.data.extend_from_slice(&seq_number[..]);
+                self.data.extend_from_slice(&[entry_type]);
+                self.data.extend_from_slice(entry_data);
+            }
         }
 
         self.position += 1;
@@ -235,6 +233,7 @@ impl DataBlockBuilder {
 
         let rl_len_len = std::mem::size_of::<u32>();
         let restart_list_start = self.data.len() as u32;
+
         self.data[..rl_len_len].copy_from_slice(&restart_list_start.to_le_bytes());
 
         for restart_offset in self.restart_list.drain(..) {
@@ -288,7 +287,7 @@ impl DataBlocks {
 
     #[inline]
     fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
-        let fname = format!("key{:08}.data", block_id);
+        let fname = format!("key{block_id:08}.data");
         self.params.db_path.join(Path::new(&fname))
     }
 
@@ -297,7 +296,7 @@ impl DataBlocks {
         DataBlockBuilder::new(self_ptr)
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
 
@@ -318,14 +317,30 @@ impl DataBlocks {
     }
 }
 
-/*
- * The data layout is the following:
- * 1. 4 bytes marking where the restart l"ist starts
+/**
+ * For WiscKey the data layout is the following:
+ * 1. 4 bytes marking where the restart list starts
  * 2. Variable length of Block Entries, where each entry is:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
- *  - Fixed size value reference
+ *  - Fixed size value reference, with
+ *    - seq_number (8 bytes)
+ *    - entry type (1 byte)
+ *    - value block id
+ *    - offset
+ * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
+ *
+ * Otherwise:
+ * 1. 4 bytes marking where the restart list starts
+ * 2. Variable length of Block Entries, where each entry is:
+ *  - Key prefix len (4 bytes)
+ *  - Key suffix len (4 bytes)
+ *  - Variable length key suffix
+ *  - Value length (8 bytes)
+ *  - Entry Type (1 byte)
+ *  - Sequence number (8 bytes)
+ *  - Variable length value
  * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  */
 //TODO support data block layouts without prefixed keys
@@ -338,16 +353,20 @@ pub struct DataBlock {
 impl DataBlock {
     pub fn new_from_data(data: Vec<u8>) -> Self {
         let rls_len = std::mem::size_of::<u32>();
-        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap());
+        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
+
+        assert!(!data.is_empty(), "No data?");
+        assert!(restart_list_start <= data.len(), "Data corrupted?");
+
         Self {
             data,
-            restart_list_start: restart_list_start as usize,
+            restart_list_start,
         }
     }
 
     /// Get the key and entry at the specified offset (must be valid!)
     /// The third entry in this result is the new offset after the entry
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr))]
     pub fn get_offset(
         self_ptr: Arc<DataBlock>,
         offset: u32,
@@ -401,7 +420,7 @@ impl DataBlock {
         (kdata, entry, offset as u32)
     }
 
-    // Length of this block in bytes (without the reset list)
+    /// Length of this block in bytes (without the reset list)
     pub fn byte_len(&self) -> u32 {
         // "Cut-off" the beginning and end
         let rl_len_len = std::mem::size_of::<u32>();
@@ -429,7 +448,7 @@ impl DataBlock {
         u32::from_le_bytes(self.data[pos..pos + offset_len].try_into().unwrap()) - rl_len_len
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr, key))]
     fn binary_search(self_ptr: &Arc<DataBlock>, key: &[u8]) -> SearchResult {
         let rl_len = self_ptr.restart_list_len();
 
@@ -469,7 +488,7 @@ impl DataBlock {
         SearchResult::Range(start, end)
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr, key))]
     pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
         let (start, end) = match Self::binary_search(self_ptr, key) {
             SearchResult::ExactMatch(entry) => {
@@ -502,8 +521,14 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[cfg(feature = "async-io")]
+    use tokio_uring::test as async_test;
+
+    #[cfg(not(feature = "async-io"))]
+    use tokio::test as async_test;
+
     #[cfg(feature = "wisckey")]
-    #[tokio::test]
+    #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
@@ -549,7 +574,7 @@ mod tests {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tokio::test]
+    #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
         let mut params = Params::default();
