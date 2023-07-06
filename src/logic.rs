@@ -262,7 +262,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(feature = "wisckey")]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -327,7 +327,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -397,7 +397,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, write_batch, opt))]
     pub async fn write_opts(
         &self,
         mut write_batch: WriteBatch<K, V>,

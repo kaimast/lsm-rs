@@ -392,7 +392,7 @@ impl SortedTable {
         self.index.get_max()
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         self.allowed_seeks.fetch_sub(1, Ordering::Relaxed);
 

@@ -3,6 +3,7 @@ use clap::Parser;
 use tempfile::{Builder, TempDir};
 
 use tracing_subscriber::prelude::*;
+use tracing_tracy::TracyLayer;
 
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
@@ -20,7 +21,7 @@ struct Args {
 async fn bench_init<K: KvTrait, V: KvTrait>(args: &Args) -> (TempDir, Database<K, V>) {
     if args.enable_tracing {
         tracing_subscriber::registry()
-            .with(tracing_tracy::TracyLayer::new())
+            .with(TracyLayer::new())
             .init();
     }
 

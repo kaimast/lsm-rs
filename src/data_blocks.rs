@@ -5,6 +5,8 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
 use lru::LruCache;
 
 use crate::manifest::{Manifest, SeqNumber};
@@ -12,14 +14,11 @@ use crate::sorted_table::Key;
 use crate::Params;
 use crate::{disk, Error, WriteOp};
 
-use tokio::sync::Mutex;
-
 #[cfg(feature = "wisckey")]
 use crate::values::{ValueBatchId, ValueId, ValueOffset};
 
 pub type DataBlockId = u64;
-
-const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 #[derive(Debug)]
 pub struct PrefixedKey {
@@ -297,7 +296,7 @@ impl DataBlocks {
         DataBlockBuilder::new(self_ptr)
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
 
@@ -347,7 +346,7 @@ impl DataBlock {
 
     /// Get the key and entry at the specified offset (must be valid!)
     /// The third entry in this result is the new offset after the entry
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr))]
     pub fn get_offset(
         self_ptr: Arc<DataBlock>,
         offset: u32,
@@ -429,7 +428,7 @@ impl DataBlock {
         u32::from_le_bytes(self.data[pos..pos + offset_len].try_into().unwrap()) - rl_len_len
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr, key))]
     fn binary_search(self_ptr: &Arc<DataBlock>, key: &[u8]) -> SearchResult {
         let rl_len = self_ptr.restart_list_len();
 
@@ -469,7 +468,7 @@ impl DataBlock {
         SearchResult::Range(start, end)
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr, key))]
     pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
         let (start, end) = match Self::binary_search(self_ptr, key) {
             SearchResult::ExactMatch(entry) => {
