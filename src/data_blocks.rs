@@ -328,7 +328,7 @@ impl DataBlocks {
  *    - entry type (1 byte)
  *    - value block id
  *    - offset
-  * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
+ * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  *
  * Otherwise:
  * 1. 4 bytes marking where the restart list starts

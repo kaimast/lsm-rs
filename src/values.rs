@@ -428,7 +428,7 @@ impl ValueLog {
             let prefix_len = fold_flag_len + num_vals_len + (num_values as usize);
             let mut prefix = vec![0u8; prefix_len];
             prefix[0] = fold_flag;
-            prefix[fold_flag_len..fold_flag_len+num_vals_len]
+            prefix[fold_flag_len..fold_flag_len + num_vals_len]
                 .copy_from_slice(&num_values.to_le_bytes());
 
             let nsize = std::mem::size_of::<u32>();
