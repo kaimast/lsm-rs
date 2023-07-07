@@ -536,7 +536,7 @@ impl ValueLog {
             let df_offset = HEADER_LEN + (num_values as u64);
 
             let (offset, fold_table) = if is_folded {
-                log::trace!("Loading fold table for batch #{}", identifier);
+                log::trace!("Loading fold table for batch #{identifier}");
 
                 let mut fold_table = HashMap::new();
                 let mut data = vec![0u8; size_of::<u32>() * (num_values as usize)];

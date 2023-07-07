@@ -38,8 +38,6 @@ struct TaskHandle {
     update_cond: Arc<UpdateCond>,
 }
 
-type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
-
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
 pub struct TaskManager {
@@ -51,7 +49,8 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-    tasks: Vec<(StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
+    #[allow(dead_code)]
+    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
@@ -137,7 +136,7 @@ impl TaskHandle {
         !self.stop_flag.load(Ordering::SeqCst)
     }
 
-    async fn work_loop(&self) -> Result<(), Error> {
+    async fn work_loop(&self) {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
 
@@ -160,7 +159,8 @@ impl TaskHandle {
                 break;
             }
 
-            let did_work = self.task.run().await?;
+            let did_work = self.task.run().await
+                .expect("Task failed");
             last_update = now;
 
             if did_work {
@@ -172,7 +172,6 @@ impl TaskHandle {
         }
 
         log::trace!("Task work loop ended");
-        Ok(())
     }
 }
 
@@ -194,23 +193,23 @@ impl TaskManager {
                 memtable_update_cond.clone(),
                 MemtableCompactionTask::new_boxed(datastore.clone(), level_update_cond.clone()),
             ));
-            let future = {
+            {
                 let hdl = hdl.clone();
                 let task = async move { hdl.work_loop().await };
 
                 cfg_if::cfg_if! {
                     if #[cfg(feature="async-io")] {
-                        let future = tokio_uring::spawn(task);
+                        unsafe {
+                            tokio_uring_executor::unsafe_spawn(task);
+                        }
                     } else {
-                        let future = tokio::spawn(task);
+                        tokio::spawn(task);
                     }
                 }
-
-                StdMutex::new(Some(future))
-            };
+            }
 
             let task_group = TaskGroup {
-                tasks: vec![(future, hdl)],
+                tasks: vec![StdMutex::new(hdl)],
                 condition: memtable_update_cond,
             };
 
@@ -226,22 +225,22 @@ impl TaskManager {
                     level_update_cond.clone(),
                     LevelCompactionTask::new_boxed(datastore.clone()),
                 ));
-                let future = {
+                {
                     let hdl = hdl.clone();
                     let task = async move { hdl.work_loop().await };
 
                     cfg_if::cfg_if! {
                         if #[cfg(feature="async-io")] {
-                            let future = tokio_uring::spawn(task);
+                            unsafe {
+                                tokio_uring_executor::unsafe_spawn(task);
+                            }
                         } else {
-                            let future = tokio::spawn(task);
+                            tokio::spawn(task);
                         }
                     }
+                }
 
-                    StdMutex::new(Some(future))
-                };
-
-                compaction_tasks.push((future, hdl));
+                compaction_tasks.push(StdMutex::new(hdl));
             }
 
             let task_group = TaskGroup {
@@ -265,12 +264,17 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
+            task_group.condition.condition.notify_all();
+        }
+
+    /*
+        for (_, task_group) in self.tasks.iter() {
             for (fut, _) in task_group.tasks.iter() {
                 if let Some(future) = fut.lock().take() {
                     future.abort();
                 }
             }
-        }
+        }*/
     }
 
     pub async fn stop_all(&self) -> Result<(), Error> {
@@ -281,7 +285,7 @@ impl TaskManager {
         for (_, task_group) in self.tasks.iter() {
             task_group.condition.condition.notify_all();
         }
-
+/*
         for (_, task_group) in self.tasks.iter() {
             for (join_hdl, _) in task_group.tasks.iter() {
                 let inner = join_hdl.lock().take();
@@ -293,7 +297,7 @@ impl TaskManager {
                     }
                 }
             }
-        }
+        }*/
 
         Ok(())
     }
