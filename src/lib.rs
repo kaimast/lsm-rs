@@ -1,7 +1,5 @@
 #![feature(trait_alias)]
-#![feature(write_all_vectored)]
 #![feature(get_mut_unchecked)]
-#![feature(io_slice_advance)]
 #![feature(let_chains)]
 #![feature(const_option)]
 // Temporary workaround for the io_uring code
