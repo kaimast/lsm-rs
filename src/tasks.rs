@@ -49,8 +49,8 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-    #[allow(dead_code)]
-    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
+//    #[allow(dead_code)]
+//    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
@@ -209,7 +209,7 @@ impl TaskManager {
             }
 
             let task_group = TaskGroup {
-                tasks: vec![StdMutex::new(hdl)],
+                //tasks: vec![StdMutex::new(hdl)],
                 condition: memtable_update_cond,
             };
 
@@ -244,7 +244,7 @@ impl TaskManager {
             }
 
             let task_group = TaskGroup {
-                tasks: compaction_tasks,
+                //tasks: compaction_tasks,
                 condition: level_update_cond,
             };
 
