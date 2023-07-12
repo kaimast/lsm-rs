@@ -436,7 +436,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
 
-            let wal_offset = wal.get_log_position();
+            let wal_offset = wal.get_log_position().await;
 
             // Drop lock to write-ahead lock so compaction can continue while we are waiting
             // (compaction flushes the WAL)

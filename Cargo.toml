@@ -1,6 +1,6 @@
 [package]
 name = "lsm"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
 edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
@@ -50,7 +50,7 @@ snappy-compression = ["snap"]
 async = []
 sync = []
 wisckey = []
-async-io = ["tokio-uring", "tokio-uring-executor"]
+async-io = ["async", "tokio-uring", "tokio-uring-executor"]
 
 [[test]]
 name = "sync-basic"
@@ -66,6 +66,12 @@ required-features = ["sync"]
 name = "async-basic"
 path = "tests/async/basic.rs"
 required-features = ["async"]
+
+[[test]]
+name = "async-reopen"
+path = "tests/async/reopen.rs"
+required-features = ["async"]
+
 
 [[example]]
 name = "lsm-benchmark"

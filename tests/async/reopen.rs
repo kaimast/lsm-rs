@@ -1,7 +1,13 @@
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 use tempfile::{Builder, TempDir};
 
-fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
+#[cfg(feature = "async-io")]
+use tokio_uring_executor::test as async_test;
+
+#[cfg(not(feature = "async-io"))]
+use tokio::test as async_test;
+
+async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
     let tmp_dir = Builder::new().prefix("lsm-sync-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -13,45 +19,48 @@ fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
         ..Default::default()
     };
     let database = Database::new_with_params(StartMode::CreateOrOverride, params.clone())
+        .await
         .expect("Failed to create database instance");
 
     (tmp_dir, params, database)
 }
 
-#[test]
-fn get_put() {
-    let (_tmpdir, params, database) = test_init();
+#[async_test]
+async fn get_put() {
+    let (_tmpdir, params, database) = test_init().await;
 
     let key1 = String::from("Foo");
     let value1 = String::from("Bar");
     let value2 = String::from("Baz");
 
-    assert_eq!(database.get(&key1).unwrap(), None);
+    assert_eq!(database.get(&key1).await.unwrap(), None);
 
-    database.put(&key1, &value1).unwrap();
+    database.put(&key1, &value1).await.unwrap();
     drop(database);
 
     // Reopen
     let database = Database::new_with_params(StartMode::Open, params.clone())
+        .await
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).unwrap(), Some(value1.clone()));
-    database.put(&key1, &value2).unwrap();
+    assert_eq!(database.get(&key1).await.unwrap(), Some(value1.clone()));
+    database.put(&key1, &value2).await.unwrap();
 
     drop(database);
 
     // Reopen again
     let database = Database::new_with_params(StartMode::Open, params)
+        .await
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).unwrap(), Some(value2.clone()));
+    assert_eq!(database.get(&key1).await.unwrap(), Some(value2.clone()));
 }
 
-#[test]
-fn get_put_many() {
+#[async_test]
+async fn get_put_many() {
     const COUNT: u64 = 100_000;
 
-    let (_tmpdir, params, database) = test_init();
+    let (_tmpdir, params, database) = test_init().await;
 
     // Write without fsync to speed up tests
     let mut options = WriteOptions::default();
@@ -60,18 +69,19 @@ fn get_put_many() {
     for pos in 0..COUNT {
         let key = pos;
         let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).unwrap();
+        database.put_opts(&key, &value, &options).await.unwrap();
     }
 
     drop(database);
 
     // Reopen
     let database = Database::new_with_params(StartMode::Open, params.clone())
+        .await
         .expect("Failed to create database instance");
 
     for pos in 0..COUNT {
         assert_eq!(
-            database.get(&pos).unwrap(),
+            database.get(&pos).await.unwrap(),
             Some(format!("some_string_{pos}"))
         );
     }

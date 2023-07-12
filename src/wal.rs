@@ -13,12 +13,6 @@ use tokio_uring_executor as executor;
 #[cfg(feature = "async-io")]
 use tokio_uring::buf::BoundedBuf;
 
-#[cfg(not(feature = "async-io"))]
-use std::collections::VecDeque;
-
-#[cfg(not(feature = "async-io"))]
-use std::io::IoSlice;
-
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{remove_file, File, OpenOptions};
 
@@ -78,12 +72,6 @@ struct WalWriter {
 /// The write-ahead log keeps track of the most recent changes
 /// It can be used to recover from crashes
 pub struct WriteAheadLog {
-    /// The absolute position of the log we are at
-    /// (must be >= offset)
-    ///
-    /// TODO: remove this in favor of write_pos?
-    position: u64,
-
     inner: Arc<LogInner>,
 }
 
@@ -128,9 +116,10 @@ impl WalWriter {
                 let to_write = { std::mem::take(&mut lock.queue) };
                 let sync_flag = lock.sync_flag;
 
-                let new_offset = if lock.offset_pos > lock.sync_pos {
-                    Some((lock.offset_pos, lock.sync_pos))
+                let new_offset = if lock.offset_pos > lock.flush_pos {
+                    Some((lock.offset_pos, lock.flush_pos))
                 } else {
+                    assert_eq!(lock.offset_pos, lock.flush_pos);
                     None
                 };
 
@@ -217,19 +206,18 @@ impl WalWriter {
     }
 
     async fn sync(&mut self) {
-        println!("Got sync request");
-
         cfg_if! {
             if #[cfg(feature="async-io") ] {
                 self.log_file.sync_data().await
                     .expect("Data sync failed");
             } else {
-                self.log_file.sync_data();
+                self.log_file.sync_data()
+                   .expect("Data sync failed");
             }
         }
     }
 
-    #[cfg(feature = "async-io")]
+    #[allow(unused_mut)]
     async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut buf_pos = 0;
         while buf_pos < data.len() {
@@ -243,12 +231,19 @@ impl WalWriter {
             let write_len = (buffer_remaining).min(page_remaining as usize);
 
             assert!(write_len > 0);
-            let to_write = data.slice(buf_pos..buf_pos + write_len);
+            cfg_if! {
+                if #[cfg(feature = "async-io")] {
+                    let to_write = data.slice(buf_pos..buf_pos + write_len);
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    res.expect("Failed to write to log file");
 
-            let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
-            res.expect("Failed to write to log file");
+                    data = buf.into_inner();
+                } else {
+                    let to_write = &data[buf_pos..buf_pos + write_len];
+                    self.log_file.write_all(to_write).expect("Failed to write log file");
+                }
+            }
 
-            data = buf.into_inner();
             buf_pos += write_len;
             self.position += write_len as u64;
             file_offset += write_len as u64;
@@ -269,7 +264,7 @@ impl WalWriter {
         let fpath = params
             .db_path
             .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
-        println!("Creating new log file at {fpath:?}");
+        log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -340,7 +335,7 @@ impl WriteAheadLog {
             }
         }
 
-        Ok(Self { inner, position: 0 })
+        Ok(Self { inner })
     }
 
     /// Open an existing log
@@ -449,7 +444,7 @@ impl WriteAheadLog {
             }
         }
 
-        Ok(Self { inner, position })
+        Ok(Self { inner })
     }
 
     async fn read_from_log(
@@ -577,85 +572,6 @@ impl WriteAheadLog {
 
         Ok(end_pos)
     }
-
-    #[cfg(not(feature = "async-io"))]
-    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
-        use std::cmp::Ordering;
-
-        while !buffers.is_empty() {
-            let mut file_offset = self.position % PAGE_SIZE;
-            let mut to_write = vec![];
-            let mut advance_by = None;
-
-            let start = file_offset;
-
-            // Figure out how much we can fit into the current file
-            while let Some(buffer) = buffers.pop_front() {
-                assert!(!buffer.is_empty());
-                assert!(file_offset < PAGE_SIZE);
-
-                let remaining = PAGE_SIZE - file_offset;
-
-                match buffer.len().cmp(&(remaining as usize)) {
-                    Ordering::Less => {
-                        to_write.push(buffer);
-
-                        self.position += buffer.len() as u64;
-                        file_offset += buffer.len() as u64;
-                    }
-                    Ordering::Equal => {
-                        to_write.push(buffer);
-
-                        self.position += buffer.len() as u64;
-                        file_offset += buffer.len() as u64;
-                        break;
-                    }
-                    Ordering::Greater => {
-                        buffers.push_front(buffer);
-                        to_write.push(IoSlice::new(&buffers[0][..(remaining as usize)]));
-
-                        advance_by = Some(remaining as usize);
-
-                        self.position += remaining;
-                        file_offset += remaining;
-                        break;
-                    }
-                }
-            }
-
-            if !to_write.is_empty() {
-                cfg_if! {
-                    if #[ cfg(feature="async-io") ] {
-                        let (res, buf) = self.log_file.writev_at_all(to_write, start).await;
-                        buf.expect("Failed to write to log file");
-                        to_write = buf;
-                    } else {
-                        // Try doing one write syscall if possible
-                        self.log_file.write_all_vectored(&mut to_write)
-                            .expect("Failed to write to log file");
-
-                        let _ = start;
-                    }
-                }
-
-                if let Some(offset) = advance_by.take() {
-                    IoSlice::advance(&mut buffers[0], offset);
-                }
-            }
-
-            assert!(advance_by.is_none());
-            assert!(file_offset <= PAGE_SIZE);
-
-            // Create a new file?
-            if file_offset == PAGE_SIZE {
-                let file_pos = self.position / PAGE_SIZE;
-                self.log_file = Self::create_file(&self.params, file_pos).await?;
-            }
-        }
-
-        Ok(())
-    }
-
     pub async fn sync(&mut self) -> Result<(), std::io::Error> {
         let last_pos = {
             let mut lock = self.inner.status.write().await;
@@ -688,19 +604,20 @@ impl WriteAheadLog {
         }
     }
 
-    pub fn get_log_position(&self) -> u64 {
-        self.position
+    pub async fn get_log_position(&self) -> u64 {
+        self.inner.status.read().await.write_pos
     }
 
     /// Once the memtable has been flushed we can remove old log entries
     pub async fn set_offset(&mut self, new_offset: u64) {
-        println!("SET OFFSET");
-
         {
             let mut lock = self.inner.status.write().await;
 
             if new_offset <= lock.offset_pos {
-                panic!("Invalid offset: can only be increased");
+                panic!(
+                    "Offset can only be increased! Requested {new_offset}, but was {}",
+                    lock.offset_pos
+                );
             }
 
             lock.offset_pos = new_offset;
