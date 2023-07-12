@@ -90,14 +90,15 @@ impl WalWriter {
 
     /// Start the writer at a specific position after opening a log
     async fn continue_from(position: u64, params: Arc<Params>) -> Self {
+        let fpos = position / PAGE_SIZE;
+
         let log_file = if position % PAGE_SIZE == 0 {
             // At the beginning of a new file
-            Self::create_file(&params, 0)
+            Self::create_file(&params, fpos)
                 .await
                 .expect("Failed to create WAL file")
         } else {
-            let offset = position % PAGE_SIZE;
-            Self::open_file(&params, offset)
+            Self::open_file(&params, fpos)
                 .await
                 .expect("Failed to create WAL file")
         };
@@ -458,6 +459,8 @@ impl WriteAheadLog {
         let buffer_len = out.len() as u64;
         let mut buffer_pos = 0;
 
+        assert!(buffer_len > 0);
+
         while buffer_pos < buffer_len {
             let mut file_offset = *position % PAGE_SIZE;
             let file_remaining = PAGE_SIZE - file_offset;
@@ -474,7 +477,7 @@ impl WriteAheadLog {
             cfg_if! {
                 if #[cfg(feature="async-io")] {
                     let buf = vec![0u8; read_slice.len()];
-                    let (read_result, buf) = log_file.read_exact_at(buf, *position).await;
+                    let (read_result, buf) = log_file.read_exact_at(buf, file_offset).await;
                     read_slice.copy_from_slice(&buf);
                 } else {
                     let read_result = log_file.read_exact(read_slice);
@@ -499,8 +502,11 @@ impl WriteAheadLog {
             buffer_pos = *position - start_pos;
 
             if file_offset == PAGE_SIZE {
-                // Try open next file
+                // Try to open next file
                 let fpos = *position / PAGE_SIZE;
+
+                println!("Next file: {fpos}");
+
                 *log_file = match WalWriter::open_file(params, fpos).await {
                     Ok(file) => file,
                     Err(err) => {

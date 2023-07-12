@@ -8,7 +8,10 @@ use tokio_uring_executor::test as async_test;
 use tokio::test as async_test;
 
 async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
-    let tmp_dir = Builder::new().prefix("lsm-sync-test-").tempdir().unwrap();
+    let tmp_dir = Builder::new()
+        .prefix("lsm-async-test-reopen-")
+        .tempdir()
+        .unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
 
     let mut db_path = tmp_dir.path().to_path_buf();
@@ -72,6 +75,7 @@ async fn get_put_many() {
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
+    database.synchronize().await.unwrap();
     drop(database);
 
     // Reopen
