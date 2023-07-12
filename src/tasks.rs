@@ -49,8 +49,8 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-//    #[allow(dead_code)]
-//    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
+    //    #[allow(dead_code)]
+    //    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
@@ -159,8 +159,7 @@ impl TaskHandle {
                 break;
             }
 
-            let did_work = self.task.run().await
-                .expect("Task failed");
+            let did_work = self.task.run().await.expect("Task failed");
             last_update = now;
 
             if did_work {
@@ -267,7 +266,7 @@ impl TaskManager {
             task_group.condition.condition.notify_all();
         }
 
-    /*
+        /*
         for (_, task_group) in self.tasks.iter() {
             for (fut, _) in task_group.tasks.iter() {
                 if let Some(future) = fut.lock().take() {
@@ -285,7 +284,7 @@ impl TaskManager {
         for (_, task_group) in self.tasks.iter() {
             task_group.condition.condition.notify_all();
         }
-/*
+        /*
         for (_, task_group) in self.tasks.iter() {
             for (join_hdl, _) in task_group.tasks.iter() {
                 let inner = join_hdl.lock().take();

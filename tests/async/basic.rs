@@ -310,6 +310,8 @@ async fn batched_write() {
 
     database.write(batch).await.unwrap();
 
+    println!("GET");
+
     for pos in 0..COUNT {
         let key = format!("key{}", pos);
         assert_eq!(database.get(&key).await.unwrap(), Some(pos));
