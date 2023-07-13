@@ -45,6 +45,10 @@ just test #runs all tests for all configurations
 just lint #runs cargo clippy
 ```
 
+## Notes on io-uring
+Currently, this uses [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a very simplistic multi-threaded wrapper around `tokio-uring`.
+Eventually `tokio-uring` will [support multiple threads natively](https://github.com/tokio-rs/tokio-uring/issues/258) and this workaround will be removed.
+
 ## Similar Crates
 * [rust-rocksdb](https://github.com/rust-rocksdb/rust-rocksdb): Rust bindings for RocksDB
 * [leveldb](https://github.com/skade/leveldb): Rust bindings for LevelDB

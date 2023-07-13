@@ -536,7 +536,7 @@ impl ValueLog {
             let df_offset = HEADER_LEN + (num_values as u64);
 
             let (offset, fold_table) = if is_folded {
-                log::trace!("Loading fold table for batch #{}", identifier);
+                log::trace!("Loading fold table for batch #{identifier}");
 
                 let mut fold_table = HashMap::new();
                 let mut data = vec![0u8; size_of::<u32>() * (num_values as usize)];
@@ -591,6 +591,7 @@ impl ValueLog {
         Ok(super::get_encoder().deserialize(val)?)
     }
 
+    #[allow(dead_code)]
     async fn is_batch_folded(&self, identifier: ValueBatchId) -> Result<bool, Error> {
         let fpath = self.get_file_path(&identifier);
         let mut data = vec![0u8; 1];
@@ -610,6 +611,7 @@ impl ValueLog {
         Ok(data[0] != 0u8)
     }
 
+    #[allow(dead_code)]
     async fn get_active_values_in_batch(&self, identifier: ValueBatchId) -> Result<u32, Error> {
         let fpath = self.get_file_path(&identifier);
         let mut data = vec![0u8; size_of::<u32>()];

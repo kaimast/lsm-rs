@@ -1,6 +1,6 @@
 [package]
 name = "lsm"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
 edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
@@ -23,7 +23,8 @@ tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = "0.1"
 #tokio-uring = { version="0.4", optional=true }
-tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", branch="master", optional=true }
+tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", optional=true }
+tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.git", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -49,7 +50,7 @@ snappy-compression = ["snap"]
 async = []
 sync = []
 wisckey = []
-async-io = ["tokio-uring"]
+async-io = ["async", "tokio-uring", "tokio-uring-executor"]
 
 [[test]]
 name = "sync-basic"
@@ -65,6 +66,12 @@ required-features = ["sync"]
 name = "async-basic"
 path = "tests/async/basic.rs"
 required-features = ["async"]
+
+[[test]]
+name = "async-reopen"
+path = "tests/async/reopen.rs"
+required-features = ["async"]
+
 
 [[example]]
 name = "lsm-benchmark"

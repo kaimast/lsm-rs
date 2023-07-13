@@ -6,7 +6,7 @@ use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 const SM: StartMode = StartMode::CreateOrOverride;
 
 #[cfg(feature = "async-io")]
-use tokio_uring::test as async_test;
+use tokio_uring_executor::test as async_test;
 
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
@@ -309,6 +309,8 @@ async fn batched_write() {
     }
 
     database.write(batch).await.unwrap();
+
+    println!("GET");
 
     for pos in 0..COUNT {
         let key = format!("key{}", pos);
