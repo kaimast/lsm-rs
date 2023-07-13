@@ -2,16 +2,16 @@ LOG_LEVEL := "debug"
 
 all: test lint
 
-test: sync-tests async-tests no-wisckey-tests no-compression-tests #async-io-tests
+test: sync-tests async-tests no-wisckey-tests no-compression-tests async-io-tests
 
 sync-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --features=sync
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync
 
 async-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --features=async
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async
 
 async-io-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --features=async,async-io
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,async-io -- --test-threads=1
 
 no-compression-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,wisckey
@@ -22,19 +22,31 @@ no-wisckey-tests:
 no-wisckey-sync-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,sync
 
-lint: sync-lint async-lint no-wisckey-lint async-io-lint
+lint: sync-lint async-lint wisckey-lint async-io-lint async-io-wisckey-lint
+
+fix-formatting:
+    cargo fmt
+
+check-formatting:
+    cargo fmt --check
 
 clean:
     rm -rf target/
 
+udeps:
+    cargo udeps --all-targets
+
 sync-lint:
-    cargo clippy --features=sync -- -D warnings
+    cargo clippy --no-default-features --features=sync -- -D warnings
 
 async-lint:
-    cargo clippy -- -D warnings
+    cargo clippy --no-default-features --features=async -- -D warnings
 
 async-io-lint:
-    cargo clippy --features=async-io -- -D warnings
+    cargo clippy --no-default-features --features=async,async-io -- -D warnings
 
-no-wisckey-lint:
-    cargo clippy --no-default-features --features=snappy-compression -- -D warnings
+wisckey-lint:
+    cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
+
+async-io-wisckey-lint:
+    cargo clippy --no-default-features --features=async-io,async,snappy-compression,wisckey -- -D warnings

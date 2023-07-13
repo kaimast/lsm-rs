@@ -1,15 +1,20 @@
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashSet;
-use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 
+//#[cfg(feature = "async-io")]
+//use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
 #[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_uring::fs::OpenOptions;
 
 #[cfg(not(feature = "async-io"))]
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
+
+#[cfg(not(feature = "async-io"))]
+use std::fs::OpenOptions;
 
 use tokio::sync::{Mutex, MutexGuard, RwLock};
 
@@ -73,7 +78,7 @@ impl Manifest {
 
         {
             let meta = obj.meta.write().await;
-            obj.sync_header(&*meta).await;
+            obj.sync_header(&meta).await;
         }
 
         {
@@ -81,7 +86,7 @@ impl Manifest {
             let mut tables = obj.tables.lock().await;
             tables.resize(obj.params.num_levels, HashSet::default());
 
-            obj.write_table_set(&*tables).await;
+            obj.write_table_set(&tables).await;
         }
 
         obj
@@ -94,13 +99,15 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
                     .open(manifest_path).await?;
 
-                file.read_to_end(&mut data).await?;
+                let (res, buf) = file.read_at_to_end(0, data).await;
+                res?;
+                data = buf;
             } else {
-                let mut file = std::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(false).create(false).truncate(false)
                     .open(manifest_path)?;
 
@@ -130,7 +137,7 @@ impl Manifest {
         let id = meta.next_data_block_id;
         meta.next_data_block_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -141,7 +148,7 @@ impl Manifest {
 
         meta.next_table_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -156,7 +163,7 @@ impl Manifest {
         assert!(meta.log_offset < offset);
 
         meta.log_offset = offset;
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
     }
 
     #[cfg(feature = "wisckey")]
@@ -171,7 +178,7 @@ impl Manifest {
         assert!(meta.value_log_offset < offset);
 
         meta.value_log_offset = offset;
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
@@ -190,7 +197,7 @@ impl Manifest {
         let id = meta.next_value_batch_id;
         meta.next_value_batch_id += 1;
 
-        self.sync_header(&*meta).await;
+        self.sync_header(&meta).await;
 
         id
     }
@@ -229,7 +236,7 @@ impl Manifest {
                 .remove(&id);
         }
 
-        self.write_table_set(&*tables).await;
+        self.write_table_set(&tables).await;
     }
 
     async fn write_table_set(&self, tables: &[LevelData]) {
@@ -240,17 +247,17 @@ impl Manifest {
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(manifest_path).await.expect("Failed to open MANIFEST file");
 
                 // Truncate old table list
-                file.set_len(header_len).await.unwrap();
-                file.seek(SeekFrom::Start(header_len)).await.unwrap();
+                //FIXME file.set_len(header_len).await.unwrap();
 
-                file.write_all(&data).await.unwrap();
+                let (res, _buf) = file.write_all_at(data, header_len).await;
+                res.unwrap();
             } else {
-                let mut file = std::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(manifest_path).expect("Failed to open MANIFEST file");
 
@@ -264,22 +271,21 @@ impl Manifest {
     }
 
     async fn sync_header(&self, meta: &MetaData) {
-        //TODO make this an atomic filesystem operation
+        //TODO make this an atomic file system operation
         let data = bincode::serialize(meta).unwrap();
         let manifest_path = self.params.db_path.join(Path::new(MANIFEST_NAME));
 
         cfg_if! {
             if #[cfg(feature="async-io") ] {
-                let mut file = tokio::fs::OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true).write(true).create(true).truncate(false)
                     .open(manifest_path).await
                     .expect("Failed to create or open MANIFEST file");
 
-                file.seek(SeekFrom::Start(0)).await.unwrap();
-                file.write_all(&data).await.unwrap();
-
+                let (res, _buf) = file.write_all_at(data, 0).await;
+                res.expect("Writing manifest failed");
             } else {
-                let mut file = match std::fs::OpenOptions::new()
+                let mut file = match OpenOptions::new()
                         .read(true).write(true).create(true).truncate(false)
                         .open(manifest_path) {
                     Ok(file) => file,

@@ -18,13 +18,11 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-#[cfg(feature = "async-io")]
-use tokio::fs;
-
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, RwLock};
+use tokio_condvar::Condvar;
 
 use bincode::Options;
 use cfg_if::cfg_if;
@@ -43,7 +41,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
     imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Notify,
+    imm_cond: Condvar,
     levels: Vec<Level>,
     wal: Mutex<WriteAheadLog>,
     level_logger: Option<LevelLogger>,
@@ -90,8 +88,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
                     cfg_if! {
                         if #[ cfg(feature="async-io") ] {
-                            fs::remove_dir_all(&params.db_path)
-                                .await.expect("Failed to remove existing database");
+                            // Not yet supported in tokio_uring
+                            std::fs::remove_dir_all(&params.db_path)
+                                .expect("Failed to remove existing database");
                         } else {
                             fs::remove_dir_all(&params.db_path)
                                 .expect("Failed to remove existing database");
@@ -111,7 +110,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         if create {
             cfg_if! {
                 if #[ cfg(feature="async-io") ] {
-                    match fs::create_dir(&params.db_path).await {
+                    // Not yet supported in tokio_uring
+                    match std::fs::create_dir(&params.db_path) {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
@@ -156,7 +156,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
         let imm_memtables = Mutex::new(VecDeque::new());
-        let imm_cond = Notify::new();
+        let imm_cond = Condvar::new();
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
         if params.num_levels == 0 {
@@ -207,14 +207,18 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
+        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+            assert!(min_key < max_key);
+        }
+
         {
             let memtable = self.memtable.read().await;
             let imm_mems = self.imm_memtables.lock().await;
 
-            mem_iters.push(memtable.clone_immutable().into_iter().await);
+            mem_iters.push(memtable.clone_immutable().into_iter(false).await);
 
             for (_, imm) in imm_mems.iter() {
-                let iter = imm.clone().into_iter().await;
+                let iter = imm.clone().into_iter(false).await;
                 mem_iters.push(iter);
             }
         }
@@ -238,7 +242,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
 
                 if !skip {
-                    let iter = TableIterator::new(table.clone()).await;
+                    let iter = TableIterator::new(table.clone(), false).await;
                     table_iters.push(iter);
                 }
             }
@@ -249,6 +253,74 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             table_iters,
             min_key,
             max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.value_log.clone(),
+            #[cfg(feature = "sync")]
+            tokio_rt,
+        )
+    }
+
+    /// Iterate over the specified range in reverse
+    pub async fn reverse_iter(
+        &self,
+        max_key: Option<&K>,
+        min_key: Option<&K>,
+        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
+    ) -> DbIterator<K, V> {
+        let mut table_iters = Vec::new();
+        let mut mem_iters = Vec::new();
+
+        let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
+        let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
+
+        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+            assert!(min_key < max_key);
+        };
+
+        {
+            let memtable = self.memtable.read().await;
+            let imm_mems = self.imm_memtables.lock().await;
+
+            mem_iters.push(memtable.clone_immutable().into_iter(true).await);
+
+            for (_, imm) in imm_mems.iter() {
+                let iter = imm.clone().into_iter(true).await;
+                mem_iters.push(iter);
+            }
+        }
+
+        for level in self.levels.iter() {
+            let tables = level.get_tables_ro().await;
+
+            for table in tables.iter() {
+                let mut skip = false;
+
+                if let Some(min_key) = &min_key {
+                    if table.get_max() < min_key.as_slice() {
+                        skip = true;
+                    }
+                }
+
+                if let Some(max_key) = &max_key {
+                    if table.get_min() > max_key.as_slice() {
+                        skip = true;
+                    }
+                }
+
+                if !skip {
+                    let iter = TableIterator::new(table.clone(), true).await;
+                    table_iters.push(iter);
+                }
+            }
+        }
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            true,
             #[cfg(feature = "wisckey")]
             self.value_log.clone(),
             #[cfg(feature = "sync")]
@@ -257,7 +329,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(feature = "wisckey")]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -322,7 +394,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     #[cfg(not(feature = "wisckey"))]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
         log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
@@ -392,7 +464,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, write_batch, opt))]
     pub async fn write_opts(
         &self,
         mut write_batch: WriteBatch<K, V>,
@@ -425,13 +497,13 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         // If the current memtable is full, mark it as immutable, so it can be flushed to L0
-        if mem_inner.is_full(&*self.params) {
+        if mem_inner.is_full(&self.params) {
             let mut imm_mems = self.imm_memtables.lock().await;
 
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
 
-            let wal_offset = wal.get_log_position();
+            let wal_offset = wal.get_log_position().await;
 
             // Drop lock to write-ahead lock so compaction can continue while we are waiting
             // (compaction flushes the WAL)
@@ -455,11 +527,16 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
+        log::trace!("Attempting memtable compaction");
+
         let mut wal = self.wal.lock().await;
         let mut imm_mems = self.imm_memtables.lock().await;
 
         if let Some((log_offset, mem)) = imm_mems.pop_front() {
+            log::trace!("Found memtable to compact");
+
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.get(0).unwrap();
@@ -518,10 +595,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             self.manifest.set_log_offset(log_offset).await;
 
             log::debug!("Created new L0 table");
-            self.imm_cond.notify_waiters();
+            self.imm_cond.notify_all();
 
             Ok(true)
         } else {
+            log::trace!("Found no memtable to compact");
             Ok(false)
         }
     }
@@ -531,14 +609,19 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
         let mut was_locked = false;
+        log::trace!("Attempting level compaction");
 
         // level-to-level compaction
         for (level_pos, level) in self.levels.iter().enumerate() {
             // Last level cannot be compacted
             if level_pos < self.params.num_levels - 1 {
                 match self.compact_level(level_pos as LevelId, level).await? {
-                    CompactResult::DidWork => return Ok(true),
+                    CompactResult::DidWork => {
+                        log::trace!("Compacted level {level_pos}");
+                        return Ok(true);
+                    }
                     CompactResult::Locked => {
+                        log::trace!("Cannot compact level {level_pos} right now; lock was held");
                         was_locked = true;
                     }
                     CompactResult::NothingToDo => {}
@@ -547,7 +630,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         // We'll try again if it was locked
-        Ok(!was_locked)
+        Ok(was_locked)
     }
 
     #[tracing::instrument(skip(self, level))]
@@ -660,11 +743,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         let mut table_iters = Vec::new();
         for table in parent_tables.iter() {
-            table_iters.push(TableIterator::new(table.clone()).await);
+            table_iters.push(TableIterator::new(table.clone(), false).await);
         }
 
         for child in child_tables.iter() {
-            table_iters.push(TableIterator::new(child.clone()).await);
+            table_iters.push(TableIterator::new(child.clone(), false).await);
         }
 
         let mut last_key: Option<Key> = None;

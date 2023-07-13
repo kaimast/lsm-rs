@@ -53,7 +53,7 @@ fn iterate() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
@@ -61,7 +61,7 @@ fn iterate() {
 
     for (pos, (key, val)) in database.iter().enumerate() {
         assert_eq!(pos as u64, key);
-        assert_eq!(val, format!("some_string_{}", pos));
+        assert_eq!(val, format!("some_string_{pos}"));
 
         count += 1;
     }
@@ -81,7 +81,7 @@ fn range_iterate() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
@@ -91,7 +91,39 @@ fn range_iterate() {
     while let Some((key, val)) = iter.next() {
         let real_pos = pos + 300;
         assert_eq!(real_pos as u64, key);
-        assert_eq!(format!("some_string_{}", real_pos), val);
+        assert_eq!(format!("some_string_{real_pos}"), val);
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 9850);
+
+    database.stop().unwrap();
+}
+
+#[test]
+fn range_iterate_reverse() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init();
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{pos}");
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    let mut pos = 0;
+    let mut iter = database.reverse_range_iter(&10150, &300);
+
+    while let Some((key, val)) = iter.next() {
+        let real_pos = 10150 - pos;
+        assert_eq!(real_pos as u64, key);
+        assert_eq!(format!("some_string_{real_pos}"), val);
 
         pos += 1;
     }
@@ -113,7 +145,7 @@ fn range_iterate_empty() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
@@ -139,14 +171,14 @@ fn get_put_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         assert_eq!(
             database.get(&pos).unwrap(),
-            Some(format!("some_string_{}", pos))
+            Some(format!("some_string_{pos}"))
         );
     }
 }
@@ -163,7 +195,7 @@ fn get_put_delete_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
@@ -189,22 +221,62 @@ fn override_many() {
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         let key = pos;
-        let value = format!("some_other_string_{}", pos);
+        let value = format!("some_other_string_{pos}");
         database.put_opts(&key, &value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         assert_eq!(
             database.get(&pos).unwrap(),
-            Some(format!("some_other_string_{}", pos))
+            Some(format!("some_other_string_{pos}"))
         );
     }
+}
+
+#[test]
+fn override_subset() {
+    const NCOUNT: u64 = 100_000;
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init();
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..NCOUNT {
+        let key = pos;
+        let value = format!("some_string_{pos}");
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_other_string_{pos}");
+        database.put_opts(&key, &value, &options).unwrap();
+    }
+
+    for pos in 0..COUNT {
+        assert_eq!(
+            database.get(&pos).unwrap(),
+            Some(format!("some_other_string_{pos}"))
+        );
+    }
+
+    for pos in COUNT..NCOUNT {
+        assert_eq!(
+            database.get(&pos).unwrap(),
+            Some(format!("some_string_{pos}"))
+        );
+    }
+
+    database.stop().unwrap();
 }
 
 #[test]
@@ -216,14 +288,14 @@ fn batched_write() {
     let mut batch = WriteBatch::new();
 
     for pos in 0..COUNT {
-        let key = format!("key{}", pos);
+        let key = format!("key{pos}");
         batch.put(&key, &pos);
     }
 
     database.write(batch).unwrap();
 
     for pos in 0..COUNT {
-        let key = format!("key{}", pos);
+        let key = format!("key{pos}");
         assert_eq!(database.get(&key).unwrap(), Some(pos));
     }
 }
