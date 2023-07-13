@@ -88,7 +88,7 @@ pub struct TableBuilder<'a> {
     last_key: Key,
     block_entry_count: usize,
     size: u64,
-    restart_count: usize,
+    restart_count: u32,
     index_key: Option<Key>,
 }
 
@@ -135,7 +135,7 @@ impl<'a> TableBuilder<'a> {
             .await
     }
 
-    #[cfg(featurreversee = "wisckey")]
+    #[cfg(feature = "wisckey")]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
         self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default())
             .await
@@ -258,16 +258,30 @@ impl TableIterator {
         let last_key = vec![];
 
         if reverse {
-            let block_id = table.index.get_block_id(0);
+            let num_blocks = table.index.num_data_blocks() as i64;
+            assert!(num_blocks > 0); // tables must have at least one data block
+
+            let block_id = table.index.get_block_id((num_blocks - 1) as usize);
             let first_block = table.data_blocks.get_block(&block_id).await;
-            let byte_len = first_block.byte_len();
-            let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+
+            let len = first_block.get_num_entries();
+            assert!(len > 0);
+            let (key, entry) = DataBlock::get_entry_at_index(first_block, len - 1);
 
             // Are we already at the end of the first block?
-            let (block_pos, block_offset) = if byte_len == entry_len {
-                (1, 0)
+            let (block_pos, block_offset) = if len == 1 {
+                let next_pos = num_blocks - 2;
+                if next_pos >= 0 {
+                    let block_id = table.index.get_block_id(next_pos as usize);
+                    let next_block = table.data_blocks.get_block(&block_id).await;
+                    let len = next_block.get_num_entries();
+                    assert!(len > 0);
+                    (next_pos, len - 1)
+                } else {
+                    (next_pos, 0)
+                }
             } else {
-                (0, entry_len)
+                (num_blocks - 1, len - 2)
             };
 
             Self {
@@ -279,17 +293,14 @@ impl TableIterator {
                 reverse,
             }
         } else {
-            let num_blocks = table.index.num_data_blocks() as i64;
-            assert!(num_blocks > 0); // tables must have at least one data block
-
-            let block_id = table.index.get_block_id((num_blocks - 1) as usize);
+            let block_id = table.index.get_block_id(0);
             let first_block = table.data_blocks.get_block(&block_id).await;
             let byte_len = first_block.byte_len();
             let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
 
             // Are we already at the end of the first block?
             let (block_pos, block_offset) = if byte_len == entry_len {
-                (num_blocks - 2, 0)
+                (1, 0)
             } else {
                 (0, entry_len)
             };
@@ -311,7 +322,7 @@ impl TableIterator {
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
         if self.reverse {
-            self.block_pos < 0
+            self.block_pos < -1
         } else {
             self.block_pos > self.table.index.num_data_blocks() as i64
         }
@@ -350,25 +361,36 @@ impl InternalIterator for TableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {
         if self.reverse {
-            if self.block_pos < 0 {
-                panic!("Cannot step(); already at end");
-            }
+            match self.block_pos.cmp(&(-1)) {
+                Ordering::Less => {
+                    panic!("Cannot step(); already at end");
+                }
+                Ordering::Equal => self.block_pos -= 1,
+                Ordering::Greater => {
+                    let block_id = self.table.index.get_block_id(self.block_pos as usize);
+                    let block = self.table.data_blocks.get_block(&block_id).await;
 
-            let block_id = self.table.index.get_block_id(self.block_pos as usize);
-            let block = self.table.data_blocks.get_block(&block_id).await;
-            let byte_len = block.byte_len();
+                    let (key, entry) =
+                        DataBlock::get_entry_at_index(block.clone(), self.block_offset);
 
-            let (key, entry, new_offset) =
-                DataBlock::get_entry_at_offset(block, self.block_offset, &self.key);
-            self.key = key;
-            self.entry = entry;
+                    self.key = key;
+                    self.entry = entry;
 
-            // At the end of the block?
-            if new_offset >= byte_len {
-                self.block_pos += 1;
-                self.block_offset = 0;
-            } else {
-                self.block_offset = new_offset;
+                    // At the end of the block?
+                    if self.block_offset == 0 {
+                        self.block_pos -= 1;
+
+                        if self.block_pos >= 0 {
+                            let block_id = self.table.index.get_block_id(self.block_pos as usize);
+                            let block = self.table.data_blocks.get_block(&block_id).await;
+                            self.block_offset = block.get_num_entries() - 1;
+                        } else {
+                            self.block_offset = 0;
+                        }
+                    } else {
+                        self.block_offset -= 1;
+                    }
+                }
             }
         } else {
             let num_blocks = self.table.index.num_data_blocks() as i64;
@@ -524,7 +546,7 @@ mod tests {
 
         let table = builder.finish().await.unwrap();
 
-        let mut iter = TableIterator::new(Arc::new(table)).await;
+        let mut iter = TableIterator::new(Arc::new(table), false).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);
@@ -585,6 +607,50 @@ mod tests {
         assert_eq!(iter.at_end(), true);
     }
 
+    #[cfg(not(feature = "wisckey"))]
+    #[async_test]
+    async fn reverse_iterate() {
+        let dir = tempdir().unwrap();
+        let mut params = Params::default();
+        params.db_path = dir.path().to_path_buf();
+
+        let params = Arc::new(params);
+        let manifest = Arc::new(Manifest::new(params.clone()).await);
+
+        let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
+
+        let key1 = vec![5];
+        let key2 = vec![15];
+
+        let value1 = vec![4, 2];
+        let value2 = vec![4, 50];
+
+        let id = 124234;
+        let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
+
+        builder.add_value(&key1, 1, &value1).await.unwrap();
+
+        builder.add_value(&key2, 4, &value2).await.unwrap();
+
+        let table = Arc::new(builder.finish().await.unwrap());
+
+        let mut iter = TableIterator::new(table, true).await;
+
+        assert_eq!(iter.at_end(), false);
+        assert_eq!(iter.get_key(), &key2);
+        assert_eq!(iter.get_value(), Some(&value2 as &[u8]));
+
+        iter.step().await;
+
+        assert_eq!(iter.at_end(), false);
+        assert_eq!(iter.get_key(), &key1);
+        assert_eq!(iter.get_value(), Some(&value1 as &[u8]));
+
+        iter.step().await;
+
+        assert_eq!(iter.at_end(), true);
+    }
+
     #[cfg(feature = "wisckey")]
     #[async_test]
     async fn iterate_many() {
@@ -614,7 +680,7 @@ mod tests {
 
         let table = Arc::new(builder.finish().await.unwrap());
 
-        let mut iter = TableIterator::new(table).await;
+        let mut iter = TableIterator::new(table, false).await;
 
         for pos in 0..COUNT {
             assert_eq!(iter.at_end(), false);

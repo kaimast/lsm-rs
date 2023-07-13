@@ -99,6 +99,12 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.inner.iter(Some(min_key), Some(max_key)).await
     }
 
+    /// Like range_iter(), but in reverse.
+    /// It will only include entries with keys in (min_key;max_key]
+    pub async fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
+        self.inner.reverse_iter(Some(max_key), Some(min_key)).await
+    }
+
     /// Write a batch of updates to the database
     ///
     /// If you only want to write to a single key, use `Database::put` instead

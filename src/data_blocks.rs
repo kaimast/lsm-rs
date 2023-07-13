@@ -143,6 +143,7 @@ impl DataEntry {
     }
 }
 
+/// Keeps track of all in-memory data blocks
 #[derive(Debug)]
 pub struct DataBlocks {
     params: Arc<Params>,
@@ -154,7 +155,7 @@ pub struct DataBlockBuilder {
     data_blocks: Arc<DataBlocks>,
     data: Vec<u8>,
 
-    position: usize,
+    position: u32,
     restart_list: Vec<u32>,
 }
 
@@ -166,7 +167,8 @@ impl DataBlockBuilder {
         // This enables using binary search in get() instead of seeking linearly
         let restart_list = vec![];
 
-        // Reserve space to mark where the restart list starts
+        // Reserve space for the header
+        data.append(&mut 0u32.to_le_bytes().to_vec());
         data.append(&mut 0u32.to_le_bytes().to_vec());
 
         let position = 0;
@@ -235,9 +237,11 @@ impl DataBlockBuilder {
         let identifier = self.data_blocks.manifest.next_data_block_id().await;
 
         let rl_len_len = std::mem::size_of::<u32>();
+        let len_len = std::mem::size_of::<u32>();
         let restart_list_start = self.data.len() as u32;
 
         self.data[..rl_len_len].copy_from_slice(&restart_list_start.to_le_bytes());
+        self.data[rl_len_len..rl_len_len + len_len].copy_from_slice(&self.position.to_le_bytes());
 
         for restart_offset in self.restart_list.drain(..) {
             let mut offset = restart_offset.to_le_bytes().to_vec();
@@ -246,7 +250,8 @@ impl DataBlockBuilder {
 
         let block = Arc::new(DataBlock {
             data: self.data,
-            restart_interval: self.data_blocks.params.block_restart_interval as u32,
+            num_entries: self.position,
+            restart_interval: self.data_blocks.params.block_restart_interval,
             restart_list_start: restart_list_start as usize,
         });
         let shard_id = DataBlocks::block_to_shard_id(identifier);
@@ -315,7 +320,7 @@ impl DataBlocks {
                 .expect("Failed to load data block from disk");
             let block = Arc::new(DataBlock::new_from_data(
                 data,
-                self.params.block_restart_interval as u32,
+                self.params.block_restart_interval,
             ));
 
             cache.put(*id, block.clone());
@@ -325,9 +330,13 @@ impl DataBlocks {
 }
 
 /**
- * For WiscKey the data layout is the following:
+ * Data Layout
  * 1. 4 bytes marking where the restart list starts
- * 2. Variable length of Block Entries, where each entry is:
+ * 2. 4 bytes indicating the number of entries in this block
+ * 3. Sequence of variable-length entries, where each entry is:
+ * 4. Variable length restart list (each entry is 4bytes; so we don't need length information)
+ *
+ * For WiscKey the layout of an entry is the following:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
@@ -336,11 +345,7 @@ impl DataBlocks {
  *    - entry type (1 byte)
  *    - value block id
  *    - offset
- * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
- *
  * Otherwise:
- * 1. 4 bytes marking where the restart list starts
- * 2. Variable length of Block Entries, where each entry is:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
@@ -348,26 +353,30 @@ impl DataBlocks {
  *  - Entry Type (1 byte)
  *  - Sequence number (8 bytes)
  *  - Variable length value
- * 3. Variable length or restart list (each entry is 4bytes; so we don't need length information)
  */
 //TODO support data block layouts without prefixed keys
 #[derive(Debug)]
 pub struct DataBlock {
     restart_list_start: usize,
+    num_entries: u32,
     restart_interval: u32,
     data: Vec<u8>,
 }
 
 impl DataBlock {
     pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
-        let rls_len = std::mem::size_of::<u32>();
-        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
-
         assert!(!data.is_empty(), "No data?");
+
+        let rls_len = std::mem::size_of::<u32>();
+        let len_len = std::mem::size_of::<u32>();
+        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
+        let num_entries = u32::from_le_bytes(data[rls_len..rls_len + len_len].try_into().unwrap());
+
         assert!(restart_list_start <= data.len(), "Data corrupted?");
 
         Self {
             data,
+            num_entries,
             restart_list_start,
             restart_interval,
         }
@@ -382,11 +391,11 @@ impl DataBlock {
         previous_key: &[u8],
     ) -> (Key, DataEntry, u32) {
         let rl_len_len = std::mem::size_of::<u32>();
-        let mut offset = (offset as usize) + rl_len_len;
+        let len_len = std::mem::size_of::<u32>();
+        let mut offset = (offset as usize) + rl_len_len + len_len;
 
         assert!(offset < self_ptr.restart_list_start);
 
-        let len_len = std::mem::size_of::<u32>();
         let pkey_len =
             u32::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
         offset += len_len;
@@ -424,16 +433,22 @@ impl DataBlock {
         };
 
         offset += entry_len;
-        offset -= rl_len_len;
+        offset -= rl_len_len + len_len;
 
         (kdata, entry, offset as u32)
     }
 
+    /// How many entries are in this data block?
+    pub fn get_num_entries(&self) -> u32 {
+        self.num_entries
+    }
+
     /// Get they entry at the specified index
+    /// (the index is in entries not bytes)
     #[tracing::instrument(skip(self_ptr))]
     pub fn get_entry_at_index(self_ptr: Arc<DataBlock>, index: u32) -> (Key, DataEntry) {
         // First, get the closest restart offset
-        let restart_pos = index % self_ptr.restart_interval;
+        let restart_pos = index / self_ptr.restart_interval;
 
         let restart_offset = self_ptr.get_restart_offset(restart_pos);
         let (mut key, mut entry, mut next_offset) =
@@ -450,13 +465,14 @@ impl DataBlock {
         (key, entry)
     }
 
-    /// Length of this block in bytes (without the restart list)
+    /// Length of this block in bytes without the header and restart list
     pub fn byte_len(&self) -> u32 {
         // "Cut-off" the beginning and end
         let rl_len_len = std::mem::size_of::<u32>();
+        let len_len = std::mem::size_of::<u32>();
         let rl_len = self.data.len() - self.restart_list_start;
 
-        (self.data.len() - rl_len_len - rl_len) as u32
+        (self.data.len() - rl_len_len - rl_len - len_len) as u32
     }
 
     #[inline(always)]
@@ -472,11 +488,14 @@ impl DataBlock {
     #[inline(always)]
     fn get_restart_offset(&self, pos: u32) -> u32 {
         let rl_len_len = std::mem::size_of::<u32>() as u32;
+        let len_len = std::mem::size_of::<u32>() as u32;
         let offset_len = std::mem::size_of::<u32>();
 
         let pos = self.restart_list_start + (pos as usize) * offset_len;
 
-        u32::from_le_bytes(self.data[pos..pos + offset_len].try_into().unwrap()) - rl_len_len
+        u32::from_le_bytes(self.data[pos..pos + offset_len].try_into().unwrap())
+            - rl_len_len
+            - len_len
     }
 
     #[tracing::instrument(skip(self_ptr, key))]
@@ -594,15 +613,18 @@ mod tests {
 
         let id = builder.finish().await.unwrap().unwrap();
         let data_block1 = data_blocks.get_block(&id).await;
-        let data_block2 = Arc::new(DataBlock::new_from_data(data_block1.data.clone()));
+        let data_block2 = Arc::new(DataBlock::new_from_data(
+            data_block1.data.clone(),
+            params.block_restart_interval,
+        ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
         assert_eq!(entry.get_value_ref(), Some(val1));
 
-        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), pos, &key);
+        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
 
         assert_eq!(key, vec![5, 2]);
         assert_eq!(entry.get_value_ref(), Some(val2));

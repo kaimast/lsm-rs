@@ -122,11 +122,22 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub fn range_iter(&self, min: &K, max: &K) -> DbIterator<K, V> {
-        let inner = &*self.inner;
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt
-            .block_on(async { inner.iter(Some(min), Some(max), tokio_rt).await })
+            .block_on(async { self.inner.iter(Some(min), Some(max), tokio_rt).await })
+    }
+
+    /// Like range_iter(), but in reverse.
+    /// It will only include entries with keys in (min_key;max_key]
+    pub fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
+        let tokio_rt = self.tokio_rt.clone();
+
+        self.tokio_rt.block_on(async {
+            self.inner
+                .reverse_iter(Some(max_key), Some(min_key), tokio_rt)
+                .await
+        })
     }
 
     /// Write a batch of updates to the database

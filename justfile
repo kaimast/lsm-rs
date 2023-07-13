@@ -22,7 +22,7 @@ no-wisckey-tests:
 no-wisckey-sync-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,sync
 
-lint: sync-lint async-lint no-wisckey-lint async-io-lint
+lint: sync-lint async-lint wisckey-lint async-io-lint async-io-wisckey-lint
 
 fix-formatting:
     cargo fmt
@@ -45,5 +45,8 @@ async-lint:
 async-io-lint:
     cargo clippy --no-default-features --features=async,async-io -- -D warnings
 
-no-wisckey-lint:
-    cargo clippy --no-default-features --features=snappy-compression -- -D warnings
+wisckey-lint:
+    cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
+
+async-io-wisckey-lint:
+    cargo clippy --no-default-features --features=async-io,async,snappy-compression,wisckey -- -D warnings

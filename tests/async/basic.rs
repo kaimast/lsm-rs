@@ -132,7 +132,7 @@ async fn range_iterate_reverse() {
     }
 
     let mut pos = 0;
-    let mut iter = database.range_iter(&10150, &300).await;
+    let mut iter = database.reverse_range_iter(&10150, &300).await;
 
     while let Some((key, val)) = iter.next().await {
         let real_pos = 10150 - pos;

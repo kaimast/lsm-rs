@@ -78,6 +78,20 @@ impl InternalIterator for MemtableIterator {
         let num_entries = entries.len() as i64;
 
         if self.reverse {
+            match self.next_index.cmp(&(-1)) {
+                Ordering::Less => {
+                    panic!("Cannot step(); already at end");
+                }
+                Ordering::Equal => {
+                    self.next_index -= 1;
+                }
+                Ordering::Greater => {
+                    let (key, entry) = entries[self.next_index as usize].clone();
+                    self.key = Some(key);
+                    self.entry = Some(entry);
+                    self.next_index -= 1;
+                }
+            }
         } else {
             match self.next_index.cmp(&num_entries) {
                 Ordering::Greater => {
@@ -98,7 +112,7 @@ impl InternalIterator for MemtableIterator {
 
     fn at_end(&self) -> bool {
         if self.reverse {
-            self.next_index < 0
+            self.next_index < -1
         } else {
             let len = self.inner.entries.len() as i64;
             self.next_index > len
