@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::data_blocks::{
-    DataBlock, DataEntry, DataEntryType,
-};
+use crate::data_blocks::{DataBlock, DataEntry, DataEntryType};
 use crate::manifest::SeqNumber;
 use crate::{Key, KvTrait};
 
@@ -212,4 +210,3 @@ impl InternalIterator for TableIterator {
         }
     }
 }
-

@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use crate::sorted_table::Key;
 
-use super::{SearchResult, DataEntry};
+use super::{DataEntry, SearchResult};
 
-#[cfg(feature="wisckey")]
+#[cfg(feature = "wisckey")]
 use super::ENTRY_LENGTH;
 
-#[cfg(not(feature="wisckey"))]
+#[cfg(not(feature = "wisckey"))]
 use super::DataLen;
 
 /**
@@ -253,4 +253,3 @@ impl DataBlock {
         None
     }
 }
-

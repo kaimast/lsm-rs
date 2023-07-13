@@ -1,9 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::sync::Arc;
 
-use crate::data_blocks::{
-    DataBlockBuilder, DataBlockId, DataBlocks, PrefixedKey,
-};
+use crate::data_blocks::{DataBlockBuilder, DataBlockId, DataBlocks, PrefixedKey};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
 use crate::{Error, Key, KvTrait, Params, WriteOp};
@@ -195,4 +193,3 @@ impl<'a> TableBuilder<'a> {
         })
     }
 }
-

@@ -3,12 +3,12 @@ use std::sync::Arc;
 use crate::manifest::SeqNumber;
 use crate::{disk, Error};
 
-use super::{DataBlocks, DataBlock, DataBlockId, PrefixedKey};
+use super::{DataBlock, DataBlockId, DataBlocks, PrefixedKey};
 
-#[cfg(not(feature="wisckey"))]
+#[cfg(not(feature = "wisckey"))]
 use super::DataLen;
 
-#[cfg(feature="wisckey")]
+#[cfg(feature = "wisckey")]
 use super::ValueId;
 
 pub struct DataBlockBuilder {
@@ -128,4 +128,3 @@ impl DataBlockBuilder {
         Ok(Some(identifier))
     }
 }
-
