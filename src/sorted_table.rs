@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::cmp::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,12 +22,20 @@ pub type Key = Vec<u8>;
 pub type TableId = u64;
 pub type Value = Vec<u8>;
 
+/// Entries ach level are grouped into sorted tables
+/// These tables contain an ordered set of key/value-pairs
+///
+/// Except for level 0, sorted tables do not overlap others on the same level
 #[derive(Debug)]
 pub struct SortedTable {
     identifier: TableId,
+    /// The index of the table; it holds all relevant metadata
     index: IndexBlock,
     data_blocks: Arc<DataBlocks>,
+    /// Is this table currently being compacted
     compaction_flag: AtomicBool,
+    /// The number of seek operations on this table before compaction is triggered
+    /// This improves read performance for heavily queried keys
     allowed_seeks: AtomicI32,
 }
 
@@ -54,15 +63,19 @@ pub trait InternalIterator: Send {
     fn get_value(&self) -> Option<&[u8]>;
 }
 
+/// Returns the entries within a table in order
 #[derive(Debug)]
 pub struct TableIterator {
-    block_pos: usize,
+    block_pos: i64,
     block_offset: u32,
     key: Key,
     entry: DataEntry,
     table: Arc<SortedTable>,
+    reverse: bool,
 }
 
+/// Helper class to construct a table
+/// only used during compaction
 pub struct TableBuilder<'a> {
     identifier: TableId,
     params: &'a Params,
@@ -122,7 +135,7 @@ impl<'a> TableBuilder<'a> {
             .await
     }
 
-    #[cfg(feature = "wisckey")]
+    #[cfg(featurreversee = "wisckey")]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
         self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default())
             .await
@@ -241,26 +254,54 @@ impl<'a> TableBuilder<'a> {
 }
 
 impl TableIterator {
-    pub async fn new(table: Arc<SortedTable>) -> Self {
+    pub async fn new(table: Arc<SortedTable>, reverse: bool) -> Self {
         let last_key = vec![];
-        let block_id = table.index.get_block_id(0);
-        let first_block = table.data_blocks.get_block(&block_id).await;
-        let byte_len = first_block.byte_len();
-        let (key, entry, entry_len) = DataBlock::get_offset(first_block, 0, &last_key);
 
-        // Are we already at the end of the first block?
-        let (block_pos, block_offset) = if byte_len == entry_len {
-            (1, 0)
+        if reverse {
+            let block_id = table.index.get_block_id(0);
+            let first_block = table.data_blocks.get_block(&block_id).await;
+            let byte_len = first_block.byte_len();
+            let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+
+            // Are we already at the end of the first block?
+            let (block_pos, block_offset) = if byte_len == entry_len {
+                (1, 0)
+            } else {
+                (0, entry_len)
+            };
+
+            Self {
+                block_pos,
+                block_offset,
+                key,
+                entry,
+                table,
+                reverse,
+            }
         } else {
-            (0, entry_len)
-        };
+            let num_blocks = table.index.num_data_blocks() as i64;
+            assert!(num_blocks > 0); // tables must have at least one data block
 
-        Self {
-            block_pos,
-            block_offset,
-            key,
-            entry,
-            table,
+            let block_id = table.index.get_block_id((num_blocks - 1) as usize);
+            let first_block = table.data_blocks.get_block(&block_id).await;
+            let byte_len = first_block.byte_len();
+            let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+
+            // Are we already at the end of the first block?
+            let (block_pos, block_offset) = if byte_len == entry_len {
+                (num_blocks - 2, 0)
+            } else {
+                (0, entry_len)
+            };
+
+            Self {
+                block_pos,
+                block_offset,
+                key,
+                entry,
+                table,
+                reverse,
+            }
         }
     }
 }
@@ -269,7 +310,11 @@ impl TableIterator {
 #[cfg_attr(not(feature = "async-io"), async_trait)]
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
-        self.block_pos > self.table.index.num_data_blocks()
+        if self.reverse {
+            self.block_pos < 0
+        } else {
+            self.block_pos > self.table.index.num_data_blocks() as i64
+        }
     }
 
     fn get_key(&self) -> &Key {
@@ -304,28 +349,56 @@ impl InternalIterator for TableIterator {
 
     #[tracing::instrument]
     async fn step(&mut self) {
-        #[allow(clippy::comparison_chain)]
-        if self.block_pos == self.table.index.num_data_blocks() {
-            self.block_pos += 1;
-            return;
-        } else if self.block_pos > self.table.index.num_data_blocks() {
-            panic!("Cannot step(); already at end");
-        }
+        if self.reverse {
+            if self.block_pos < 0 {
+                panic!("Cannot step(); already at end");
+            }
 
-        let block_id = self.table.index.get_block_id(self.block_pos);
-        let block = self.table.data_blocks.get_block(&block_id).await;
-        let byte_len = block.byte_len();
+            let block_id = self.table.index.get_block_id(self.block_pos as usize);
+            let block = self.table.data_blocks.get_block(&block_id).await;
+            let byte_len = block.byte_len();
 
-        let (key, entry, new_offset) = DataBlock::get_offset(block, self.block_offset, &self.key);
-        self.key = key;
-        self.entry = entry;
+            let (key, entry, new_offset) =
+                DataBlock::get_entry_at_offset(block, self.block_offset, &self.key);
+            self.key = key;
+            self.entry = entry;
 
-        // At the end of the block?
-        if new_offset >= byte_len {
-            self.block_pos += 1;
-            self.block_offset = 0;
+            // At the end of the block?
+            if new_offset >= byte_len {
+                self.block_pos += 1;
+                self.block_offset = 0;
+            } else {
+                self.block_offset = new_offset;
+            }
         } else {
-            self.block_offset = new_offset;
+            let num_blocks = self.table.index.num_data_blocks() as i64;
+            match self.block_pos.cmp(&num_blocks) {
+                Ordering::Equal => {
+                    self.block_pos += 1;
+                    return;
+                }
+                Ordering::Greater => {
+                    panic!("Cannot step(); already at end");
+                }
+                Ordering::Less => {
+                    let block_id = self.table.index.get_block_id(self.block_pos as usize);
+                    let block = self.table.data_blocks.get_block(&block_id).await;
+                    let byte_len = block.byte_len();
+
+                    let (key, entry, new_offset) =
+                        DataBlock::get_entry_at_offset(block, self.block_offset, &self.key);
+                    self.key = key;
+                    self.entry = entry;
+
+                    // At the end of the block?
+                    if new_offset >= byte_len {
+                        self.block_pos += 1;
+                        self.block_offset = 0;
+                    } else {
+                        self.block_offset = new_offset;
+                    }
+                }
+            }
         }
     }
 }
@@ -354,11 +427,12 @@ impl SortedTable {
     }
 
     pub fn has_maximum_seeks(&self) -> bool {
-        self.allowed_seeks.load(Ordering::SeqCst) <= 0
+        self.allowed_seeks.load(AtomicOrdering::SeqCst) <= 0
     }
 
+    /// Returns false if another task is already compacting this table
     pub fn maybe_start_compaction(&self) -> bool {
-        let order = Ordering::SeqCst;
+        let order = AtomicOrdering::SeqCst;
         let result = self
             .compaction_flag
             .compare_exchange(false, true, order, order);
@@ -367,7 +441,7 @@ impl SortedTable {
     }
 
     pub fn finish_compaction(&self) {
-        let prev = self.compaction_flag.swap(false, Ordering::SeqCst);
+        let prev = self.compaction_flag.swap(false, AtomicOrdering::SeqCst);
         assert!(prev, "Compaction flag was not set!");
     }
 
@@ -394,7 +468,7 @@ impl SortedTable {
 
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
-        self.allowed_seeks.fetch_sub(1, Ordering::Relaxed);
+        self.allowed_seeks.fetch_sub(1, AtomicOrdering::Relaxed);
 
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
@@ -494,7 +568,7 @@ mod tests {
 
         let table = Arc::new(builder.finish().await.unwrap());
 
-        let mut iter = TableIterator::new(table).await;
+        let mut iter = TableIterator::new(table, false).await;
 
         assert_eq!(iter.at_end(), false);
         assert_eq!(iter.get_key(), &key1);

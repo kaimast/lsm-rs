@@ -10,6 +10,8 @@ use std::path::Path;
 
 use bincode::Options;
 
+/// Index blocks hold metadata about a sorted table
+/// Each table has exactly one index block
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexBlock {
     index: Vec<(Key, DataBlockId)>,
@@ -43,23 +45,26 @@ impl IndexBlock {
     }
 
     pub async fn load(params: &Params, id: TableId) -> Result<Self, Error> {
-        log::trace!("Loading data block from disk");
+        log::trace!("Loading index block from disk");
         let fpath = Self::get_file_path(params, &id);
         let data = disk::read(&fpath, 0).await?;
 
         Ok(crate::get_encoder().deserialize(&data)?)
     }
 
+    /// where is this index block located on disk?
     #[inline]
     fn get_file_path(params: &Params, block_id: &TableId) -> std::path::PathBuf {
         let fname = format!("idx{:08}.data", block_id);
         params.db_path.join(Path::new(&fname))
     }
 
+    /// Get the unique id for the data block at the specified index
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
         self.index[pos].1
     }
 
+    /// How many data blocks does this table have?
     pub fn num_data_blocks(&self) -> usize {
         self.index.len()
     }
@@ -70,14 +75,18 @@ impl IndexBlock {
         self.size as usize
     }
 
+    /// Whats the minimum key in this table?
     pub fn get_min(&self) -> &[u8] {
         &self.min
     }
 
+    /// What is the maximum key in this table?
     pub fn get_max(&self) -> &[u8] {
         &self.max
     }
 
+    /// Search for a specific key
+    /// This will a return a data block id that *might* hold this entry or None
     #[tracing::instrument(skip(self))]
     pub fn binary_search(&self, key: &[u8]) -> Option<DataBlockId> {
         if key < self.get_min() || key > self.get_max() {

@@ -207,19 +207,21 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key &&
-            min_key >= max_key {
-           panic!("Got invalid range: min_key >= max_key");
-        }
+        let reverse = if let Some(min_key) = &min_key && let Some(max_key) = &max_key &&
+            min_key > max_key {
+            true
+        } else {
+            false
+        };
 
         {
             let memtable = self.memtable.read().await;
             let imm_mems = self.imm_memtables.lock().await;
 
-            mem_iters.push(memtable.clone_immutable().into_iter().await);
+            mem_iters.push(memtable.clone_immutable().into_iter(reverse).await);
 
             for (_, imm) in imm_mems.iter() {
-                let iter = imm.clone().into_iter().await;
+                let iter = imm.clone().into_iter(reverse).await;
                 mem_iters.push(iter);
             }
         }
@@ -243,7 +245,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
 
                 if !skip {
-                    let iter = TableIterator::new(table.clone()).await;
+                    let iter = TableIterator::new(table.clone(), reverse).await;
                     table_iters.push(iter);
                 }
             }
@@ -676,11 +678,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         let mut table_iters = Vec::new();
         for table in parent_tables.iter() {
-            table_iters.push(TableIterator::new(table.clone()).await);
+            table_iters.push(TableIterator::new(table.clone(), false).await);
         }
 
         for child in child_tables.iter() {
-            table_iters.push(TableIterator::new(child.clone()).await);
+            table_iters.push(TableIterator::new(child.clone(), false).await);
         }
 
         let mut last_key: Option<Key> = None;

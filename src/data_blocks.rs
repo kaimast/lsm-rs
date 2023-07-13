@@ -223,6 +223,10 @@ impl DataBlockBuilder {
         self.position += 1;
     }
 
+    /// Finish building an return the data blocks
+    ///
+    /// This will return Ok(None) if the builder did not have any entries
+    /// An error might be generated if we failed to write to disk
     pub async fn finish(mut self) -> Result<Option<DataBlockId>, Error> {
         if self.position == 0 {
             return Ok(None);
@@ -242,6 +246,7 @@ impl DataBlockBuilder {
 
         let block = Arc::new(DataBlock {
             data: self.data,
+            restart_interval: self.data_blocks.params.block_restart_interval as u32,
             restart_list_start: restart_list_start as usize,
         });
         let shard_id = DataBlocks::block_to_shard_id(identifier);
@@ -308,7 +313,10 @@ impl DataBlocks {
             let data = disk::read(&fpath, 0)
                 .await
                 .expect("Failed to load data block from disk");
-            let block = Arc::new(DataBlock::new_from_data(data));
+            let block = Arc::new(DataBlock::new_from_data(
+                data,
+                self.params.block_restart_interval as u32,
+            ));
 
             cache.put(*id, block.clone());
             block
@@ -346,11 +354,12 @@ impl DataBlocks {
 #[derive(Debug)]
 pub struct DataBlock {
     restart_list_start: usize,
+    restart_interval: u32,
     data: Vec<u8>,
 }
 
 impl DataBlock {
-    pub fn new_from_data(data: Vec<u8>) -> Self {
+    pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
         let rls_len = std::mem::size_of::<u32>();
         let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
 
@@ -360,13 +369,14 @@ impl DataBlock {
         Self {
             data,
             restart_list_start,
+            restart_interval,
         }
     }
 
-    /// Get the key and entry at the specified offset (must be valid!)
-    /// The third entry in this result is the new offset after the entry
+    /// Get the key and entry at the specified offset in bytes (must be valid!)
+    /// The third entry in this result is the new offset after (or before) the entry
     #[tracing::instrument(skip(self_ptr))]
-    pub fn get_offset(
+    pub fn get_entry_at_offset(
         self_ptr: Arc<DataBlock>,
         offset: u32,
         previous_key: &[u8],
@@ -419,7 +429,28 @@ impl DataBlock {
         (kdata, entry, offset as u32)
     }
 
-    /// Length of this block in bytes (without the reset list)
+    /// Get they entry at the specified index
+    #[tracing::instrument(skip(self_ptr))]
+    pub fn get_entry_at_index(self_ptr: Arc<DataBlock>, index: u32) -> (Key, DataEntry) {
+        // First, get the closest restart offset
+        let restart_pos = index % self_ptr.restart_interval;
+
+        let restart_offset = self_ptr.get_restart_offset(restart_pos);
+        let (mut key, mut entry, mut next_offset) =
+            Self::get_entry_at_offset(self_ptr.clone(), restart_offset, &[]);
+
+        let mut current_idx = restart_pos * self_ptr.restart_interval;
+
+        while current_idx < index {
+            (key, entry, next_offset) =
+                Self::get_entry_at_offset(self_ptr.clone(), next_offset, &key);
+            current_idx += 1;
+        }
+
+        (key, entry)
+    }
+
+    /// Length of this block in bytes (without the restart list)
     pub fn byte_len(&self) -> u32 {
         // "Cut-off" the beginning and end
         let rl_len_len = std::mem::size_of::<u32>();
@@ -437,6 +468,7 @@ impl DataBlock {
         rl_len / offset_len
     }
 
+    /// Get get byte offset of a restart entry
     #[inline(always)]
     fn get_restart_offset(&self, pos: u32) -> u32 {
         let rl_len_len = std::mem::size_of::<u32>() as u32;
@@ -457,8 +489,10 @@ impl DataBlock {
         // binary search
         while end - start > 1 {
             let mid = start + (end - start) / 2;
+
+            // We always perform the search at the restart positions for efficiency
             let offset = self_ptr.get_restart_offset(mid);
-            let (this_key, entry, _) = Self::get_offset(self_ptr.clone(), offset, &[]);
+            let (this_key, entry, _) = Self::get_entry_at_offset(self_ptr.clone(), offset, &[]);
 
             match this_key.as_slice().cmp(key) {
                 Ordering::Equal => {
@@ -487,6 +521,8 @@ impl DataBlock {
         SearchResult::Range(start, end)
     }
 
+    /// Get the entry for the specified key
+    /// Will return None if no such entry exists
     #[tracing::instrument(skip(self_ptr, key))]
     pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
         let (start, end) = match Self::binary_search(self_ptr, key) {
@@ -500,7 +536,8 @@ impl DataBlock {
 
         let mut last_key = vec![];
         while pos < end {
-            let (this_key, entry, new_pos) = Self::get_offset(self_ptr.clone(), pos, &last_key);
+            let (this_key, entry, new_pos) =
+                Self::get_entry_at_offset(self_ptr.clone(), pos, &last_key);
 
             if key == this_key {
                 return Some(entry);
@@ -603,15 +640,18 @@ mod tests {
 
         let id = builder.finish().await.unwrap().unwrap();
         let data_block1 = data_blocks.get_block(&id).await;
-        let data_block2 = Arc::new(DataBlock::new_from_data(data_block1.data.clone()));
+        let data_block2 = Arc::new(DataBlock::new_from_data(
+            data_block1.data.clone(),
+            params.block_restart_interval as u32,
+        ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
         assert_eq!(entry.get_value(), Some(&val1[..]));
 
-        let (key, entry, pos) = DataBlock::get_offset(data_block2.clone(), pos, &key);
+        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
 
         assert_eq!(key, vec![5, 2]);
         assert_eq!(entry.get_value(), Some(&val2[..]));
