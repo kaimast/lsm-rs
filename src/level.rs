@@ -297,11 +297,13 @@ impl Level {
         Some((table_id, overlaps))
     }
 
+    /// Get a reference to all tables with an exclusive/write lock
     #[inline]
     pub async fn get_tables(&self) -> tokio::sync::RwLockWriteGuard<'_, TableVec> {
         self.tables.write().await
     }
 
+    /// Get a reference to all tables with a read-only lock
     #[inline]
     pub async fn get_tables_ro(&self) -> tokio::sync::RwLockReadGuard<'_, TableVec> {
         self.tables.read().await

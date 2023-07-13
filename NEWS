@@ -1,6 +1,7 @@
 0.3:
     - Write-Ahead logging moved to a dedicated thread (or async task)
     - Support for io_uring
+    - Allow iterating in reverse order
 
 0.2:
     - Support for tracing to benchmark the library

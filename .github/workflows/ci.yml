@@ -44,8 +44,10 @@ jobs:
       run: just async-io-lint
     - name: Linting (Sync)
       run: just sync-lint
-    - name: Linting (No WiscKey)
-      run: just no-wisckey-lint
+    - name: Linting (WiscKey)
+      run: just wisckey-lint
+    - name: Linting (Async I/O + WiscKey)
+      run: just async-io-wisckey-lint
     - name: Formatting Checks
       run: just check-formatting
     # Does not work well as some dependencies only used by certain features

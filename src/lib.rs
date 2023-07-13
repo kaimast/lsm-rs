@@ -229,7 +229,7 @@ pub struct Params {
     pub max_key_block_size: usize,
     /// How often should the full key be stored in a data block?
     /// Larger numbers result in smaller on-disk files, but seeks will be slower
-    pub block_restart_interval: usize,
+    pub block_restart_interval: u32,
     /// Write the size of each level to a csv file
     pub log_level_stats: Option<String>,
     /// How many concurrent compaction tasks should there be

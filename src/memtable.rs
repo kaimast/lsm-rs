@@ -16,6 +16,7 @@ pub struct MemtableRef {
     inner: Arc<Memtable>,
 }
 
+/// A reference to a memtable that cannot modify it
 #[derive(Debug, Clone)]
 pub struct ImmMemtableRef {
     inner: Arc<Memtable>,
@@ -36,21 +37,30 @@ impl MemtableEntry {
     }
 }
 
+/// Iterates over a memtable and returns its contents in order
 #[derive(Debug)]
 pub struct MemtableIterator {
     inner: Arc<Memtable>,
-    next_index: usize,
+    next_index: i64,
     key: Option<Key>,
     entry: Option<MemtableEntry>,
+    reverse: bool,
 }
 
 impl MemtableIterator {
-    pub async fn new(inner: Arc<Memtable>) -> Self {
+    pub async fn new(inner: Arc<Memtable>, reverse: bool) -> Self {
+        let next_index = if reverse {
+            (inner.entries.len() as i64) - 1
+        } else {
+            0
+        };
+
         let mut obj = Self {
             inner,
+            reverse,
             key: None,
             entry: None,
-            next_index: 0,
+            next_index,
         };
 
         obj.step().await;
@@ -65,33 +75,48 @@ impl InternalIterator for MemtableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {
         let entries = &self.inner.entries;
+        let num_entries = entries.len() as i64;
 
-        match self.next_index.cmp(&entries.len()) {
-            Ordering::Greater => {
-                panic!("Cannot step(); already at end");
+        if self.reverse {
+            match self.next_index.cmp(&(-1)) {
+                Ordering::Less => {
+                    panic!("Cannot step(); already at end");
+                }
+                Ordering::Equal => {
+                    self.next_index -= 1;
+                }
+                Ordering::Greater => {
+                    let (key, entry) = entries[self.next_index as usize].clone();
+                    self.key = Some(key);
+                    self.entry = Some(entry);
+                    self.next_index -= 1;
+                }
             }
-            Ordering::Equal => {
-                self.next_index += 1;
-            }
-            Ordering::Less => {
-                let key = &entries[self.next_index].0;
-
-                while self.next_index + 1 < entries.len() && &entries[self.next_index + 1].0 == key
-                {
+        } else {
+            match self.next_index.cmp(&num_entries) {
+                Ordering::Greater => {
+                    panic!("Cannot step(); already at end");
+                }
+                Ordering::Equal => {
                     self.next_index += 1;
                 }
-
-                let (key, entry) = entries[self.next_index].clone();
-                self.key = Some(key);
-                self.entry = Some(entry);
-                self.next_index += 1;
+                Ordering::Less => {
+                    let (key, entry) = entries[self.next_index as usize].clone();
+                    self.key = Some(key);
+                    self.entry = Some(entry);
+                    self.next_index += 1;
+                }
             }
         }
     }
 
     fn at_end(&self) -> bool {
-        let len = self.inner.entries.len();
-        self.next_index > len
+        if self.reverse {
+            self.next_index < -1
+        } else {
+            let len = self.inner.entries.len() as i64;
+            self.next_index > len
+        }
     }
 
     fn get_key(&self) -> &Key {
@@ -135,8 +160,8 @@ impl ImmMemtableRef {
         &self.inner
     }
 
-    pub async fn into_iter(self) -> MemtableIterator {
-        MemtableIterator::new(self.inner).await
+    pub async fn into_iter(self, reverse: bool) -> MemtableIterator {
+        MemtableIterator::new(self.inner, reverse).await
     }
 }
 
@@ -147,6 +172,7 @@ impl MemtableRef {
         }
     }
 
+    /// Get an immutable reference to the same memtable
     pub fn clone_immutable(&self) -> ImmMemtableRef {
         ImmMemtableRef {
             inner: self.inner.clone(),
@@ -154,7 +180,7 @@ impl MemtableRef {
     }
 
     /// Make the current contents into an immutable memtable
-    /// And create a new mutable one
+    /// and create a new mutable one
     pub fn take(&mut self, next_seq_number: u64) -> ImmMemtableRef {
         let mut inner = Arc::new(Memtable::new(next_seq_number));
         std::mem::swap(&mut inner, &mut self.inner);

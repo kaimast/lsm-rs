@@ -207,19 +207,18 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key &&
-            min_key >= max_key {
-           panic!("Got invalid range: min_key >= max_key");
+        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+            assert!(min_key < max_key);
         }
 
         {
             let memtable = self.memtable.read().await;
             let imm_mems = self.imm_memtables.lock().await;
 
-            mem_iters.push(memtable.clone_immutable().into_iter().await);
+            mem_iters.push(memtable.clone_immutable().into_iter(false).await);
 
             for (_, imm) in imm_mems.iter() {
-                let iter = imm.clone().into_iter().await;
+                let iter = imm.clone().into_iter(false).await;
                 mem_iters.push(iter);
             }
         }
@@ -243,7 +242,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
 
                 if !skip {
-                    let iter = TableIterator::new(table.clone()).await;
+                    let iter = TableIterator::new(table.clone(), false).await;
                     table_iters.push(iter);
                 }
             }
@@ -254,6 +253,74 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             table_iters,
             min_key,
             max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.value_log.clone(),
+            #[cfg(feature = "sync")]
+            tokio_rt,
+        )
+    }
+
+    /// Iterate over the specified range in reverse
+    pub async fn reverse_iter(
+        &self,
+        max_key: Option<&K>,
+        min_key: Option<&K>,
+        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
+    ) -> DbIterator<K, V> {
+        let mut table_iters = Vec::new();
+        let mut mem_iters = Vec::new();
+
+        let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
+        let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
+
+        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+            assert!(min_key < max_key);
+        };
+
+        {
+            let memtable = self.memtable.read().await;
+            let imm_mems = self.imm_memtables.lock().await;
+
+            mem_iters.push(memtable.clone_immutable().into_iter(true).await);
+
+            for (_, imm) in imm_mems.iter() {
+                let iter = imm.clone().into_iter(true).await;
+                mem_iters.push(iter);
+            }
+        }
+
+        for level in self.levels.iter() {
+            let tables = level.get_tables_ro().await;
+
+            for table in tables.iter() {
+                let mut skip = false;
+
+                if let Some(min_key) = &min_key {
+                    if table.get_max() < min_key.as_slice() {
+                        skip = true;
+                    }
+                }
+
+                if let Some(max_key) = &max_key {
+                    if table.get_min() > max_key.as_slice() {
+                        skip = true;
+                    }
+                }
+
+                if !skip {
+                    let iter = TableIterator::new(table.clone(), true).await;
+                    table_iters.push(iter);
+                }
+            }
+        }
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            true,
             #[cfg(feature = "wisckey")]
             self.value_log.clone(),
             #[cfg(feature = "sync")]
@@ -676,11 +743,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         let mut table_iters = Vec::new();
         for table in parent_tables.iter() {
-            table_iters.push(TableIterator::new(table.clone()).await);
+            table_iters.push(TableIterator::new(table.clone(), false).await);
         }
 
         for child in child_tables.iter() {
-            table_iters.push(TableIterator::new(child.clone()).await);
+            table_iters.push(TableIterator::new(child.clone(), false).await);
         }
 
         let mut last_key: Option<Key> = None;

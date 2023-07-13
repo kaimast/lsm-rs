@@ -116,6 +116,38 @@ async fn range_iterate() {
 }
 
 #[async_test]
+async fn range_iterate_reverse() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{pos}");
+        database.put_opts(&key, &value, &options).await.unwrap();
+    }
+
+    let mut pos = 0;
+    let mut iter = database.reverse_range_iter(&10150, &300).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let real_pos = 10150 - pos;
+        assert_eq!(real_pos as u64, key);
+        assert_eq!(format!("some_string_{real_pos}"), val);
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 9850);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn range_iterate_empty() {
     let (_tmpdir, database) = test_init().await;
 
