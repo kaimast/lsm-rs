@@ -262,7 +262,7 @@ dependencies = [
 [[package]]
 name = "executor-macros"
 version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring-executor.git#07e7bc6bef30931532edacf8764f6a5b5cdd036c"
+source = "git+https://github.com/kaimast/tokio-uring-executor.git#6ac30389f1e30cae5b2b92feb22e540d744587ed"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1000,7 +1000,7 @@ dependencies = [
 [[package]]
 name = "tokio-uring-executor"
 version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring-executor.git#07e7bc6bef30931532edacf8764f6a5b5cdd036c"
+source = "git+https://github.com/kaimast/tokio-uring-executor.git#6ac30389f1e30cae5b2b92feb22e540d744587ed"
 dependencies = [
  "executor-macros",
  "log",
