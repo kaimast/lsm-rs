@@ -817,7 +817,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                         min_iter = Some(table_iter);
                     }
                 } else {
-                    log::trace!("Found new key {:?}", key);
+                    log::trace!("Found new key {key:?}");
                     min_iter = Some(table_iter);
                 }
             }

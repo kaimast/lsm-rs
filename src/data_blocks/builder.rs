@@ -20,6 +20,7 @@ pub struct DataBlockBuilder {
 }
 
 impl DataBlockBuilder {
+    #[tracing::instrument(skip(data_blocks))]
     pub(super) fn new(data_blocks: Arc<DataBlocks>) -> Self {
         let mut data = vec![];
 
@@ -89,6 +90,7 @@ impl DataBlockBuilder {
     ///
     /// This will return Ok(None) if the builder did not have any entries
     /// An error might be generated if we failed to write to disk
+    #[tracing::instrument(skip(self))]
     pub async fn finish(mut self) -> Result<Option<DataBlockId>, Error> {
         if self.position == 0 {
             return Ok(None);
