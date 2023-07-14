@@ -144,7 +144,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     async fn step(&mut self) {
         if self.reverse {
             match self.block_pos.cmp(&(-1)) {
