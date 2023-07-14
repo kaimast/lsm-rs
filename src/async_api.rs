@@ -33,6 +33,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
+    #[tracing::instrument(skip(self))]
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
 
@@ -50,7 +51,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
-    /// Instead, it will just mark the most recent version(which could be the first one) as deleted
+    /// Instead, it will just mark the most recent version (which could be the first one) as deleted
+    #[tracing::instrument(skip(self))]
     pub async fn delete(&self, key: &K) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
@@ -80,6 +82,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Insert or update a single entry (with additional options)
+    #[tracing::instrument(skip(self))]
     pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
@@ -94,6 +97,12 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
         self.inner.iter(Some(min_key), Some(max_key)).await
+    }
+
+    /// Like range_iter(), but in reverse.
+    /// It will only include entries with keys in (min_key;max_key]
+    pub async fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
+        self.inner.reverse_iter(Some(max_key), Some(min_key)).await
     }
 
     /// Write a batch of updates to the database

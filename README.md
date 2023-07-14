@@ -11,9 +11,10 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are stored separately to increase compaction speed
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput
 * *Async-support*: All API calls are exposed as async functions.
+* *io_uring-support*: For async file system access on Linux
 
 ## Latest Version:
-The version on crates.io is quite outdated. I recommend using the `main` git branch.
+The version on crates.io is quite outdated. It is recommended using the `main` git branch.
 
 ## Supported Architectures:
 Currently, the code is only tested on Linux machines, but it should run on all systems supported by the rust compiler.
@@ -28,7 +29,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
 * `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk (enabled by default)
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
-* `async-io`: Use tokio's disk IO instead of that of the standard library. Note, that internally tokio still uses blocking IO in a separate thread pool and this is [generally slower](https://github.com/tokio-rs/tokio/issues/3664). Eventually, there will be support for [io_uring](https://github.com/tokio-rs/tokio/issues/2411).
+* `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel.
 
 ## Sort Order
 This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values.
@@ -43,6 +44,10 @@ We provide a [justfile](https://github.com/casey/just) for convenience:
 just test #runs all tests for all configurations
 just lint #runs cargo clippy
 ```
+
+## Notes on io-uring
+Currently, this uses [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a very simplistic multi-threaded wrapper around `tokio-uring`.
+Eventually `tokio-uring` will [support multiple threads natively](https://github.com/tokio-rs/tokio-uring/issues/258) and this workaround will be removed.
 
 ## Similar Crates
 * [rust-rocksdb](https://github.com/rust-rocksdb/rust-rocksdb): Rust bindings for RocksDB

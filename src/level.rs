@@ -4,7 +4,9 @@ use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
+
+use parking_lot::Mutex as PMutex;
 
 /// TODO add slowdown writes trigger
 const L0_COMPACTION_TRIGGER: usize = 4;
@@ -25,9 +27,9 @@ impl TablePlaceholder {
 
 pub struct Level {
     index: LevelId,
-    next_compaction_offset: Mutex<usize>,
+    next_compaction_offset: PMutex<usize>,
     do_seek_based_compaction: bool,
-    seek_based_compaction: Mutex<Option<Arc<SortedTable>>>,
+    seek_based_compaction: PMutex<Option<Arc<SortedTable>>>,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
@@ -49,8 +51,8 @@ impl Level {
             params,
             manifest,
             data_blocks,
-            seek_based_compaction: Mutex::new(None),
-            next_compaction_offset: Mutex::new(0),
+            seek_based_compaction: PMutex::new(None),
+            next_compaction_offset: PMutex::new(0),
             tables: RwLock::new(vec![]),
             table_placeholders: RwLock::new(vec![]),
         }
@@ -98,6 +100,7 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
+    #[tracing::instrument(skip(self), fields(index=self.index))]
     pub async fn get(&self, key: &[u8]) -> (bool, Option<DataEntry>) {
         let tables = self.tables.read().await;
         let mut compaction_triggered = false;
@@ -110,9 +113,9 @@ impl Level {
             }
 
             if self.do_seek_based_compaction && table.has_maximum_seeks() {
-                let mut seek_based_compaction = self.seek_based_compaction.lock().await;
+                let mut seek_based_compaction = self.seek_based_compaction.lock();
                 if seek_based_compaction.is_none() {
-                    log::debug!(
+                    log::trace!(
                         "Seek-based compaction triggered for table #{}",
                         table.get_id()
                     );
@@ -142,54 +145,57 @@ impl Level {
     }
 
     pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
-        let mut next_offset = self.next_compaction_offset.lock().await;
         let all_tables = self.tables.write().await;
 
-        let size_based_compaction = if self.index == 0 {
-            all_tables.len() > L0_COMPACTION_TRIGGER
-        } else {
-            let mut total_size = 0;
+        let (table, offset) = {
+            let mut next_offset = self.next_compaction_offset.lock();
 
-            for t in all_tables.iter() {
-                total_size += t.get_size();
-            }
+            let size_based_compaction = if self.index == 0 {
+                all_tables.len() > L0_COMPACTION_TRIGGER
+            } else {
+                let mut total_size = 0;
 
-            total_size > self.max_size()
-        };
-
-        // Prefer size-based compaction over seek-based compaction
-        let (table, offset) = if size_based_compaction {
-            if all_tables.is_empty() {
-                panic!("Cannot start compaction; level {} is empty", self.index);
-            }
-
-            if *next_offset >= all_tables.len() {
-                *next_offset = 0;
-            }
-
-            let offset = *next_offset;
-            let table = all_tables[offset].clone();
-
-            *next_offset += 1;
-
-            (table, offset)
-        } else if let Some(table) = self.seek_based_compaction.lock().await.take() {
-            let mut offset = None;
-
-            for (pos, this_table) in all_tables.iter().enumerate() {
-                if this_table.get_id() == table.get_id() {
-                    offset = Some(pos);
-                    break;
+                for t in all_tables.iter() {
+                    total_size += t.get_size();
                 }
-            }
 
-            if let Some(offset) = offset {
+                total_size > self.max_size()
+            };
+
+            // Prefer size-based compaction over seek-based compaction
+            if size_based_compaction {
+                if all_tables.is_empty() {
+                    panic!("Cannot start compaction; level {} is empty", self.index);
+                }
+
+                if *next_offset >= all_tables.len() {
+                    *next_offset = 0;
+                }
+
+                let offset = *next_offset;
+                let table = all_tables[offset].clone();
+
+                *next_offset += 1;
+
                 (table, offset)
+            } else if let Some(table) = self.seek_based_compaction.lock().take() {
+                let mut offset = None;
+
+                for (pos, this_table) in all_tables.iter().enumerate() {
+                    if this_table.get_id() == table.get_id() {
+                        offset = Some(pos);
+                        break;
+                    }
+                }
+
+                if let Some(offset) = offset {
+                    (table, offset)
+                } else {
+                    return Ok(None);
+                }
             } else {
                 return Ok(None);
             }
-        } else {
-            return Ok(None);
         };
 
         // Abort due to concurrency?
@@ -238,6 +244,7 @@ impl Level {
         Ok(Some(tables))
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn get_overlaps(
         &self,
         min: &[u8],
@@ -290,11 +297,13 @@ impl Level {
         Some((table_id, overlaps))
     }
 
+    /// Get a reference to all tables with an exclusive/write lock
     #[inline]
     pub async fn get_tables(&self) -> tokio::sync::RwLockWriteGuard<'_, TableVec> {
         self.tables.write().await
     }
 
+    /// Get a reference to all tables with a read-only lock
     #[inline]
     pub async fn get_tables_ro(&self) -> tokio::sync::RwLockReadGuard<'_, TableVec> {
         self.tables.read().await

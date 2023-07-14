@@ -1,10 +1,9 @@
 #![feature(trait_alias)]
-#![feature(write_all_vectored)]
-#![feature(array_methods)]
 #![feature(get_mut_unchecked)]
-#![feature(io_slice_advance)]
 #![feature(let_chains)]
 #![feature(const_option)]
+// Temporary workaround for the io_uring code
+#![allow(clippy::arc_with_non_send_sync)]
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -230,7 +229,7 @@ pub struct Params {
     pub max_key_block_size: usize,
     /// How often should the full key be stored in a data block?
     /// Larger numbers result in smaller on-disk files, but seeks will be slower
-    pub block_restart_interval: usize,
+    pub block_restart_interval: u32,
     /// Write the size of each level to a csv file
     pub log_level_stats: Option<String>,
     /// How many concurrent compaction tasks should there be

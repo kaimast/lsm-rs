@@ -1,18 +1,14 @@
-use std::{fs::File, io::BufWriter};
-
 use clap::Parser;
 
 use tempfile::{Builder, TempDir};
 
-use tracing_flame::{FlameLayer, FlushGuard};
-use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
+use tracing_tracy::TracyLayer;
 
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 
 #[derive(Parser)]
-#[clap(rename_all = "snake-case")]
-#[ clap(author, version, about, long_about = None) ]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     #[clap(long)]
     enable_tracing: bool,
@@ -22,22 +18,12 @@ struct Args {
     num_entries: usize,
 }
 
-async fn bench_init<K: KvTrait, V: KvTrait>(
-    args: &Args,
-) -> (Option<FlushGuard<BufWriter<File>>>, TempDir, Database<K, V>) {
-    let tracing_guard = if args.enable_tracing {
-        let fmt_layer = fmt::Layer::default();
-
-        let (flame_layer, _guard) = FlameLayer::with_file("./lsm-trace.folded").unwrap();
-
+async fn bench_init<K: KvTrait, V: KvTrait>(args: &Args) -> (TempDir, Database<K, V>) {
+    if args.enable_tracing {
         tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(flame_layer)
+            .with(TracyLayer::new())
             .init();
-        Some(_guard)
-    } else {
-        None
-    };
+    }
 
     let _ = env_logger::builder().is_test(true).try_init();
     let tmp_dir = Builder::new()
@@ -59,14 +45,13 @@ async fn bench_init<K: KvTrait, V: KvTrait>(
         .await
         .expect("Failed to create database instance");
 
-    (tracing_guard, tmp_dir, database)
+    (tmp_dir, database)
 }
 
-#[tokio::main]
-async fn main() {
+async fn main_inner() {
     let args = Args::parse();
 
-    let (_tracing, _tmpdir, database) = bench_init(&args).await;
+    let (_tmpdir, database) = bench_init(&args).await;
 
     log::info!("Starting read/write benchmark");
 
@@ -77,7 +62,7 @@ async fn main() {
 
     for pos in 0..args.num_entries {
         let key = pos;
-        let value = format!("some_string_{}", pos);
+        let value = format!("some_string_{pos}");
         database.put_opts(&key, &value, &options).await.unwrap();
     }
 
@@ -86,9 +71,23 @@ async fn main() {
     for pos in 0..args.num_entries {
         assert_eq!(
             database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{}", pos))
+            Some(format!("some_string_{pos}"))
         );
     }
 
     database.stop().await.unwrap();
+    log::info!("Done");
+}
+
+#[cfg(feature = "async-io")]
+fn main() {
+    tokio_uring::start(async {
+        main_inner().await;
+    });
+}
+
+#[cfg(not(feature = "async-io"))]
+#[tokio::main]
+async fn main() {
+    main_inner().await;
 }

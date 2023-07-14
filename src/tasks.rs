@@ -14,6 +14,13 @@ use crate::{DbLogic, Error};
 
 use async_trait::async_trait;
 
+#[cfg(feature = "async-io")]
+#[async_trait(?Send)]
+pub trait Task {
+    async fn run(&self) -> Result<bool, Error>;
+}
+
+#[cfg(not(feature = "async-io"))]
 #[async_trait]
 pub trait Task: Sync + Send {
     async fn run(&self) -> Result<bool, Error>;
@@ -31,8 +38,6 @@ struct TaskHandle {
     update_cond: Arc<UpdateCond>,
 }
 
-type JoinHandle = tokio::task::JoinHandle<Result<(), Error>>;
-
 /// This structure manages background tasks
 /// Currently there is only compaction, but there might be more in the future
 pub struct TaskManager {
@@ -44,7 +49,8 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-    tasks: Vec<(StdMutex<Option<JoinHandle>>, Arc<TaskHandle>)>,
+    //    #[allow(dead_code)]
+    //    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
@@ -80,7 +86,8 @@ impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
@@ -91,7 +98,8 @@ impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(feature="async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "async-io"), async_trait)]
 impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         Ok(self.datastore.do_level_compaction().await?)
@@ -128,7 +136,7 @@ impl TaskHandle {
         !self.stop_flag.load(Ordering::SeqCst)
     }
 
-    async fn work_loop(&self) -> Result<(), Error> {
+    async fn work_loop(&self) {
         log::trace!("Task work loop started");
         let mut last_update = Instant::now();
 
@@ -151,18 +159,18 @@ impl TaskHandle {
                 break;
             }
 
-            let did_work = self.task.run().await?;
+            let did_work = self.task.run().await.expect("Task failed");
+            last_update = now;
 
             if did_work {
-                last_update = now;
                 idle = false;
             } else {
+                log::trace!("Task did not do any work");
                 idle = true;
             }
         }
 
         log::trace!("Task work loop ended");
-        Ok(())
     }
 }
 
@@ -184,15 +192,23 @@ impl TaskManager {
                 memtable_update_cond.clone(),
                 MemtableCompactionTask::new_boxed(datastore.clone(), level_update_cond.clone()),
             ));
-            let future = {
+            {
                 let hdl = hdl.clone();
-                let future = tokio::spawn(async move { hdl.work_loop().await });
+                let task = async move { hdl.work_loop().await };
 
-                StdMutex::new(Some(future))
-            };
+                cfg_if::cfg_if! {
+                    if #[cfg(feature="async-io")] {
+                        unsafe {
+                            tokio_uring_executor::unsafe_spawn(task);
+                        }
+                    } else {
+                        tokio::spawn(task);
+                    }
+                }
+            }
 
             let task_group = TaskGroup {
-                tasks: vec![(future, hdl)],
+                //tasks: vec![StdMutex::new(hdl)],
                 condition: memtable_update_cond,
             };
 
@@ -208,18 +224,26 @@ impl TaskManager {
                     level_update_cond.clone(),
                     LevelCompactionTask::new_boxed(datastore.clone()),
                 ));
-                let future = {
+                {
                     let hdl = hdl.clone();
-                    let future = tokio::spawn(async move { hdl.work_loop().await });
+                    let task = async move { hdl.work_loop().await };
 
-                    StdMutex::new(Some(future))
-                };
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature="async-io")] {
+                            unsafe {
+                                tokio_uring_executor::unsafe_spawn(task);
+                            }
+                        } else {
+                            tokio::spawn(task);
+                        }
+                    }
+                }
 
-                compaction_tasks.push((future, hdl));
+                compaction_tasks.push(StdMutex::new(hdl));
             }
 
             let task_group = TaskGroup {
-                tasks: compaction_tasks,
+                //tasks: compaction_tasks,
                 condition: level_update_cond,
             };
 
@@ -229,6 +253,7 @@ impl TaskManager {
         Self { stop_flag, tasks }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn wake_up(&self, task_type: &TaskType) {
         let task_group = self.tasks.get(task_type).expect("No such task");
         task_group.condition.wake_up().await;
@@ -238,12 +263,17 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
+            task_group.condition.condition.notify_all();
+        }
+
+        /*
+        for (_, task_group) in self.tasks.iter() {
             for (fut, _) in task_group.tasks.iter() {
                 if let Some(future) = fut.lock().take() {
                     future.abort();
                 }
             }
-        }
+        }*/
     }
 
     pub async fn stop_all(&self) -> Result<(), Error> {
@@ -254,7 +284,7 @@ impl TaskManager {
         for (_, task_group) in self.tasks.iter() {
             task_group.condition.condition.notify_all();
         }
-
+        /*
         for (_, task_group) in self.tasks.iter() {
             for (join_hdl, _) in task_group.tasks.iter() {
                 let inner = join_hdl.lock().take();
@@ -266,7 +296,7 @@ impl TaskManager {
                     }
                 }
             }
-        }
+        }*/
 
         Ok(())
     }

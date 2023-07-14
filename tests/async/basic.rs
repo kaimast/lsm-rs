@@ -5,6 +5,12 @@ use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 
 const SM: StartMode = StartMode::CreateOrOverride;
 
+#[cfg(feature = "async-io")]
+use tokio_uring_executor::test as async_test;
+
+#[cfg(not(feature = "async-io"))]
+use tokio::test as async_test;
+
 async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
     let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
@@ -23,7 +29,7 @@ async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
     (tmp_dir, database)
 }
 
-#[tokio::test]
+#[async_test]
 async fn get_put() {
     let (_tmpdir, database) = test_init().await;
 
@@ -46,7 +52,7 @@ async fn get_put() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn iterate() {
     const COUNT: u64 = 2500;
 
@@ -77,7 +83,7 @@ async fn iterate() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn range_iterate() {
     const COUNT: u64 = 25_000;
 
@@ -109,7 +115,39 @@ async fn range_iterate() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
+async fn range_iterate_reverse() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("some_string_{pos}");
+        database.put_opts(&key, &value, &options).await.unwrap();
+    }
+
+    let mut pos = 0;
+    let mut iter = database.reverse_range_iter(&10150, &300).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let real_pos = 10150 - pos;
+        assert_eq!(real_pos as u64, key);
+        assert_eq!(format!("some_string_{real_pos}"), val);
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 9850);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn range_iterate_empty() {
     let (_tmpdir, database) = test_init().await;
 
@@ -135,7 +173,7 @@ async fn range_iterate_empty() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn get_put_many() {
     const COUNT: u64 = 1_000;
 
@@ -162,7 +200,7 @@ async fn get_put_many() {
 }
 
 // Use multi-threading to enable background compaction
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[async_test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_large_entry() {
     const SIZE: usize = 1000;
 
@@ -190,7 +228,7 @@ async fn get_put_delete_large_entry() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[async_test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_many() {
     const COUNT: u64 = 1_003;
 
@@ -218,7 +256,7 @@ async fn get_put_delete_many() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn override_some() {
     const COUNT: u64 = 1_000;
 
@@ -250,7 +288,7 @@ async fn override_some() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn override_many() {
     const NCOUNT: u64 = 2_000;
     const COUNT: u64 = 501;
@@ -290,7 +328,7 @@ async fn override_many() {
     database.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[async_test]
 async fn batched_write() {
     const COUNT: u64 = 1000;
 
@@ -303,6 +341,8 @@ async fn batched_write() {
     }
 
     database.write(batch).await.unwrap();
+
+    println!("GET");
 
     for pos in 0..COUNT {
         let key = format!("key{}", pos);

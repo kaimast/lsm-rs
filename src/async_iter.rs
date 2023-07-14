@@ -23,6 +23,10 @@ use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
+#[cfg(feature = "async-io")]
+type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>>;
+
+#[cfg(not(feature = "async-io"))]
 type IterFuture<K, V> =
     dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>> + Send;
 
@@ -36,6 +40,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
         table_iters: Vec<TableIterator>,
         min_key: Option<Vec<u8>>,
         max_key: Option<Vec<u8>>,
+        reverse: bool,
         #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
     ) -> Self {
         let inner = DbIteratorInner::new(
@@ -43,6 +48,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
             table_iters,
             min_key,
             max_key,
+            reverse,
             #[cfg(feature = "wisckey")]
             value_log,
         );
@@ -87,10 +93,12 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
 }
 
 struct DbIteratorInner<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
+    _marker: PhantomData<(K, V)>,
 
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
+
+    reverse: bool,
 
     min_key: Option<Vec<u8>>,
     max_key: Option<Vec<u8>>,
@@ -105,7 +113,7 @@ enum IterResult<V: KvTrait> {
     ValueRef(ValueId),
 }
 
-type MinKV = Option<(crate::manifest::SeqNumber, usize)>;
+type NextKV = Option<(crate::manifest::SeqNumber, usize)>;
 
 impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
     fn new(
@@ -113,6 +121,7 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         table_iters: Vec<TableIterator>,
         min_key: Option<Vec<u8>>,
         max_key: Option<Vec<u8>>,
+        reverse: bool,
         #[cfg(feature = "wisckey")] value_log: Arc<ValueLog>,
     ) -> Self {
         let mut iterators: Vec<Box<dyn InternalIterator>> = vec![];
@@ -129,67 +138,124 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
             _marker: PhantomData,
             min_key,
             max_key,
+            reverse,
             #[cfg(feature = "wisckey")]
             value_log,
         }
     }
 
     /// Tries to pick the next value from the specified iterator
-    async fn parse_iter(&mut self, pos: usize, min_kv: MinKV) -> (bool, MinKV) {
+    async fn parse_iter(&mut self, pos: usize, next_kv: NextKV) -> (bool, NextKV) {
         // Split slices to make the borrow checker happy
         let (prev, cur) = self.iterators[..].split_at_mut(pos);
         let iter = &mut *cur[0];
 
-        if let Some(last_key) = &self.last_key {
-            while !iter.at_end() && iter.get_key() <= last_key {
-                iter.step().await;
-            }
-        }
-
-        // Don't pick a key that is smaller than the minimum
-        if let Some(min_key) = &self.min_key {
-            while !iter.at_end() && iter.get_key() < min_key {
-                iter.step().await;
-            }
-
-            // There might be no key in this iterator that is >=min_key
-            if iter.at_end() || iter.get_key() < min_key {
-                return (false, min_kv);
-            }
-        }
-
-        if iter.at_end() {
-            return (false, min_kv);
-        }
-
-        let key = iter.get_key();
-
-        // Don't pick a key that is greater than the maximum
-        if let Some(max_key) = &self.max_key {
-            if iter.get_key().as_slice() >= max_key.as_slice() {
-                return (false, min_kv);
-            }
-        }
-
-        let seq_number = iter.get_seq_number();
-
-        if let Some((min_seq_number, min_pos)) = min_kv {
-            let min_iter = &*prev[min_pos];
-            let min_key = min_iter.get_key();
-
-            match key.cmp(min_key) {
-                Ordering::Less => (true, Some((seq_number, pos))),
-                Ordering::Equal => {
-                    if seq_number > min_seq_number {
-                        (true, Some((seq_number, pos)))
-                    } else {
-                        (false, min_kv)
-                    }
+        if self.reverse {
+            // This iterator might be "behind" other iterators
+            if let Some(last_key) = &self.last_key {
+                while !iter.at_end() && iter.get_key() >= last_key {
+                    iter.step().await;
                 }
-                Ordering::Greater => (false, min_kv),
+            }
+
+            // Don't pick a key that is greater than the maximum
+            if let Some(max_key) = &self.max_key {
+                while !iter.at_end() && iter.get_key() > max_key {
+                    iter.step().await;
+                }
+
+                // There might be no key in this iterator that is <=max_key
+                if iter.at_end() || iter.get_key() > max_key {
+                    return (false, next_kv);
+                }
+            }
+
+            if iter.at_end() {
+                return (false, next_kv);
+            }
+
+            let key = iter.get_key();
+
+            // Don't pick a key that is less or equal to the minimum
+            if let Some(min_key) = &self.min_key {
+                if iter.get_key().as_slice() <= min_key.as_slice() {
+                    return (false, next_kv);
+                }
+            }
+
+            let seq_number = iter.get_seq_number();
+
+            if let Some((max_seq_number, max_pos)) = next_kv {
+                let max_iter = &*prev[max_pos];
+                let max_key = max_iter.get_key();
+
+                match key.cmp(max_key) {
+                    Ordering::Greater => (true, Some((seq_number, pos))),
+                    Ordering::Equal => {
+                        if seq_number > max_seq_number {
+                            (true, Some((seq_number, pos)))
+                        } else {
+                            (false, next_kv)
+                        }
+                    }
+                    Ordering::Less => (false, next_kv),
+                }
+            } else {
+                (true, Some((seq_number, pos)))
             }
         } else {
-            (true, Some((seq_number, pos)))
+            // This iterator might be "behind" other iterators
+            if let Some(last_key) = &self.last_key {
+                while !iter.at_end() && iter.get_key() <= last_key {
+                    iter.step().await;
+                }
+            }
+
+            // Don't pick a key that is smaller than the minimum
+            if let Some(min_key) = &self.min_key {
+                while !iter.at_end() && iter.get_key() < min_key {
+                    iter.step().await;
+                }
+
+                // There might be no key in this iterator that is >=min_key
+                if iter.at_end() || iter.get_key() < min_key {
+                    return (false, next_kv);
+                }
+            }
+
+            if iter.at_end() {
+                return (false, next_kv);
+            }
+
+            let key = iter.get_key();
+
+            // Don't pick a key that is greater or equal to the maximum
+            if let Some(max_key) = &self.max_key {
+                if iter.get_key().as_slice() >= max_key.as_slice() {
+                    return (false, next_kv);
+                }
+            }
+
+            let seq_number = iter.get_seq_number();
+
+            if let Some((min_seq_number, min_pos)) = next_kv {
+                let min_iter = &*prev[min_pos];
+                let min_key = min_iter.get_key();
+
+                match key.cmp(min_key) {
+                    Ordering::Less => (true, Some((seq_number, pos))),
+                    Ordering::Equal => {
+                        if seq_number > min_seq_number {
+                            (true, Some((seq_number, pos)))
+                        } else {
+                            (false, next_kv)
+                        }
+                    }
+                    Ordering::Greater => (false, next_kv),
+                }
+            } else {
+                (true, Some((seq_number, pos)))
+            }
         }
     }
 
@@ -197,18 +263,18 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         let mut result = None;
 
         while result.is_none() {
-            let mut min_kv = None;
+            let mut next_kv = None;
             let num_iterators = self.iterators.len();
 
             for pos in 0..num_iterators {
-                let (change, kv) = self.parse_iter(pos, min_kv).await;
+                let (change, kv) = self.parse_iter(pos, next_kv).await;
 
                 if change {
-                    min_kv = kv;
+                    next_kv = kv;
                 }
             }
 
-            if let Some((_, pos)) = min_kv.take() {
+            if let Some((_, pos)) = next_kv.take() {
                 let encoder = crate::get_encoder();
                 let iter = &*self.iterators[pos];
 

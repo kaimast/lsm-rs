@@ -1,6 +1,6 @@
 [package]
 name = "lsm"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
 edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
@@ -22,6 +22,9 @@ cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = "0.1"
+#tokio-uring = { version="0.4", optional=true }
+tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", optional=true }
+tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.git", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -32,14 +35,14 @@ features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
 clap = { version="4", features=["derive"] }
 env_logger = "0.10"
 tempfile = "3"
+tracing-tracy = "0.10"
 tracing-subscriber = { version="0.3", default-features=false }
-tracing-flame = { version="0.2", default-features=false }
 
 [lib]
 path = "src/lib.rs"
 
 [features]
-default = ["wisckey", "snappy-compression"]
+default = ["snappy-compression", "async-io"]
 snappy-compression = ["snap"]
 # cargo doesn't support mutually exclusive features
 # so all this does is enable async test, async APIs are always enabled
@@ -47,7 +50,7 @@ snappy-compression = ["snap"]
 async = []
 sync = []
 wisckey = []
-async-io = ["tokio/fs"]
+async-io = ["async", "tokio-uring", "tokio-uring-executor"]
 
 [[test]]
 name = "sync-basic"
@@ -63,6 +66,12 @@ required-features = ["sync"]
 name = "async-basic"
 path = "tests/async/basic.rs"
 required-features = ["async"]
+
+[[test]]
+name = "async-reopen"
+path = "tests/async/reopen.rs"
+required-features = ["async"]
+
 
 [[example]]
 name = "lsm-benchmark"

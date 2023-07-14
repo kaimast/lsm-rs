@@ -1,11 +1,8 @@
 #[cfg(feature = "async-io")]
-use tokio::fs;
+use tokio_uring::fs;
 
 #[cfg(not(feature = "async-io"))]
 use std::fs;
-
-#[cfg(feature = "async-io")]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[cfg(not(feature = "async-io"))]
 use std::io::{Read, Seek, Write};
@@ -14,21 +11,17 @@ use std::path::Path;
 
 use cfg_if::cfg_if;
 
-//TODO add proper error handling
-
 #[inline(always)]
+#[tracing::instrument]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     let mut compressed = vec![];
 
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
-            let mut file = fs::File::open(fpath).await?;
-
-            if offset > 0 {
-                file.seek(futures::io::SeekFrom::Start(offset)).await?;
-            }
-
-            file.read_to_end(&mut compressed).await?;
+            let file = fs::File::open(fpath).await?;
+            let (res, buf) = file.read_at_to_end(offset, compressed).await;
+            res?;
+            compressed = buf;
         } else {
             let mut file = fs::File::open(fpath)?;
 
@@ -50,6 +43,7 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
     }
 }
 
+#[tracing::instrument(skip(data))]
 #[inline(always)]
 pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io::Error> {
     //TODO it might be worth investigating if encoding/decoding
@@ -61,21 +55,18 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
             let compressed = encoder.compress_vec(data)
                 .expect("Failed to compress data");
         } else {
-            let compressed = data;
+            let mut compressed = vec![];
+            compressed.extend_from_slice(data);
         }
     }
 
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
-            let mut file = fs::OpenOptions::new().create(true).write(true)
+            let file = fs::OpenOptions::new().create(true).write(true)
                 .open(fpath).await?;
 
-            if offset > 0 {
-                file.set_len(offset).await?;
-                file.seek(futures::io::SeekFrom::Start(offset)).await?;
-            }
-
-            file.write_all(&compressed).await?;
+            let (res, _buf) = file.write_all_at(compressed, offset).await;
+            res?;
             file.sync_all().await?;
         } else {
             let mut file = fs::OpenOptions::new().create(true).write(true)
