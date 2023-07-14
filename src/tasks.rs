@@ -142,7 +142,7 @@ impl TaskHandle {
             if idle {
                 let mut lchange = self.update_cond.last_change.lock().await;
 
-                while self.is_running() && idle && *lchange < last_update {
+                while self.is_running() && idle && *lchange <= last_update {
                     lchange = self.update_cond.condition.wait(lchange).await;
                 }
             }
