@@ -1,6 +1,7 @@
 [build]
 rustflags = [
   "--cfg", "tokio_unstable",
+  "-Zgcc-ld=lld",
 ]
 
 [net]

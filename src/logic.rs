@@ -21,8 +21,7 @@ use std::sync::Arc;
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
-use tokio::sync::{Mutex, RwLock};
-use tokio_condvar::Condvar;
+use tokio::sync::{Notify, RwLock};
 
 use bincode::Options;
 use cfg_if::cfg_if;
@@ -40,10 +39,10 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
-    imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Condvar,
+    imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
+    imm_cond: Notify,
     levels: Vec<Level>,
-    wal: Mutex<WriteAheadLog>,
+    wal: WriteAheadLog,
     level_logger: Option<LevelLogger>,
 
     #[cfg(feature = "wisckey")]
@@ -134,7 +133,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
-            wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
+            wal = WriteAheadLog::new(params.clone()).await?;
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",
@@ -144,10 +143,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(
-                WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                    .await?,
-            );
+            wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
+                .await?;
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
@@ -155,8 +152,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
-        let imm_memtables = Mutex::new(VecDeque::new());
-        let imm_cond = Condvar::new();
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
         if params.num_levels == 0 {
@@ -178,15 +173,13 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        let _marker = PhantomData;
-
         Ok(Self {
-            _marker,
+            _marker: Default::default(),
             manifest,
             params,
             memtable,
-            imm_memtables,
-            imm_cond,
+            imm_memtables: Default::default(),
+            imm_cond: Default::default(),
             levels,
             wal,
             level_logger,
@@ -213,7 +206,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         {
             let memtable = self.memtable.read().await;
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             mem_iters.push(memtable.clone_immutable().into_iter(false).await);
 
@@ -280,7 +273,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         {
             let memtable = self.memtable.read().await;
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             mem_iters.push(memtable.clone_immutable().into_iter(true).await);
 
@@ -352,7 +345,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         {
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
@@ -417,7 +410,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         {
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
@@ -458,9 +451,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     pub async fn synchronize(&self) -> Result<(), Error> {
-        let mut wal = self.wal.lock().await;
-        wal.sync().await?;
-
+        self.wal.sync().await?;
         Ok(())
     }
 
@@ -473,53 +464,52 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe { memtable.get_mut() };
 
-        let mut wal = self.wal.lock().await;
+        let wal_offset = {
+            let log_pos = self.wal.store(&write_batch.writes).await?;
 
-        for op in write_batch.writes.iter() {
-            wal.store(op).await?;
-        }
+            if opt.sync {
+                self.wal.sync().await?;
+            }
 
-        if opt.sync {
-            wal.sync().await?;
-        }
-
-        for op in write_batch.writes.drain(..) {
-            match op {
-                WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{key:?}`");
-                    mem_inner.put(key, value);
-                }
-                WriteOp::Delete(key) => {
-                    log::trace!("Storing deletion for key `{key:?}`");
-                    mem_inner.delete(key);
+            for op in write_batch.writes.drain(..) {
+                match op {
+                    WriteOp::Put(key, value) => {
+                        log::trace!("Storing new value for key `{key:?}`");
+                        mem_inner.put(key, value);
+                    }
+                    WriteOp::Delete(key) => {
+                        log::trace!("Storing deletion for key `{key:?}`");
+                        mem_inner.delete(key);
+                    }
                 }
             }
-        }
+
+            log_pos
+        };
 
         // If the current memtable is full, mark it as immutable, so it can be flushed to L0
         if mem_inner.is_full(&self.params) {
-            let mut imm_mems = self.imm_memtables.lock().await;
-
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
 
-            let wal_offset = wal.get_log_position().await;
-
-            // Drop lock to write-ahead lock so compaction can continue while we are waiting
-            // (compaction flushes the WAL)
-            drop(wal);
-
-            // Currently only one immutable memtable is supported
-            // Wait for it to be flushed...
             loop {
+                let mut imm_mems = self.imm_memtables.write().await;
+
+                // Currently only one immutable memtable is supported
+                // Wait for it to be flushed...
                 if imm_mems.is_empty() {
+                    imm_mems.push_back((wal_offset, imm));
                     break;
                 }
 
-                imm_mems = self.imm_cond.wait(imm_mems).await;
-            }
+                // wait for change to queue and retry
+                let fut = self.imm_cond.notified();
+                tokio::pin!(fut);
 
-            imm_mems.push_back((wal_offset, imm));
+                fut.as_mut().enable();
+                drop(imm_mems);
+                fut.await;
+            }
 
             Ok(true)
         } else {
@@ -531,8 +521,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
         log::trace!("Attempting memtable compaction");
 
-        let mut wal = self.wal.lock().await;
-        let mut imm_mems = self.imm_memtables.lock().await;
+        let mut imm_mems = self.imm_memtables.write().await;
 
         if let Some((log_offset, mem)) = imm_mems.pop_front() {
             log::trace!("Found memtable to compact");
@@ -591,11 +580,11 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 .update_table_set(vec![(0, table_id)], vec![])
                 .await;
 
-            wal.set_offset(log_offset).await;
+            self.wal.set_offset(log_offset).await;
             self.manifest.set_log_offset(log_offset).await;
 
             log::debug!("Created new L0 table");
-            self.imm_cond.notify_all();
+            self.imm_cond.notify_waiters();
 
             Ok(true)
         } else {

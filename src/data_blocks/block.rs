@@ -67,7 +67,7 @@ impl DataBlock {
 
     /// Get the key and entry at the specified offset in bytes (must be valid!)
     /// The third entry in this result is the new offset after (or before) the entry
-    #[tracing::instrument(skip(self_ptr,previous_key))]
+    #[tracing::instrument(skip(self_ptr, previous_key))]
     pub fn get_entry_at_offset(
         self_ptr: Arc<DataBlock>,
         offset: u32,

@@ -34,7 +34,7 @@ pub struct TableBuilder<'a> {
 }
 
 impl<'a> TableBuilder<'a> {
-    #[tracing::instrument(skip(params,data_blocks,min_key,max_key))]
+    #[tracing::instrument(skip(params, data_blocks, min_key, max_key))]
     pub fn new(
         identifier: TableId,
         params: &'a Params,

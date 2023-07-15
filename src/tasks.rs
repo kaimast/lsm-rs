@@ -184,7 +184,7 @@ impl TaskManager {
 
         let level_update_cond = Arc::new(UpdateCond::new());
 
-        #[cfg(feature="async-io")]
+        #[cfg(feature = "async-io")]
         let mut spawn_pos = tokio_uring_executor::SpawnPos::default();
 
         {

@@ -33,7 +33,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
-    #[tracing::instrument(skip(self,key))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
 
