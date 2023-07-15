@@ -100,7 +100,7 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    #[tracing::instrument(skip(self), fields(index=self.index))]
+    #[tracing::instrument(skip(self,key), fields(index=self.index))]
     pub async fn get(&self, key: &[u8]) -> (bool, Option<DataEntry>) {
         let tables = self.tables.read().await;
         let mut compaction_triggered = false;
