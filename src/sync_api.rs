@@ -57,7 +57,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
             match result {
                 Ok((needs_compaction, data)) => {
                     if needs_compaction {
-                        self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                        self.tasks.wake_up(&TaskType::LevelCompaction);
                     }
 
                     Ok(data)
@@ -158,7 +158,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         self.tokio_rt.block_on(async move {
             let needs_compaction = inner.write_opts(write_batch, opts).await?;
             if needs_compaction {
-                self.tasks.wake_up(&TaskType::MemtableCompaction).await;
+                self.tasks.wake_up(&TaskType::MemtableCompaction);
             }
 
             Ok(())

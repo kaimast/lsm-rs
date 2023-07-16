@@ -40,7 +40,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         match self.inner.get(&key_data).await {
             Ok((needs_compaction, data)) => {
                 if needs_compaction {
-                    self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                    self.tasks.wake_up(&TaskType::LevelCompaction);
                 }
 
                 Ok(data)
@@ -114,7 +114,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Write a batch of updates to the database
-    /// This version of write allows you to specifiy options such as "synchronous"
+    /// This version of write allows you to specify options such as "synchronous"
+    #[tracing::instrument(skip(self, write_batch, opts))]
     pub async fn write_opts(
         &self,
         write_batch: WriteBatch<K, V>,
@@ -123,7 +124,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
         if needs_compaction {
-            self.tasks.wake_up(&TaskType::MemtableCompaction).await;
+            self.tasks.wake_up(&TaskType::MemtableCompaction);
         }
 
         Ok(())

@@ -586,6 +586,8 @@ impl WriteAheadLog {
 
         Ok(end_pos)
     }
+
+    #[tracing::instrument(skip(self))]
     pub async fn sync(&self) -> Result<(), std::io::Error> {
         let last_pos = {
             let mut lock = self.inner.status.write().await;
@@ -619,6 +621,7 @@ impl WriteAheadLog {
     }
 
     /// Once the memtable has been flushed we can remove old log entries
+    #[tracing::instrument(skip(self))]
     pub async fn set_offset(&self, new_offset: u64) {
         {
             let mut lock = self.inner.status.write().await;
