@@ -30,6 +30,9 @@ use cfg_if::cfg_if;
 pub type SeqNumber = u64;
 pub type LevelId = u32;
 
+pub const INVALID_TABLE_ID: TableId = 0;
+pub const FIRST_TABLE_ID: TableId = 1;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct MetaData {
     next_table_id: TableId,
@@ -59,7 +62,7 @@ impl Manifest {
     /// Create new manifest for an empty database
     pub async fn new(params: Arc<Params>) -> Self {
         let meta = MetaData {
-            next_table_id: 1,
+            next_table_id: FIRST_TABLE_ID,
             seq_number_offset: 1,
             log_offset: 0,
             next_data_block_id: 1,

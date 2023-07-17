@@ -194,16 +194,16 @@ impl DataBlocks {
     #[tracing::instrument(skip(self))]
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
-
         let mut cache = self.block_caches[shard_id].lock().await;
+
         if let Some(block) = cache.get(id) {
             block.clone()
         } else {
-            log::trace!("Loading data block from disk");
             let fpath = self.get_file_path(id);
+            log::trace!("Loading data block from disk at {fpath:?}");
             let data = disk::read(&fpath, 0)
                 .await
-                .expect("Failed to load data block from disk");
+                .expect("Failed to load data block from disk at {fpath:?}");
             let block = Arc::new(DataBlock::new_from_data(
                 data,
                 self.params.block_restart_interval,

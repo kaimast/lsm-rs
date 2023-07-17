@@ -106,6 +106,8 @@ impl SortedTable {
         self.index.get_max()
     }
 
+    /// Gets an entry for particular key in this table
+    /// Returns None if no entry for the key exists
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Option<DataEntry> {
         self.allowed_seeks.fetch_sub(1, AtomicOrdering::Relaxed);
