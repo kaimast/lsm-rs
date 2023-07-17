@@ -39,6 +39,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
+    /// Immutable memtables are about to be compacted
     imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Notify,
     levels: Vec<Level>,
@@ -521,9 +522,14 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
         log::trace!("Attempting memtable compaction");
 
-        let mut imm_mems = self.imm_memtables.write().await;
+        // SAFETY
+        // Only one task will do the memtable compaction, so it is
+        // fine to not hold the lock the entire time
 
-        if let Some((log_offset, mem)) = imm_mems.pop_front() {
+        let to_compact = self.imm_memtables.read().await.front()
+            .cloned();
+
+        if let Some((log_offset, mem)) = to_compact {
             log::trace!("Found memtable to compact");
 
             // First create table
@@ -573,6 +579,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 logger.l0_table_added();
             }
 
+
             // Then update manifest and flush WAL
             let seq_offset = mem.get().get_next_seq_number();
             self.manifest.set_seq_number_offset(seq_offset).await;
@@ -583,6 +590,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             self.wal.set_offset(log_offset).await;
             self.manifest.set_log_offset(log_offset).await;
 
+            // Finally, remove immutable memtable
+            {
+                let mut imm_mems = self.imm_memtables.write().await;
+                let entry = imm_mems.pop_front();
+                assert!(entry.is_some());
+            }
             log::debug!("Created new L0 table");
             self.imm_cond.notify_waiters();
 
