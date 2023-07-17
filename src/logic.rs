@@ -579,7 +579,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 logger.l0_table_added();
             }
 
-
             // Then update manifest and flush WAL
             let seq_offset = mem.get().get_next_seq_number();
             self.manifest.set_seq_number_offset(seq_offset).await;
@@ -626,7 +625,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                         log::trace!("Cannot compact level {level_pos} right now; lock was held");
                         was_locked = true;
                     }
-                    CompactResult::NothingToDo => {}
+                    CompactResult::NothingToDo => {
+                        log::trace!("Nothing to do for level {level_pos}");
+                    }
                 }
             }
         }
