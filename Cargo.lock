@@ -550,7 +550,7 @@ dependencies = [
  "serde",
  "snap",
  "tempfile",
- "tokio",
+ "tokio 1.29.1 (git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter)",
  "tokio-condvar",
  "tokio-uring",
  "tokio-uring-executor",
@@ -952,15 +952,26 @@ checksum = "532826ff75199d5833b9d2c5fe410f29235e25704ee5f0ef599fb51c21f4a4da"
 dependencies = [
  "autocfg",
  "backtrace",
- "bytes",
  "libc",
  "mio",
- "num_cpus",
  "pin-project-lite",
  "socket2",
- "tokio-macros",
- "tracing",
+ "tokio-macros 2.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows-sys",
+]
+
+[[package]]
+name = "tokio"
+version = "1.29.1"
+source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#b218a18f7eb6b0dc12ddee379668f988558be085"
+dependencies = [
+ "autocfg",
+ "backtrace",
+ "bytes",
+ "num_cpus",
+ "pin-project-lite",
+ "tokio-macros 2.1.0 (git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter)",
+ "tracing",
 ]
 
 [[package]]
@@ -969,7 +980,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7233b09174540ef9bf9fc8326bcad6ccebc631e7c9a1e2e48d956a133056f9d"
 dependencies = [
- "tokio",
+ "tokio 1.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -977,6 +988,16 @@ name = "tokio-macros"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "630bdcf245f78637c13ec01ffae6187cca34625e8c63150d424b59e55af2675e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.1.0"
+source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#b218a18f7eb6b0dc12ddee379668f988558be085"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -993,7 +1014,7 @@ dependencies = [
  "libc",
  "slab",
  "socket2",
- "tokio",
+ "tokio 1.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-uring-macros",
 ]
 
@@ -1005,7 +1026,7 @@ dependencies = [
  "executor-macros",
  "log",
  "rand",
- "tokio",
+ "tokio 1.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-uring",
 ]
 

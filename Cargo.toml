@@ -29,6 +29,8 @@ tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.gi
 [dependencies.tokio]
 version="1"
 default-features=false
+git="https://github.com/kaimast/tokio.git"
+branch="notify_one_waiter"
 features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
 
 [dev-dependencies]

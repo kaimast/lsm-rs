@@ -277,7 +277,7 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
-            task_group.condition.condition.notify_waiters();
+            task_group.condition.condition.notify_one_waiter();
         }
 
         /*
