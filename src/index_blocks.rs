@@ -87,7 +87,7 @@ impl IndexBlock {
 
     /// Search for a specific key
     /// This will a return a data block id that *might* hold this entry or None
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub fn binary_search(&self, key: &[u8]) -> Option<DataBlockId> {
         if key < self.get_min() || key > self.get_max() {
             return None;

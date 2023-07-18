@@ -242,10 +242,10 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             db_path: Path::new("./storage.lsm").to_path_buf(),
-            max_memtable_size: 64 * 1024,
+            max_memtable_size: 5 * 1024 * 1024,
             num_levels: 5,
-            max_open_files: 1000,
-            max_key_block_size: 1024,
+            max_open_files: 1_000_000,
+            max_key_block_size: 512,
             block_restart_interval: 16,
             log_level_stats: None,
             compaction_concurrency: 4,

@@ -1,9 +1,11 @@
 use crate::data_blocks::{DataBlocks, DataEntry};
-use crate::manifest::{LevelId, Manifest};
+use crate::manifest::{LevelId, Manifest, INVALID_TABLE_ID};
 use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
 use tokio::sync::RwLock;
 
 use parking_lot::Mutex as PMutex;
@@ -29,7 +31,7 @@ pub struct Level {
     index: LevelId,
     next_compaction_offset: PMutex<usize>,
     do_seek_based_compaction: bool,
-    seek_based_compaction: PMutex<Option<Arc<SortedTable>>>,
+    seek_based_compaction: AtomicU64,
     data_blocks: Arc<DataBlocks>,
     tables: RwLock<TableVec>,
     params: Arc<Params>,
@@ -51,7 +53,7 @@ impl Level {
             params,
             manifest,
             data_blocks,
-            seek_based_compaction: PMutex::new(None),
+            seek_based_compaction: AtomicU64::new(INVALID_TABLE_ID),
             next_compaction_offset: PMutex::new(0),
             tables: RwLock::new(vec![]),
             table_placeholders: RwLock::new(vec![]),
@@ -100,7 +102,10 @@ impl Level {
         tables.push(Arc::new(table));
     }
 
-    #[tracing::instrument(skip(self), fields(index=self.index))]
+    /// Gets an entry for particular key in this table
+    /// Returns None if no entry for the key exists
+    /// The returned boolean indicates if compaction for this level is needed
+    #[tracing::instrument(skip(self,key), fields(index=self.index))]
     pub async fn get(&self, key: &[u8]) -> (bool, Option<DataEntry>) {
         let tables = self.tables.read().await;
         let mut compaction_triggered = false;
@@ -108,20 +113,29 @@ impl Level {
         // Iterate from back to front (newest to oldest)
         // as L0 may have overlapping entries
         for table in tables.iter().rev() {
-            if let Some(entry) = table.get(key).await {
-                return (compaction_triggered, Some(entry));
+            let result = table.get(key).await;
+
+            if self.do_seek_based_compaction
+                && table.has_maximum_seeks()
+                && self
+                    .seek_based_compaction
+                    .compare_exchange(
+                        INVALID_TABLE_ID,
+                        table.get_id(),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+            {
+                log::trace!(
+                    "Seek-based compaction triggered for table #{}",
+                    table.get_id()
+                );
+                compaction_triggered = true;
             }
 
-            if self.do_seek_based_compaction && table.has_maximum_seeks() {
-                let mut seek_based_compaction = self.seek_based_compaction.lock();
-                if seek_based_compaction.is_none() {
-                    log::trace!(
-                        "Seek-based compaction triggered for table #{}",
-                        table.get_id()
-                    );
-                    *seek_based_compaction = Some(table.clone());
-                    compaction_triggered = true;
-                }
+            if result.is_some() {
+                return (compaction_triggered, result);
             }
         }
 
@@ -144,10 +158,12 @@ impl Level {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
+        log::trace!("Checking if we should compact level");
         let all_tables = self.tables.write().await;
 
-        let (table, offset) = {
+        let (table, offset) = 'choice: {
             let mut next_offset = self.next_compaction_offset.lock();
 
             let size_based_compaction = if self.index == 0 {
@@ -178,22 +194,19 @@ impl Level {
                 *next_offset += 1;
 
                 (table, offset)
-            } else if let Some(table) = self.seek_based_compaction.lock().take() {
-                let mut offset = None;
+            } else {
+                let table_id = self.seek_based_compaction.load(Ordering::SeqCst);
 
-                for (pos, this_table) in all_tables.iter().enumerate() {
-                    if this_table.get_id() == table.get_id() {
-                        offset = Some(pos);
-                        break;
+                if table_id != INVALID_TABLE_ID {
+                    for (pos, table) in all_tables.iter().enumerate() {
+                        if table.get_id() == table_id {
+                            self.seek_based_compaction
+                                .store(INVALID_TABLE_ID, Ordering::SeqCst);
+                            break 'choice (table.clone(), pos);
+                        }
                     }
                 }
 
-                if let Some(offset) = offset {
-                    (table, offset)
-                } else {
-                    return Ok(None);
-                }
-            } else {
                 return Ok(None);
             }
         };

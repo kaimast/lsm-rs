@@ -525,39 +525,47 @@ impl WriteAheadLog {
     }
 
     /// Stores an operation and returns the new position in the logfile
-    #[tracing::instrument(skip(self))]
-    pub async fn store(&mut self, op: &WriteOp) -> Result<u64, std::io::Error> {
-        let op_type = op.get_type().to_le_bytes();
+    #[tracing::instrument(skip(self, batch))]
+    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, std::io::Error> {
+        let mut writes = vec![];
 
-        let key = op.get_key();
-        let klen = op.get_key_length().to_le_bytes();
-        let vlen = op.get_value_length().to_le_bytes();
+        for op in batch {
+            let op_type = op.get_type().to_le_bytes();
 
-        let mut data = vec![];
-        data.extend_from_slice(op_type.as_slice());
-        data.extend_from_slice(klen.as_slice());
-        data.extend_from_slice(key);
+            let key = op.get_key();
+            let klen = op.get_key_length().to_le_bytes();
+            let vlen = op.get_value_length().to_le_bytes();
 
-        match op {
-            WriteOp::Put(_, value) => {
-                data.extend_from_slice(vlen.as_slice());
-                data.extend_from_slice(value);
+            let mut data = vec![];
+            data.extend_from_slice(op_type.as_slice());
+            data.extend_from_slice(klen.as_slice());
+            data.extend_from_slice(key);
+
+            match op {
+                WriteOp::Put(_, value) => {
+                    data.extend_from_slice(vlen.as_slice());
+                    data.extend_from_slice(value);
+                }
+                WriteOp::Delete(_) => {}
             }
-            WriteOp::Delete(_) => {}
+
+            writes.push(data);
         }
 
         // Queue write
         let end_pos = {
             let mut lock = self.inner.status.write().await;
-            let write_len = data.len() as u64;
+            let mut end_pos = lock.queue_pos;
 
-            let start_pos = lock.queue_pos;
-            lock.queue.push(data);
-            lock.queue_pos += write_len;
+            for data in writes.into_iter() {
+                let write_len = data.len() as u64;
+                lock.queue.push(data);
+                lock.queue_pos += write_len;
+                end_pos += write_len;
+            }
 
             self.inner.queue_cond.notify_waiters();
-
-            start_pos + write_len
+            end_pos
         };
 
         // Wait until write has been processed
@@ -578,7 +586,9 @@ impl WriteAheadLog {
 
         Ok(end_pos)
     }
-    pub async fn sync(&mut self) -> Result<(), std::io::Error> {
+
+    #[tracing::instrument(skip(self))]
+    pub async fn sync(&self) -> Result<(), std::io::Error> {
         let last_pos = {
             let mut lock = self.inner.status.write().await;
 
@@ -610,12 +620,9 @@ impl WriteAheadLog {
         }
     }
 
-    pub async fn get_log_position(&self) -> u64 {
-        self.inner.status.read().await.write_pos
-    }
-
     /// Once the memtable has been flushed we can remove old log entries
-    pub async fn set_offset(&mut self, new_offset: u64) {
+    #[tracing::instrument(skip(self))]
+    pub async fn set_offset(&self, new_offset: u64) {
         {
             let mut lock = self.inner.status.write().await;
 
