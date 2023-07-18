@@ -526,8 +526,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         // Only one task will do the memtable compaction, so it is
         // fine to not hold the lock the entire time
 
-        let to_compact = self.imm_memtables.read().await.front()
-            .cloned();
+        let to_compact = self.imm_memtables.read().await.front().cloned();
 
         if let Some((log_offset, mem)) = to_compact {
             log::trace!("Found memtable to compact");

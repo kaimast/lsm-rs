@@ -3,8 +3,8 @@ use crate::manifest::{LevelId, Manifest, INVALID_TABLE_ID};
 use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
@@ -115,11 +115,18 @@ impl Level {
         for table in tables.iter().rev() {
             let result = table.get(key).await;
 
-            if self.do_seek_based_compaction && table.has_maximum_seeks()
-                && self.seek_based_compaction.compare_exchange(INVALID_TABLE_ID,
-                                                               table.get_id(),
-                                                               Ordering::Relaxed,
-                                                               Ordering::Relaxed).is_ok() {
+            if self.do_seek_based_compaction
+                && table.has_maximum_seeks()
+                && self
+                    .seek_based_compaction
+                    .compare_exchange(
+                        INVALID_TABLE_ID,
+                        table.get_id(),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+            {
                 log::trace!(
                     "Seek-based compaction triggered for table #{}",
                     table.get_id()
@@ -130,7 +137,6 @@ impl Level {
             if result.is_some() {
                 return (compaction_triggered, result);
             }
-
         }
 
         (compaction_triggered, None)
@@ -194,7 +200,8 @@ impl Level {
                 if table_id != INVALID_TABLE_ID {
                     for (pos, table) in all_tables.iter().enumerate() {
                         if table.get_id() == table_id {
-                            self.seek_based_compaction.store(INVALID_TABLE_ID, Ordering::SeqCst);
+                            self.seek_based_compaction
+                                .store(INVALID_TABLE_ID, Ordering::SeqCst);
                             break 'choice (table.clone(), pos);
                         }
                     }
