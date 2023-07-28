@@ -29,7 +29,6 @@ pub trait InternalIterator: Send {
 }
 
 /// Returns the entries within a table in order
-#[derive(Debug)]
 pub struct TableIterator {
     block_pos: i64,
     block_offset: u32,

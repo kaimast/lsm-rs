@@ -535,7 +535,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.get(0).unwrap();
             let table_id = self.manifest.next_table_id().await;
-            let mut table_builder = l0.build_table(table_id, min_key, max_key).await;
+            let mut table_builder = l0.build_table(table_id, min_key, max_key);
 
             let memtable_entries = mem.get().get_entries();
 
@@ -757,7 +757,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         let mut deleted_values = vec![];
 
-        let mut table_builder = child_level.build_table(table_id, min, max).await;
+        let mut table_builder = child_level.build_table(table_id, min, max);
 
         loop {
             log::trace!("Starting compaction for next key");
