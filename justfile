@@ -5,13 +5,13 @@ all: test lint
 test: sync-tests async-tests no-wisckey-tests no-compression-tests async-io-tests
 
 sync-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync,bloom-filters
 
 async-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async
 
 async-io-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,async-io -- --test-threads=1
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,async-io,bloom-filters -- --test-threads=1
 
 no-compression-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,wisckey
@@ -43,7 +43,7 @@ async-lint:
     cargo clippy --no-default-features --features=async -- -D warnings
 
 async-io-lint:
-    cargo clippy --no-default-features --features=async,async-io -- -D warnings
+    cargo clippy --no-default-features --features=async,async-io,bloom-filters -- -D warnings
 
 wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings

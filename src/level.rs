@@ -82,12 +82,7 @@ impl Level {
         Ok(())
     }
 
-    pub async fn build_table(
-        &self,
-        identifier: TableId,
-        min_key: Key,
-        max_key: Key,
-    ) -> TableBuilder<'_> {
+    pub fn build_table(&self, identifier: TableId, min_key: Key, max_key: Key) -> TableBuilder<'_> {
         TableBuilder::new(
             identifier,
             &self.params,

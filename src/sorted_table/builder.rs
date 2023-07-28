@@ -149,7 +149,8 @@ impl<'a> TableBuilder<'a> {
 
         self.last_key = key.to_vec();
 
-        self.data_block.add_entry(pkey, seq_number, op_type, value);
+        self.data_block
+            .add_entry(pkey, key, seq_number, op_type, value);
 
         if self.block_entry_count >= self.params.max_key_block_size {
             let mut next_block = DataBlocks::build_block(self.data_blocks.clone());

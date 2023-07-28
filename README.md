@@ -12,6 +12,7 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput
 * *Async-support*: All API calls are exposed as async functions.
 * *io_uring-support*: For async file system access on Linux
+* *Bloom filters* for faster lookups
 
 ## Latest Version:
 The version on crates.io is quite outdated. It is recommended using the `main` git branch.
@@ -20,7 +21,6 @@ The version on crates.io is quite outdated. It is recommended using the `main` g
 Currently, the code is only tested on Linux machines, but it should run on all systems supported by the rust compiler.
 
 ## Planned Features:
-* Bloom filters for faster lookups
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
 * Custom sorting functions
 * More modularity and configuration options
@@ -28,6 +28,7 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 ## Feature Flags
 * `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
 * `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk (enabled by default)
+* `bloom-filters`: Add bloom filters to data blocks for more efficient searching
 * `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
 * `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel.
 
