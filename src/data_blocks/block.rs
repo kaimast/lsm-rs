@@ -8,7 +8,7 @@ use crate::sorted_table::Key;
 
 use super::{DataEntry, SearchResult};
 
-#[cfg(feature = "bloom-filters")]
+#[cfg(feature="bloom-filters")]
 use bloomfilter::Bloom;
 
 #[cfg(feature = "wisckey")]
@@ -17,20 +17,21 @@ use super::ENTRY_LENGTH;
 #[cfg(not(feature = "wisckey"))]
 use super::DataLen;
 
-#[cfg(feature = "bloom-filters")]
-pub(super) const BLOOM_LENGTH: usize = 2048;
+#[cfg(feature="bloom-filters")]
+//TODO change the size of this depending on max_key_block_length
+pub(super) const BLOOM_LENGTH: usize = 1024;
 
-#[cfg(feature = "bloom-filters")]
+#[cfg(feature="bloom-filters")]
 pub(super) const BLOOM_KEY_NUM: usize = 1024;
 
-#[cfg(feature = "bloom-filters")]
+#[cfg(feature="bloom-filters")]
 pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
 
 /**
  * Data Layout
  * 1. 4 bytes marking where the restart list starts
  * 2. 4 bytes indicating the number of entries in this block
- * 3. 2048+32 bytes for the bloom filter (if enabled)
+ * 3. 1024+32 bytes for the bloom filter (if enabled)
  * 4. Sequence of variable-length entries, where each entry is structured as listed below
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
  *
@@ -58,7 +59,7 @@ pub struct DataBlock {
     pub(super) num_entries: u32,
     pub(super) restart_interval: u32,
     pub(super) data: Vec<u8>,
-    #[cfg(feature = "bloom-filters")]
+    #[cfg(feature="bloom-filters")]
     pub(super) bloom_filter: Bloom<[u8]>,
 }
 
@@ -71,20 +72,12 @@ impl DataBlock {
         let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
         let num_entries = u32::from_le_bytes(data[rls_len..rls_len + len_len].try_into().unwrap());
 
-        #[cfg(feature = "bloom-filters")]
+        #[cfg(feature="bloom-filters")]
         let bloom_filter = {
-            let filter = &data[rls_len + len_len..rls_len + len_len + BLOOM_LENGTH];
-            let keys: [(u64, u64); 2] = bincode::deserialize(
-                &data[rls_len + len_len + BLOOM_LENGTH..Self::header_length()],
-            )
-            .unwrap();
-
-            Bloom::from_existing(
-                filter,
-                (BLOOM_LENGTH * 8) as u64,
-                BLOOM_KEY_NUM as u32,
-                keys,
-            )
+            let filter = &data[rls_len+len_len..rls_len+len_len+BLOOM_LENGTH];
+            let keys: [(u64,u64);2] = bincode::deserialize(&data[rls_len+len_len+BLOOM_LENGTH..Self::header_length()]).unwrap();
+ 
+            Bloom::from_existing(filter, (BLOOM_LENGTH*8) as u64, BLOOM_KEY_NUM as u32, keys)
         };
 
         assert!(restart_list_start <= data.len(), "Data corrupted?");
@@ -94,7 +87,7 @@ impl DataBlock {
             num_entries,
             restart_list_start,
             restart_interval,
-            #[cfg(feature = "bloom-filters")]
+            #[cfg(feature="bloom-filters")]
             bloom_filter,
         }
     }
@@ -266,7 +259,7 @@ impl DataBlock {
     /// Will return None if no such entry exists
     #[tracing::instrument(skip(self_ptr, key))]
     pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
-        #[cfg(feature = "bloom-filters")]
+        #[cfg(feature="bloom-filters")]
         if !self_ptr.bloom_filter.check(key) {
             return None;
         }
