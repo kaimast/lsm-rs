@@ -257,7 +257,7 @@ mod tests {
         };
         let seq2 = 424234;
         let val2 = (4, 5);
-        builder.add_entry(key2, &[5,2], seq2, WriteOp::PUT_OP, val2);
+        builder.add_entry(key2, &[5, 2], seq2, WriteOp::PUT_OP, val2);
 
         let id = builder.finish().await.unwrap().unwrap();
         let data_block1 = data_blocks.get_block(&id).await;
