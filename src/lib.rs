@@ -5,9 +5,8 @@
 // Temporary workaround for the io_uring code
 #![allow(clippy::arc_with_non_send_sync)]
 
-use std::marker::PhantomData;
-
 use bincode::Options;
+use cfg_if::cfg_if;
 
 #[cfg(feature = "sync")]
 pub mod sync_iter;
@@ -27,6 +26,9 @@ mod values;
 mod params;
 pub use params::Params;
 
+mod write_batch;
+pub use write_batch::{WriteBatch, WriteOp, WriteOptions};
+
 mod sorted_table;
 use sorted_table::{Key, Value};
 
@@ -45,53 +47,15 @@ mod level;
 mod manifest;
 mod wal;
 
-#[derive(Debug)]
-pub enum WriteOp {
-    Put(Key, Value),
-    Delete(Key),
-}
-
-impl WriteOp {
-    const PUT_OP: u8 = 1;
-    const DELETE_OP: u8 = 2;
-
-    pub fn get_key(&self) -> &[u8] {
-        match self {
-            Self::Put(key, _) => key,
-            Self::Delete(key) => key,
-        }
-    }
-
-    pub fn get_type(&self) -> u8 {
-        match self {
-            Self::Put(_, _) => Self::PUT_OP,
-            Self::Delete(_) => Self::DELETE_OP,
-        }
-    }
-
-    fn get_key_length(&self) -> u64 {
-        match self {
-            Self::Put(key, _) | Self::Delete(key) => key.len() as u64,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn get_value_length(&self) -> u64 {
-        match self {
-            Self::Put(_, value) => value.len() as u64,
-            Self::Delete(_) => 0u64,
-        }
+cfg_if! {
+    if #[cfg(feature = "sync")] {
+        mod sync_api;
+        pub use sync_api::Database;
+    } else {
+        mod async_api;
+        pub use async_api::Database;
     }
 }
-#[cfg(not(feature = "sync"))]
-mod async_api;
-#[cfg(not(feature = "sync"))]
-pub use async_api::Database;
-
-#[cfg(feature = "sync")]
-mod sync_api;
-#[cfg(feature = "sync")]
-pub use sync_api::Database;
 
 /// Keys and values must be (de-)serializable
 pub trait KvTrait = Send
@@ -101,15 +65,6 @@ pub trait KvTrait = Send
     + Unpin
     + Clone
     + std::fmt::Debug;
-
-/// A WriteBatch allows to bundle multiple updates together for higher throughput
-///
-/// Note: The batch will not be applied to the database until it is passed to `Database::write`
-#[derive(Debug)]
-pub struct WriteBatch<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
-    writes: Vec<WriteOp>,
-}
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -151,56 +106,6 @@ impl From<bincode::ErrorKind> for Error {
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(inner: Box<bincode::ErrorKind>) -> Self {
         Self::Serialization((*inner).to_string())
-    }
-}
-
-impl<K: KvTrait, V: KvTrait> WriteBatch<K, V> {
-    pub fn new() -> Self {
-        Self {
-            writes: Vec::new(),
-            _marker: PhantomData,
-        }
-    }
-
-    /// Record a put operation in the write batch
-    /// Will not be applied to the Database until the WriteBatch is written
-    pub fn put(&mut self, key: &K, value: &V) {
-        let enc = get_encoder();
-        self.writes.push(WriteOp::Put(
-            enc.serialize(key).unwrap(),
-            enc.serialize(value).unwrap(),
-        ));
-    }
-
-    pub fn delete(&mut self, key: &K) {
-        let enc = get_encoder();
-        self.writes
-            .push(WriteOp::Delete(enc.serialize(key).unwrap()));
-    }
-}
-
-impl<K: KvTrait, V: KvTrait> Default for WriteBatch<K, V> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Allows specifying details of a write
-#[derive(Debug, Clone)]
-pub struct WriteOptions {
-    /// Should the call block until it is guaranteed to be written to disk?
-    pub sync: bool,
-}
-
-impl WriteOptions {
-    pub const fn new() -> Self {
-        Self { sync: true }
-    }
-}
-
-impl Default for WriteOptions {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
