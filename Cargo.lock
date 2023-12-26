@@ -529,9 +529,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.11.1"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a83fb7698b3643a0e34f9ae6f2e8f0178c0fd42f8b59d493aa271ff3a5bf21"
+checksum = "2994eeba8ed550fd9b47a0b38f0242bc3344e496483c6180b69139cc2fa5d1d7"
 dependencies = [
  "hashbrown",
 ]
@@ -554,7 +554,7 @@ dependencies = [
  "serde",
  "snap",
  "tempfile",
- "tokio 1.29.1",
+ "tokio 1.35.1 (git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter)",
  "tokio-condvar",
  "tokio-uring",
  "tokio-uring-executor",
@@ -951,20 +951,6 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.29.1"
-source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#c8aa6a3479126e611aceba333a94e1c37a9de727"
-dependencies = [
- "autocfg",
- "backtrace",
- "bytes",
- "num_cpus",
- "pin-project-lite",
- "tokio-macros 2.1.0",
- "tracing",
-]
-
-[[package]]
-name = "tokio"
 version = "1.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89b4efa943be685f629b149f53829423f8f5531ea21249408e8e2f8671ec104"
@@ -974,8 +960,21 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2 0.5.5",
- "tokio-macros 2.2.0",
+ "tokio-macros 2.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "tokio"
+version = "1.35.1"
+source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#7d008a683c575aeb962908c486f5d80a68464b7c"
+dependencies = [
+ "backtrace",
+ "bytes",
+ "num_cpus",
+ "pin-project-lite",
+ "tokio-macros 2.2.0 (git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter)",
+ "tracing",
 ]
 
 [[package]]
@@ -984,13 +983,14 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7233b09174540ef9bf9fc8326bcad6ccebc631e7c9a1e2e48d956a133056f9d"
 dependencies = [
- "tokio 1.35.1",
+ "tokio 1.35.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "tokio-macros"
-version = "2.1.0"
-source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#c8aa6a3479126e611aceba333a94e1c37a9de727"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b8a1e28f2deaa14e508979454cb3a223b10b938b45af148bc0986de36f1923b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1000,8 +1000,7 @@ dependencies = [
 [[package]]
 name = "tokio-macros"
 version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b8a1e28f2deaa14e508979454cb3a223b10b938b45af148bc0986de36f1923b"
+source = "git+https://github.com/kaimast/tokio.git?branch=notify_one_waiter#7d008a683c575aeb962908c486f5d80a68464b7c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1018,7 +1017,7 @@ dependencies = [
  "libc",
  "slab",
  "socket2 0.4.10",
- "tokio 1.35.1",
+ "tokio 1.35.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-uring-macros",
 ]
 
@@ -1030,7 +1029,7 @@ dependencies = [
  "executor-macros",
  "log",
  "rand",
- "tokio 1.35.1",
+ "tokio 1.35.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-uring",
 ]
 
