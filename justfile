@@ -33,6 +33,9 @@ check-formatting:
 clean:
     rm -rf target/
 
+update-dependencies:
+    cargo update
+
 udeps:
     cargo udeps --all-targets --release
 

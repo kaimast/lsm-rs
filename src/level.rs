@@ -290,7 +290,9 @@ impl Level {
             }
         }
 
-        let table_id = if let Some(table_id) = fast_path && overlaps.is_empty() {
+        let table_id = if let Some(table_id) = fast_path
+            && overlaps.is_empty()
+        {
             table_id
         } else {
             self.manifest.next_table_id().await
