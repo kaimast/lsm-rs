@@ -618,13 +618,13 @@ impl ValueLog {
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let file = File::open(&fpath).await?;
+                let file = File::open(fpath).await?;
                 let pos = size_of::<u8>() as u64;
                 let (res, buf) = file.read_exact_at(data, pos).await;
                 res?;
                 data = buf;
             } else {
-                let mut file = File::open(&fpath)?;
+                let mut file = File::open(fpath)?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
                 file.read_exact(&mut data)?;
             }

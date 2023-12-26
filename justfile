@@ -33,8 +33,11 @@ check-formatting:
 clean:
     rm -rf target/
 
+update-dependencies:
+    cargo update
+
 udeps:
-    cargo udeps --all-targets
+    cargo udeps --all-targets --release
 
 sync-lint:
     cargo clippy --no-default-features --features=sync -- -D warnings

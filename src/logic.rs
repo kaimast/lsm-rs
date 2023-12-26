@@ -201,7 +201,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+        if let Some(min_key) = &min_key
+            && let Some(max_key) = &max_key
+        {
             assert!(min_key < max_key);
         }
 
@@ -268,7 +270,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+        if let Some(min_key) = &min_key
+            && let Some(max_key) = &max_key
+        {
             assert!(min_key < max_key);
         };
 
@@ -533,7 +537,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
-            let l0 = self.levels.get(0).unwrap();
+            let l0 = self.levels.first().unwrap();
             let table_id = self.manifest.next_table_id().await;
             let mut table_builder = l0.build_table(table_id, min_key, max_key);
 

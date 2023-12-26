@@ -289,7 +289,6 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
                                 result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value)?))));
                             }
                             ValueResult::Reference(value_ref) => {
-                                let value_ref = value_ref;
                                 result = Some(Some((res_key, IterResult::ValueRef(value_ref))));
                                                     }
                             ValueResult::NoValue => {
