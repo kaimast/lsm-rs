@@ -1,6 +1,8 @@
 use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
 use tempfile::{Builder, TempDir};
 
+use futures::stream::StreamExt;
+
 #[cfg(feature = "async-io")]
 use tokio_uring_executor::test as async_test;
 
@@ -88,5 +90,42 @@ async fn get_put_many() {
             database.get(&pos).await.unwrap(),
             Some(format!("some_string_{pos}"))
         );
+    }
+
+    // Ensure iteration still works
+    let mut iterator = database.iter().await;
+    while let Some((pos, value)) = iterator.next().await {
+        assert_eq!(value, format!("some_string_{pos}"));
+    }
+}
+
+#[async_test]
+async fn get_put_large() {
+    const COUNT: usize = 100;
+    const SIZE: usize = 100_000;
+
+    let (_tmpdir, params, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let mut options = WriteOptions::default();
+    options.sync = false;
+
+    for pos in 0..COUNT {
+        let key = pos;
+        let value = format!("{pos}").repeat(SIZE);
+        database.put_opts(&key, &value, &options).await.unwrap();
+    }
+
+    database.synchronize().await.unwrap();
+    drop(database);
+
+    // Reopen
+    let database = Database::<usize, String>::new_with_params(StartMode::Open, params.clone())
+        .await
+        .expect("Failed to create database instance");
+
+    let mut iterator = database.iter().await;
+    while let Some((pos, value)) = iterator.next().await {
+        assert_eq!(value, format!("{pos}").repeat(SIZE));
     }
 }

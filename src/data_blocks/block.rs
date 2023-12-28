@@ -89,6 +89,7 @@ impl DataBlock {
         };
 
         assert!(restart_list_start <= data.len(), "Data corrupted?");
+        log::trace!("Created new data block from existing data");
 
         Self {
             data,

@@ -164,8 +164,9 @@ impl DataBlockBuilder {
 
         disk::write(&fpath, block_data, 0).await?;
 
-        let mut cache = self.data_blocks.block_caches[shard_id].lock().await;
-        cache.put(identifier, block);
+        self.data_blocks.block_caches[shard_id]
+            .lock()
+            .put(identifier, block);
 
         Ok(Some(identifier))
     }

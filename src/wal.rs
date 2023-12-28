@@ -505,8 +505,6 @@ impl WriteAheadLog {
                 // Try to open next file
                 let fpos = *position / PAGE_SIZE;
 
-                println!("Next file: {fpos}");
-
                 *log_file = match WalWriter::open_file(params, fpos).await {
                     Ok(file) => file,
                     Err(err) => {
