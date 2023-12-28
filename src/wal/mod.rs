@@ -143,7 +143,10 @@ impl WriteAheadLog {
 
         // Re-insert ops into memtable
         loop {
-            let mut op_header = [0u8; 9];
+            const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
+            const HEADER_SIZE: usize = std::mem::size_of::<u8>()+KEY_LEN_SIZE;
+
+            let mut op_header = [0u8; HEADER_SIZE];
             let success = Self::read_from_log(
                 &mut log_file,
                 &mut position,
@@ -159,8 +162,8 @@ impl WriteAheadLog {
 
             let op_type = op_header[0];
 
-            let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
-            let key_len = u64::from_le_bytes(*key_data);
+            let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
+            let key_len = u64::from_le_bytes(*key_len_data);
 
             let mut key = vec![0; key_len as usize];
             Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false).await?;
