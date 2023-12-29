@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 use lru::LruCache;
 
@@ -198,24 +198,25 @@ impl DataBlocks {
         let shard_id = Self::block_to_shard_id(*id);
         let cache = &self.block_caches[shard_id];
 
-        if let Some(block) = cache.lock().await.get(id) {
-            block.clone()
-        } else {
-            // Do not hold the lock while loading form disk for better concurrency
-            // Worst case this means we load the same block multiple times...
-            let fpath = self.get_file_path(id);
-            log::trace!("Loading data block from disk at {fpath:?}");
-            let data = disk::read(&fpath, 0)
-                .await
-                .expect("Failed to load data block from disk at {fpath:?}");
-            let block = Arc::new(DataBlock::new_from_data(
-                data,
-                self.params.block_restart_interval,
-            ));
-
-            cache.lock().await.put(*id, block.clone());
-            block
+        if let Some(block) = cache.lock().get(id) {
+            return block.clone();
         }
+
+        // Do not hold the lock while loading form disk for better concurrency
+        // Worst case this means we load the same block multiple times...
+        let fpath = self.get_file_path(id);
+        log::trace!("Loading data block from disk at {fpath:?}");
+        let data = disk::read(&fpath, 0)
+            .await
+            .expect("Failed to load data block from disk at {fpath:?}");
+        let block = Arc::new(DataBlock::new_from_data(
+            data,
+            self.params.block_restart_interval,
+        ));
+
+        cache.lock().put(*id, block.clone());
+        log::trace!("Stored new block in cache");
+        block
     }
 }
 

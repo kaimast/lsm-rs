@@ -2,29 +2,32 @@ use crate::memtable::Memtable;
 use crate::Params;
 use crate::WriteOp;
 
-use std::path::Path;
 use std::sync::Arc;
 
-use tokio::sync::{Notify, RwLock};
+use parking_lot::RwLock;
+use tokio::sync::Notify;
 
 #[cfg(feature = "async-io")]
 use tokio_uring_executor as executor;
 
 #[cfg(feature = "async-io")]
-use tokio_uring::buf::BoundedBuf;
-
-#[cfg(feature = "async-io")]
-use tokio_uring::fs::{remove_file, File, OpenOptions};
+use tokio_uring::fs::{File, OpenOptions};
 
 use std::convert::TryInto;
 
 #[cfg(not(feature = "async-io"))]
-use std::fs::{remove_file, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 
 #[cfg(not(feature = "async-io"))]
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek};
 
 use cfg_if::cfg_if;
+
+mod writer;
+use writer::WalWriter;
+
+#[cfg(test)]
+mod tests;
 
 /// The log is split individual files (pages) that can be
 /// garbage collected once the logged data is not needed anymore
@@ -63,239 +66,10 @@ struct LogInner {
     write_cond: Notify,
 }
 
-struct WalWriter {
-    log_file: File,
-    position: u64,
-    params: Arc<Params>,
-}
-
 /// The write-ahead log keeps track of the most recent changes
 /// It can be used to recover from crashes
 pub struct WriteAheadLog {
     inner: Arc<LogInner>,
-}
-
-impl WalWriter {
-    async fn new(params: Arc<Params>) -> Self {
-        let log_file = Self::create_file(&params, 0)
-            .await
-            .expect("Failed to create WAL file");
-
-        Self {
-            log_file,
-            params,
-            position: 0,
-        }
-    }
-
-    /// Start the writer at a specific position after opening a log
-    async fn continue_from(position: u64, params: Arc<Params>) -> Self {
-        let fpos = position / PAGE_SIZE;
-
-        let log_file = if position % PAGE_SIZE == 0 {
-            // At the beginning of a new file
-            Self::create_file(&params, fpos)
-                .await
-                .expect("Failed to create WAL file")
-        } else {
-            Self::open_file(&params, fpos)
-                .await
-                .expect("Failed to create WAL file")
-        };
-
-        Self {
-            log_file,
-            params,
-            position,
-        }
-    }
-
-    async fn write_log(&mut self, inner: Arc<LogInner>) {
-        loop {
-            let (to_write, sync_flag, new_offset) = {
-                let mut lock = inner.status.write().await;
-                let to_write = { std::mem::take(&mut lock.queue) };
-                let sync_flag = lock.sync_flag;
-
-                let new_offset = if lock.offset_pos > lock.flush_pos {
-                    Some((lock.offset_pos, lock.flush_pos))
-                } else {
-                    assert_eq!(lock.offset_pos, lock.flush_pos);
-                    None
-                };
-
-                // Nothing to do?
-                if to_write.is_empty() && new_offset.is_none() && !sync_flag {
-                    assert_eq!(lock.write_pos, lock.queue_pos);
-
-                    // wait for change to queue and retry
-                    let fut = inner.queue_cond.notified();
-                    tokio::pin!(fut);
-
-                    fut.as_mut().enable();
-                    drop(lock);
-                    fut.await;
-
-                    continue;
-                }
-
-                assert_eq!(self.position, lock.write_pos);
-
-                lock.sync_flag = false;
-                (to_write, sync_flag, new_offset)
-            };
-
-            // Don't hold lock while write
-            for buf in to_write.into_iter() {
-                self.write_all(buf).await.expect("Write failed");
-            }
-
-            if sync_flag {
-                let mut lock = inner.status.write().await;
-
-                // Only sync if necessary
-                if lock.sync_pos < self.position {
-                    self.sync().await;
-                    lock.sync_pos = self.position;
-                }
-            }
-
-            if let Some((new_offset, old_offset)) = new_offset {
-                self.set_offset(new_offset, old_offset).await;
-            }
-
-            // Notify about finished write(s)
-            {
-                let mut lock = inner.status.write().await;
-                assert!(lock.write_pos <= self.position);
-                lock.write_pos = self.position;
-
-                if let Some((new_offset, _)) = new_offset {
-                    lock.flush_pos = new_offset;
-                }
-
-                inner.write_cond.notify_waiters();
-            }
-        }
-    }
-
-    async fn set_offset(&mut self, new_offset: u64, old_offset: u64) {
-        let old_file_pos = old_offset / PAGE_SIZE;
-        let new_file_pos = new_offset / PAGE_SIZE;
-
-        for fpos in old_file_pos..new_file_pos {
-            let fpath = self
-                .params
-                .db_path
-                .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-            log::trace!("Removing file {fpath:?}");
-
-            cfg_if! {
-                if #[cfg(feature="async-io") ] {
-                    remove_file(&fpath).await
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                } else {
-                    remove_file(&fpath)
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                }
-            }
-        }
-    }
-
-    async fn sync(&mut self) {
-        cfg_if! {
-            if #[cfg(feature="async-io") ] {
-                self.log_file.sync_data().await
-                    .expect("Data sync failed");
-            } else {
-                self.log_file.sync_data()
-                   .expect("Data sync failed");
-            }
-        }
-    }
-
-    #[allow(unused_mut)]
-    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
-        let mut buf_pos = 0;
-        while buf_pos < data.len() {
-            let mut file_offset = self.position % PAGE_SIZE;
-
-            // Figure out how much we can fit into the current file
-            assert!(file_offset < PAGE_SIZE);
-
-            let page_remaining = PAGE_SIZE - file_offset;
-            let buffer_remaining = data.len() - buf_pos;
-            let write_len = (buffer_remaining).min(page_remaining as usize);
-
-            assert!(write_len > 0);
-            cfg_if! {
-                if #[cfg(feature = "async-io")] {
-                    let to_write = data.slice(buf_pos..buf_pos + write_len);
-                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
-                    res.expect("Failed to write to log file");
-
-                    data = buf.into_inner();
-                } else {
-                    let to_write = &data[buf_pos..buf_pos + write_len];
-                    self.log_file.write_all(to_write).expect("Failed to write log file");
-                }
-            }
-
-            buf_pos += write_len;
-            self.position += write_len as u64;
-            file_offset += write_len as u64;
-
-            assert!(file_offset <= PAGE_SIZE);
-
-            // Create a new file?
-            if file_offset == PAGE_SIZE {
-                let file_pos = self.position / PAGE_SIZE;
-                self.log_file = Self::create_file(&self.params, file_pos).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
-        log::trace!("Creating new log file at {fpath:?}");
-
-        cfg_if! {
-            if #[cfg(feature="async-io")] {
-                File::create(fpath).await
-            } else {
-                File::create(fpath)
-            }
-        }
-    }
-
-    async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-        log::trace!("Opening file at {fpath:?}");
-
-        cfg_if! {
-            if #[cfg(feature="async-io")] {
-                let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath).await?;
-            } else {
-                 let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath)?;
-            }
-        }
-
-        Ok(log_file)
-    }
 }
 
 impl WriteAheadLog {
@@ -320,17 +94,21 @@ impl WriteAheadLog {
             if #[cfg(feature = "async-io")] {
                 unsafe {
                     let inner = inner.clone();
-                    executor::unsafe_spawn(async {
+                    executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::new(params).await;
-                        writer.write_log(inner).await;
+                        loop {
+                            writer.update_log(&inner).await;
+                        }
                     });
                 }
             } else {
                 {
                     let inner = inner.clone();
-                    tokio::spawn(async {
+                    tokio::spawn(async move {
                         let mut writer = WalWriter::new(params).await;
-                        writer.write_log(inner).await;
+                        loop {
+                            writer.update_log(&inner).await;
+                        }
                     });
                 }
             }
@@ -365,7 +143,10 @@ impl WriteAheadLog {
 
         // Re-insert ops into memtable
         loop {
-            let mut op_header = [0u8; 9];
+            const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
+            const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
+
+            let mut op_header = [0u8; HEADER_SIZE];
             let success = Self::read_from_log(
                 &mut log_file,
                 &mut position,
@@ -381,22 +162,26 @@ impl WriteAheadLog {
 
             let op_type = op_header[0];
 
-            let key_data: &[u8; 8] = &op_header[1..].try_into().unwrap();
-            let key_len = u64::from_le_bytes(*key_data);
+            let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
+            let key_len = u64::from_le_bytes(*key_len_data);
 
             let mut key = vec![0; key_len as usize];
-            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false).await?;
+            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false)
+                .await
+                .unwrap();
 
             if op_type == WriteOp::PUT_OP {
                 let mut val_len = [0u8; 8];
                 Self::read_from_log(&mut log_file, &mut position, &mut val_len, &params, false)
-                    .await?;
+                    .await
+                    .unwrap();
 
                 let val_len = u64::from_le_bytes(val_len);
                 let mut value = vec![0; val_len as usize];
 
                 Self::read_from_log(&mut log_file, &mut position, &mut value, &params, false)
-                    .await?;
+                    .await
+                    .unwrap();
                 memtable.put(key, value);
             } else if op_type == WriteOp::DELETE_OP {
                 memtable.delete(key);
@@ -407,7 +192,7 @@ impl WriteAheadLog {
             count += 1;
         }
 
-        log::debug!("Found {count} entries in Write-Ahead-Log");
+        log::debug!("Found {count} entries in write-ahead log");
 
         let status = LogStatus {
             queue_pos: position,
@@ -431,7 +216,9 @@ impl WriteAheadLog {
                     let inner = inner.clone();
                     executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::continue_from(position, params).await;
-                        writer.write_log(inner).await;
+                        loop {
+                            writer.update_log(&inner).await;
+                        }
                     });
                 }
             } else {
@@ -439,7 +226,9 @@ impl WriteAheadLog {
                     let inner = inner.clone();
                     tokio::spawn(async  move {
                         let mut writer = WalWriter::continue_from(position, params).await;
-                        writer.write_log(inner).await;
+                        loop {
+                            writer.update_log(&inner).await;
+                        }
                     });
                 }
             }
@@ -505,8 +294,6 @@ impl WriteAheadLog {
                 // Try to open next file
                 let fpos = *position / PAGE_SIZE;
 
-                println!("Next file: {fpos}");
-
                 *log_file = match WalWriter::open_file(params, fpos).await {
                     Ok(file) => file,
                     Err(err) => {
@@ -554,7 +341,7 @@ impl WriteAheadLog {
 
         // Queue write
         let end_pos = {
-            let mut lock = self.inner.status.write().await;
+            let mut lock = self.inner.status.write();
             let mut end_pos = lock.queue_pos;
 
             for data in writes.into_iter() {
@@ -570,17 +357,18 @@ impl WriteAheadLog {
 
         // Wait until write has been processed
         loop {
-            let lock = self.inner.status.read().await;
-            if lock.write_pos >= end_pos {
-                break;
-            }
-
-            // Wait for next write
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
 
-            fut.as_mut().enable();
-            drop(lock);
+            {
+                let lock = self.inner.status.read();
+                if lock.write_pos >= end_pos {
+                    break;
+                }
+
+                // Wait for next write
+                fut.as_mut().enable();
+            }
             fut.await;
         }
 
@@ -590,7 +378,7 @@ impl WriteAheadLog {
     #[tracing::instrument(skip(self))]
     pub async fn sync(&self) -> Result<(), std::io::Error> {
         let last_pos = {
-            let mut lock = self.inner.status.write().await;
+            let mut lock = self.inner.status.write();
 
             // Nothing to sync?
             if lock.sync_pos == lock.write_pos {
@@ -606,16 +394,18 @@ impl WriteAheadLog {
         };
 
         loop {
-            let lock = self.inner.status.read().await;
-            if lock.sync_pos > last_pos {
-                return Ok(());
-            }
-
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
 
-            fut.as_mut().enable();
-            drop(lock);
+            {
+                let lock = self.inner.status.read();
+
+                if lock.sync_pos > last_pos {
+                    return Ok(());
+                }
+
+                fut.as_mut().enable();
+            }
             fut.await;
         }
     }
@@ -624,7 +414,7 @@ impl WriteAheadLog {
     #[tracing::instrument(skip(self))]
     pub async fn set_offset(&self, new_offset: u64) {
         {
-            let mut lock = self.inner.status.write().await;
+            let mut lock = self.inner.status.write();
 
             if new_offset <= lock.offset_pos {
                 panic!(
@@ -638,16 +428,19 @@ impl WriteAheadLog {
         }
 
         loop {
-            let lock = self.inner.status.read().await;
-            if lock.flush_pos >= new_offset {
-                return;
-            }
-
+            // This works around the following bug:
+            // https://github.com/rust-lang/rust/issues/63768
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
 
-            fut.as_mut().enable();
-            drop(lock);
+            {
+                let lock = self.inner.status.read();
+                if lock.flush_pos >= new_offset {
+                    return;
+                }
+                fut.as_mut().enable();
+            }
+
             fut.await;
         }
     }

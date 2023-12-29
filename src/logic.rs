@@ -329,7 +329,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[cfg(feature = "wisckey")]
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
         let mut compaction_triggered = false;
 
@@ -394,7 +393,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[cfg(not(feature = "wisckey"))]
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
         let mut compaction_triggered = false;
 
@@ -478,14 +476,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             for op in write_batch.writes.drain(..) {
                 match op {
-                    WriteOp::Put(key, value) => {
-                        log::trace!("Storing new value for key `{key:?}`");
-                        mem_inner.put(key, value);
-                    }
-                    WriteOp::Delete(key) => {
-                        log::trace!("Storing deletion for key `{key:?}`");
-                        mem_inner.delete(key);
-                    }
+                    WriteOp::Put(key, value) => mem_inner.put(key, value),
+                    WriteOp::Delete(key) => mem_inner.delete(key),
                 }
             }
 
