@@ -105,7 +105,6 @@ impl WalWriter {
         // We do not need to hold the lock while syncing
         // because there is only one write-ahead writer
         if sync_flag && sync_pos < self.position {
-            log::trace!("Synchronizing write-ahead log");
             self.sync().await;
             inner.status.write().sync_pos = self.position;
         }

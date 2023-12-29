@@ -144,7 +144,7 @@ impl WriteAheadLog {
         // Re-insert ops into memtable
         loop {
             const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
-            const HEADER_SIZE: usize = std::mem::size_of::<u8>()+KEY_LEN_SIZE;
+            const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
 
             let mut op_header = [0u8; HEADER_SIZE];
             let success = Self::read_from_log(
@@ -166,18 +166,22 @@ impl WriteAheadLog {
             let key_len = u64::from_le_bytes(*key_len_data);
 
             let mut key = vec![0; key_len as usize];
-            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false).await?;
+            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false)
+                .await
+                .unwrap();
 
             if op_type == WriteOp::PUT_OP {
                 let mut val_len = [0u8; 8];
                 Self::read_from_log(&mut log_file, &mut position, &mut val_len, &params, false)
-                    .await?;
+                    .await
+                    .unwrap();
 
                 let val_len = u64::from_le_bytes(val_len);
                 let mut value = vec![0; val_len as usize];
 
                 Self::read_from_log(&mut log_file, &mut position, &mut value, &params, false)
-                    .await?;
+                    .await
+                    .unwrap();
                 memtable.put(key, value);
             } else if op_type == WriteOp::DELETE_OP {
                 memtable.delete(key);
