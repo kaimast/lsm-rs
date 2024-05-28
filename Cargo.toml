@@ -22,8 +22,7 @@ cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = "0.1"
-#tokio-uring = { version="0.4", optional=true }
-tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", optional=true }
+tokio-uring = { version="0.5", optional=true }
 tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.git", optional=true }
 bloomfilter = { version="1", optional=true }
 

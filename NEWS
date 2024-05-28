@@ -1,11 +1,11 @@
-0.3:
+Unreleased:
     - Write-Ahead logging moved to a dedicated thread (or async task)
     - Support for io_uring
     - Allow iterating in reverse order
     - Add bloom filter support
     - Various performance improvements
 
-0.2:
+v0.2:
     - Support for tracing to benchmark the library
     - Removed custom Condition Variable implementation
     - Databases can be reopened
@@ -14,5 +14,5 @@
     - Implemented proper garbage collection for the value log
     - The Write-Ahead-Log is properly truncated after writes are flushed to L0
 
-0.1:
+v0.1:
     - Basic key-value store functionality
