@@ -26,11 +26,11 @@ Currently, the code is only tested on Linux machines, but it should run on all s
 * More modularity and configuration options
 
 ## Feature Flags
-* `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage (enabled by default)
-* `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk (enabled by default)
-* `bloom-filters`: Add bloom filters to data blocks for more efficient searching
-* `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller.
-* `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel.
+* `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk *(enabled by default)*
+* `bloom-filters`: Add bloom filters to data blocks for more efficient searching. *(enabled by default)*
+* `sync`: Expose a synchronous API instead of an async one. Note, that in this case the implementation will launch a tokio instance internally and hide it from the caller. *(disabled by default)*
+* `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel. *(disabled by default)*
+* `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage *(disabled by default)*
 
 ## Sort Order
 This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values.

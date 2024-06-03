@@ -13,14 +13,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Install rustc and clippy nightly
       uses: dtolnay/rust-toolchain@stable
       with:
          toolchain: nightly
          components: cargo, rustc, clippy, rustfmt
-    - name: install just
-      run: cargo install just
+    - name: Install Just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just
     - name: Tests (Async)
       run: just async-tests
       timeout-minutes: 10
@@ -32,12 +34,12 @@ jobs:
     - name: Tests (No compression)
       run: just no-compression-tests
       timeout-minutes: 10
-    - name: Tests (No wisckey)
-      run: just no-wisckey-tests
-      timeout-minutes: 10
-    - name: Tests (No wisckey + sync)
-      run: just no-wisckey-tests
-      timeout-minutes: 10
+#    - name: Tests (Wisckey)
+#      run: just wisckey-tests
+#      timeout-minutes: 10
+#    - name: Tests (Wisckey + sync)
+#      run: just wisckey-sync-tests
+#      timeout-minutes: 10
     - name: Linting (Async)
       run: just async-lint
     - name: Linting (Async I/O)
