@@ -19,8 +19,10 @@ jobs:
       with:
          toolchain: nightly
          components: cargo, rustc, clippy, rustfmt
-    - name: install just
-      run: cargo install just
+    - name: Install Just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just
     - name: Tests (Async)
       run: just async-tests
       timeout-minutes: 10
