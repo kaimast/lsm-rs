@@ -21,7 +21,8 @@ use std::sync::Arc;
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::RwLock;
+use tokio_condvar::Condvar;
 
 use bincode::Options;
 use cfg_if::cfg_if;
@@ -41,7 +42,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     memtable: RwLock<MemtableRef>,
     /// Immutable memtables are about to be compacted
     imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
-    imm_cond: Notify,
+    imm_cond: Condvar,
     levels: Vec<Level>,
     wal: WriteAheadLog,
     level_logger: Option<LevelLogger>,
@@ -488,25 +489,16 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         if mem_inner.is_full(&self.params) {
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
+            let mut imm_mems = self.imm_memtables.write().await;
 
-            loop {
-                let mut imm_mems = self.imm_memtables.write().await;
-
-                // Currently only one immutable memtable is supported
-                // Wait for it to be flushed...
-                if imm_mems.is_empty() {
-                    imm_mems.push_back((wal_offset, imm));
-                    break;
-                }
-
-                // wait for change to queue and retry
-                let fut = self.imm_cond.notified();
-                tokio::pin!(fut);
-
-                fut.as_mut().enable();
-                drop(imm_mems);
-                fut.await;
+            while !imm_mems.is_empty() {
+                imm_mems = self
+                    .imm_cond
+                    .rw_write_wait(&self.imm_memtables, imm_mems)
+                    .await;
             }
+
+            imm_mems.push_back((wal_offset, imm));
 
             Ok(true)
         } else {
@@ -591,7 +583,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 assert!(entry.is_some());
             }
             log::debug!("Created new L0 table");
-            self.imm_cond.notify_waiters();
+            self.imm_cond.notify_all();
 
             Ok(true)
         } else {

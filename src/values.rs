@@ -719,7 +719,6 @@ mod tests {
         (tmp_dir, ValueLog::new(params, manifest).await)
     }
 
-    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_value() {
         const SIZE: usize = 1_000;
@@ -754,7 +753,6 @@ mod tests {
         assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
     }
 
-    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_batch() {
         const SIZE: usize = 1_000;
