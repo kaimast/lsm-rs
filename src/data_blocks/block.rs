@@ -44,6 +44,7 @@ pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
  *    - entry type (1 byte)
  *    - value block id
  *    - offset
+ *
  * Otherwise:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
