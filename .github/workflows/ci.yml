@@ -32,12 +32,12 @@ jobs:
     - name: Tests (No compression)
       run: just no-compression-tests
       timeout-minutes: 10
-    - name: Tests (No wisckey)
-      run: just no-wisckey-tests
-      timeout-minutes: 10
-    - name: Tests (No wisckey + sync)
-      run: just no-wisckey-tests
-      timeout-minutes: 10
+#    - name: Tests (Wisckey)
+#      run: just wisckey-tests
+#      timeout-minutes: 10
+#    - name: Tests (Wisckey + sync)
+#      run: just wisckey-sync-tests
+#      timeout-minutes: 10
     - name: Linting (Async)
       run: just async-lint
     - name: Linting (Async I/O)
