@@ -69,7 +69,7 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
             res?;
             file.sync_all().await?;
         } else {
-            let mut file = fs::OpenOptions::new().create(true).write(true)
+            let mut file = fs::OpenOptions::new().create(true).truncate(true).write(true)
                 .open(fpath)?;
 
             if offset > 0 {

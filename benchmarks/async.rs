@@ -21,7 +21,7 @@ struct Args {
 async fn bench_init<K: KvTrait, V: KvTrait>(args: &Args) -> (TempDir, Database<K, V>) {
     if args.enable_tracing {
         tracing_subscriber::registry()
-            .with(TracyLayer::new())
+            .with(TracyLayer::default())
             .init();
     }
 
