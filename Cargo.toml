@@ -43,7 +43,7 @@ tracing-subscriber = { version="0.3", default-features=false }
 path = "src/lib.rs"
 
 [features]
-default = ["snappy-compression", "async-io", "bloom-filters"]
+default = ["snappy-compression", "bloom-filters"]
 snappy-compression = ["snap"]
 # cargo doesn't support mutually exclusive features
 # so all this does is enable async test, async APIs are always enabled
@@ -73,7 +73,6 @@ required-features = ["async"]
 name = "async-reopen"
 path = "tests/async/reopen.rs"
 required-features = ["async"]
-
 
 [[example]]
 name = "lsm-benchmark"
