@@ -58,7 +58,7 @@ wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
 
 wisckey-no-compression-lint:
-    cargo clippy --no-default-features --features=async,wisckey
+    cargo clippy --no-default-features --features=wisckey
 
 async-io-wisckey-lint:
     cargo clippy --no-default-features --features=async-io,snappy-compression,wisckey -- -D warnings

@@ -1,8 +1,8 @@
 #[cfg(feature = "wisckey")]
-use crate::values::ValueLog;
+use lsm::values::ValueLog;
 
 #[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
+use lsm::sorted_table::ValueResult;
 
 use lsm::memtable::MemtableIterator;
 use lsm::sorted_table::{InternalIterator, Key, TableIterator};
@@ -233,7 +233,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                         if #[ cfg(feature="wisckey") ] {
                             match iter.get_value() {
                                 ValueResult::Value(value) => {
-                                    let encoder = crate::get_encoder();
+                                    let encoder = lsm::get_encoder();
                                     Some(Some((res_key, encoder.deserialize(value).unwrap())))
                                 }
                                 ValueResult::Reference(value_ref) => {
