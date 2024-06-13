@@ -37,7 +37,7 @@ jobs:
     - name: "Tests: Wisckey"
       run: just wisckey-test
     - name: "Tests: Wisckey with no compression"
-      run: just wisckey-no-compression
+      run: just wisckey-no-compression-test
       timeout-minutes: 10
     - name: "Tests: Sync Wisckey"
       run: just wisckey-sync-test
