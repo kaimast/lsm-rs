@@ -48,8 +48,6 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-    //    #[allow(dead_code)]
-    //    tasks: Vec<Mutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
@@ -109,7 +107,7 @@ impl UpdateCond {
     fn new() -> Self {
         Self {
             last_change: RwLock::new(Instant::now()),
-            condition: Notify::new(),
+            condition: Default::default(),
         }
     }
 
@@ -143,7 +141,6 @@ impl TaskHandle {
         let mut idle = false;
 
         loop {
-            // Record the time we last checked for changes
             let now = Instant::now();
 
             loop {
@@ -221,7 +218,6 @@ impl TaskManager {
             }
 
             let task_group = TaskGroup {
-                //tasks: vec![Mutex::new(hdl)],
                 condition: memtable_update_cond,
             };
 
@@ -277,17 +273,8 @@ impl TaskManager {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
-            task_group.condition.condition.notify_one_waiter();
+            task_group.condition.condition.notify_one();
         }
-
-        /*
-        for (_, task_group) in self.tasks.iter() {
-            for (fut, _) in task_group.tasks.iter() {
-                if let Some(future) = fut.lock().take() {
-                    future.abort();
-                }
-            }
-        }*/
     }
 
     pub async fn stop_all(&self) -> Result<(), Error> {
@@ -298,19 +285,6 @@ impl TaskManager {
         for (_, task_group) in self.tasks.iter() {
             task_group.condition.condition.notify_waiters();
         }
-        /*
-        for (_, task_group) in self.tasks.iter() {
-            for (join_hdl, _) in task_group.tasks.iter() {
-                let inner = join_hdl.lock().take();
-
-                if let Some(future) = inner {
-                    // Ignore already terminated/aborted tasks
-                    if let Ok(res) = future.await {
-                        res?;
-                    }
-                }
-            }
-        }*/
 
         Ok(())
     }

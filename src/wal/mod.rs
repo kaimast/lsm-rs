@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+
 use crate::memtable::Memtable;
 use crate::Params;
 use crate::WriteOp;
@@ -84,8 +86,8 @@ impl WriteAheadLog {
 
         let inner = Arc::new(LogInner {
             status: RwLock::new(status),
-            queue_cond: Notify::new(),
-            write_cond: Notify::new(),
+            queue_cond: Default::default(),
+            write_cond: Default::default(),
         });
 
         cfg_if::cfg_if! {
@@ -204,8 +206,8 @@ impl WriteAheadLog {
 
         let inner = Arc::new(LogInner {
             status: RwLock::new(status),
-            queue_cond: Notify::new(),
-            write_cond: Notify::new(),
+            queue_cond: Default::default(),
+            write_cond: Default::default(),
         });
 
         cfg_if::cfg_if! {
@@ -353,7 +355,13 @@ impl WriteAheadLog {
             end_pos
         };
 
+        /*
         // Wait until write has been processed
+        let mut status = self.inner.status.read();
+        while status.write_pos < end_pos {
+            status = self.inner.write_cond.rw_read_wait(status).await;
+        }*/
+
         loop {
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
@@ -390,6 +398,12 @@ impl WriteAheadLog {
 
             lock.sync_pos
         };
+
+        /*
+        let mut status = self.inner.status.read();
+        while status.sync_pos <= last_pos {
+            status = self.inner.write_cond.rw_read_wait(status).await;
+        }*/
 
         loop {
             let fut = self.inner.write_cond.notified();

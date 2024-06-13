@@ -2,7 +2,7 @@ LOG_LEVEL := "debug"
 
 all: test lint
 
-test: sync-tests async-tests wisckey-tests wisckey-sync-tests no-compression-tests async-io-tests
+test: sync-tests async-tests no-compression-tests async-io-tests wisckey-tests wisckey-sync-tests
 
 sync-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync,bloom-filters
