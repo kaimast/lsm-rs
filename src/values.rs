@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -252,6 +251,7 @@ impl ValueLog {
 
         // we might need to delete more than one batch
         let mut batch_id = batch_id;
+
         // FIXME make sure there aren't any race conditions here
         let most_recent = self.manifest.most_recent_value_batch_id().await;
         while batch_id <= most_recent {

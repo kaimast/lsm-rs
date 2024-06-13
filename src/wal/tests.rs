@@ -1,7 +1,6 @@
 use tempfile::tempdir;
 
 use super::*;
-use crate::memtable::Memtable;
 
 #[cfg(feature = "async-io")]
 use tokio_uring_executor::test as async_test;
