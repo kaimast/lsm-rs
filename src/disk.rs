@@ -62,14 +62,16 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
 
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
-            let file = fs::OpenOptions::new().create(true).write(true)
+            let file = fs::OpenOptions::new().create(true)
+                .truncate(false).write(true)
                 .open(fpath).await?;
 
             let (res, _buf) = file.write_all_at(compressed, offset).await;
             res?;
             file.sync_all().await?;
         } else {
-            let mut file = fs::OpenOptions::new().create(true).truncate(true).write(true)
+            let mut file = fs::OpenOptions::new().create(true)
+                .truncate(false).write(true)
                 .open(fpath)?;
 
             if offset > 0 {

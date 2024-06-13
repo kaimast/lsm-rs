@@ -1,7 +1,6 @@
 use super::*;
 
 use crate::manifest::Manifest;
-use crate::Params;
 
 use tempfile::tempdir;
 

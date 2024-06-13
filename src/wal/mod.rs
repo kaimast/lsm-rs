@@ -15,8 +15,6 @@ use tokio_uring_executor as executor;
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{File, OpenOptions};
 
-use std::convert::TryInto;
-
 #[cfg(not(feature = "async-io"))]
 use std::fs::{File, OpenOptions};
 

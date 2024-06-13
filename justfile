@@ -1,25 +1,31 @@
 LOG_LEVEL := "debug"
 
-all: test lint
+all: tests lint
 
-test: sync-test async-test no-compression-test async-io-test #FIXME wisckey-test wisckey-sync-test
+tests: sync-tests async-tests no-compression-tests async-io-tests wisckey-tests wisckey-no-compression-tests wisckey-sync-tests
 
-sync-test:
-    cd sync && just test
+sync-tests:
+    cd sync && just default-tests
 
-async-test:
+async-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features
 
-async-io-test:
+async-io-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async-io,bloom-filters -- --test-threads=1
 
-no-compression-test:
+no-compression-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features
 
-wisckey-test:
+wisckey-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,wisckey
 
-lint: sync-lint async-lint wisckey-lint async-io-lint async-io-wisckey-lint
+wisckey-no-compression-tests:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=wisckey
+
+wisckey-sync-tests:
+    cd sync && just wisckey-tests
+
+lint: sync-lint async-lint wisckey-lint wisckey-no-compression-lint async-io-lint async-io-wisckey-lint
 
 fix-formatting:
     cargo fmt
@@ -50,6 +56,9 @@ async-io-lint:
 
 wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
+
+wisckey-no-compression-lint:
+    cargo clippy --no-default-features --features=async,wisckey
 
 async-io-wisckey-lint:
     cargo clippy --no-default-features --features=async-io,snappy-compression,wisckey -- -D warnings
