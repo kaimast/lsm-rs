@@ -1,4 +1,4 @@
-pub use lsm::{Params, StartMode, KvTrait, WriteOptions, WriteBatch};
+pub use lsm::{KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 
 pub mod iterate;
 

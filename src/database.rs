@@ -107,7 +107,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
         let (mem_iters, table_iters, min_key, max_key) =
-            self.inner.prepare_iter(Some(max_key), Some(min_key)).await;
+            self.inner.prepare_iter(Some(min_key), Some(max_key)).await;
 
         DbIterator::new(
             mem_iters,

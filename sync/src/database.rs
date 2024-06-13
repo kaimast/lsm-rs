@@ -154,7 +154,6 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         })
     }
 
-
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub fn range_iter(&self, min: &K, max: &K) -> DbIterator<K, V> {
         let tokio_rt = self.tokio_rt.clone();
@@ -182,8 +181,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
-            let (mem_iters, table_iters, min_key, max_key) =
-                self.inner.prepare_reverse_iter(Some(min_key), Some(max_key)).await;
+            let (mem_iters, table_iters, min_key, max_key) = self
+                .inner
+                .prepare_reverse_iter(Some(max_key), Some(min_key))
+                .await;
 
             DbIterator::new(
                 mem_iters,
