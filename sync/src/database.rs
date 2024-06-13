@@ -1,13 +1,14 @@
-use crate::iterate::DbIterator;
-use crate::logic::DbLogic;
-use crate::tasks::{TaskManager, TaskType};
-use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
-
 use std::sync::Arc;
 
 use bincode::Options;
 
 use tokio::runtime::Runtime as TokioRuntime;
+
+use lsm::logic::DbLogic;
+use lsm::tasks::{TaskManager, TaskType};
+use lsm::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
+
+use crate::iterate::DbIterator;
 
 pub struct Database<K: KvTrait, V: KvTrait> {
     inner: Arc<DbLogic<K, V>>,
@@ -113,19 +114,66 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Iterate over all entries in the database
     pub fn iter(&self) -> DbIterator<K, V> {
-        let inner = &*self.inner;
         let tokio_rt = self.tokio_rt.clone();
 
-        self.tokio_rt
-            .block_on(async { inner.iter(None, None, tokio_rt).await })
+        self.tokio_rt.block_on(async {
+            let (mem_iters, table_iters, min_key, max_key) =
+                self.inner.prepare_iter(None, None).await;
+
+            DbIterator::new(
+                mem_iters,
+                table_iters,
+                min_key,
+                max_key,
+                false,
+                #[cfg(feature = "wisckey")]
+                self.inner.get_value_log(),
+                tokio_rt,
+            )
+        })
     }
+
+    /// Like iter(), but reverse
+    pub fn reverse_iter(&self) -> DbIterator<K, V> {
+        let tokio_rt = self.tokio_rt.clone();
+
+        self.tokio_rt.block_on(async {
+            let (mem_iters, table_iters, min_key, max_key) =
+                self.inner.prepare_reverse_iter(None, None).await;
+
+            DbIterator::new(
+                mem_iters,
+                table_iters,
+                min_key,
+                max_key,
+                true,
+                #[cfg(feature = "wisckey")]
+                self.inner.get_value_log(),
+                tokio_rt,
+            )
+        })
+    }
+
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub fn range_iter(&self, min: &K, max: &K) -> DbIterator<K, V> {
         let tokio_rt = self.tokio_rt.clone();
 
-        self.tokio_rt
-            .block_on(async { self.inner.iter(Some(min), Some(max), tokio_rt).await })
+        self.tokio_rt.block_on(async {
+            let (mem_iters, table_iters, min_key, max_key) =
+                self.inner.prepare_iter(Some(min), Some(max)).await;
+
+            DbIterator::new(
+                mem_iters,
+                table_iters,
+                min_key,
+                max_key,
+                false,
+                #[cfg(feature = "wisckey")]
+                self.inner.get_value_log(),
+                tokio_rt,
+            )
+        })
     }
 
     /// Like range_iter(), but in reverse.
@@ -134,9 +182,19 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
-            self.inner
-                .reverse_iter(Some(max_key), Some(min_key), tokio_rt)
-                .await
+            let (mem_iters, table_iters, min_key, max_key) =
+                self.inner.prepare_reverse_iter(Some(min_key), Some(max_key)).await;
+
+            DbIterator::new(
+                mem_iters,
+                table_iters,
+                min_key,
+                max_key,
+                true,
+                #[cfg(feature = "wisckey")]
+                self.value_log.clone(),
+                tokio_rt,
+            )
         })
     }
 

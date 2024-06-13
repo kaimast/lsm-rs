@@ -4,9 +4,9 @@ use crate::values::ValueLog;
 #[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
 
-use crate::memtable::MemtableIterator;
-use crate::sorted_table::{InternalIterator, Key, TableIterator};
-use crate::KvTrait;
+use lsm::memtable::MemtableIterator;
+use lsm::sorted_table::{InternalIterator, Key, TableIterator};
+use lsm::KvTrait;
 
 use bincode::Options;
 
@@ -34,7 +34,7 @@ pub struct DbIterator<K: KvTrait, V: KvTrait> {
     value_log: Arc<ValueLog>,
 }
 
-type NextKV = Option<(crate::manifest::SeqNumber, usize)>;
+type NextKV = Option<(lsm::manifest::SeqNumber, usize)>;
 
 impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     pub(crate) fn new(
@@ -222,7 +222,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                 }
 
                 let result = if let Some((_, pos)) = next_kv.take() {
-                    let encoder = crate::get_encoder();
+                    let encoder = lsm::get_encoder();
                     #[allow(clippy::explicit_auto_deref)]
                     let iter: &dyn InternalIterator = &*iterators[pos];
 
@@ -248,7 +248,7 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                         } else {
                             match iter.get_value() {
                                 Some(value) => {
-                                    let encoder = crate::get_encoder();
+                                    let encoder = lsm::get_encoder();
                                     let res_val = encoder.deserialize(value).unwrap();
                                     Some(Some((res_key, res_val)))
                                 }

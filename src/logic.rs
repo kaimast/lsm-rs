@@ -1,9 +1,8 @@
 use crate::data_blocks::{DataBlocks, DataEntryType};
-use crate::iterate::DbIterator;
 use crate::level::Level;
 use crate::level_logger::LevelLogger;
 use crate::manifest::{LevelId, Manifest};
-use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableRef};
+use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableIterator, MemtableRef};
 use crate::sorted_table::{InternalIterator, Key, TableIterator};
 use crate::wal::WriteAheadLog;
 use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
@@ -34,6 +33,11 @@ enum CompactResult {
 }
 
 /// The main database logic
+///
+/// Generally, you will not interact with this directly but use
+/// Database instead.
+/// This is mainly kept public so that we can implement the sync
+/// API in a separate crate.
 pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K, V)>,
 
@@ -190,12 +194,21 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         })
     }
 
-    pub async fn iter(
+    #[cfg(feature = "wisckey")]
+    pub fn get_value_log(&self) -> Arc<ValueLog> {
+        self.value_log.clone()
+    }
+
+    pub async fn prepare_iter(
         &self,
         min_key: Option<&K>,
         max_key: Option<&K>,
-        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
-    ) -> DbIterator<K, V> {
+    ) -> (
+        Vec<MemtableIterator>,
+        Vec<TableIterator>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
@@ -245,26 +258,20 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(
-            mem_iters,
-            table_iters,
-            min_key,
-            max_key,
-            false,
-            #[cfg(feature = "wisckey")]
-            self.value_log.clone(),
-            #[cfg(feature = "sync")]
-            tokio_rt,
-        )
+        (mem_iters, table_iters, min_key, max_key)
     }
 
     /// Iterate over the specified range in reverse
-    pub async fn reverse_iter(
+    pub async fn prepare_reverse_iter(
         &self,
         max_key: Option<&K>,
         min_key: Option<&K>,
-        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
-    ) -> DbIterator<K, V> {
+    ) -> (
+        Vec<MemtableIterator>,
+        Vec<TableIterator>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
@@ -314,17 +321,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(
-            mem_iters,
-            table_iters,
-            min_key,
-            max_key,
-            true,
-            #[cfg(feature = "wisckey")]
-            self.value_log.clone(),
-            #[cfg(feature = "sync")]
-            tokio_rt,
-        )
+        (mem_iters, table_iters, min_key, max_key)
     }
 
     #[cfg(feature = "wisckey")]

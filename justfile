@@ -2,33 +2,32 @@ LOG_LEVEL := "debug"
 
 all: test lint
 
-test: sync-tests async-tests no-compression-tests async-io-tests #FIXME wisckey-tests wisckey-sync-tests
+test: sync-test async-test no-compression-test async-io-test #FIXME wisckey-test wisckey-sync-test
 
-sync-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=sync,bloom-filters
+sync-test:
+    cd sync && just test
 
-async-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async
+async-test:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features
 
-async-io-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,async-io,bloom-filters -- --test-threads=1
+async-io-test:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async-io,bloom-filters -- --test-threads=1
 
-no-compression-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async
+no-compression-test:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features
 
-wisckey-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async,snappy-compression,wisckey
-
-wisckey-sync-tests:
-    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,sync,wisckey
+wisckey-test:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,wisckey
 
 lint: sync-lint async-lint wisckey-lint async-io-lint async-io-wisckey-lint
 
 fix-formatting:
     cargo fmt
+    cd sync && just fix-formatting
 
 check-formatting:
     cargo fmt --check
+    cd sync && just check-formatting
 
 clean:
     rm -rf target/
@@ -38,18 +37,19 @@ update-dependencies:
 
 udeps:
     cargo udeps --all-targets --release
+    cd sync && just udeps
 
 sync-lint:
-    cargo clippy --no-default-features --features=sync -- -D warnings
+    cd sync && just lint
 
 async-lint:
-    cargo clippy --no-default-features --features=async -- -D warnings
+    cargo clippy --no-default-features -- -D warnings
 
 async-io-lint:
-    cargo clippy --no-default-features --features=async,async-io,bloom-filters -- -D warnings
+    cargo clippy --no-default-features --features=async-io,bloom-filters -- -D warnings
 
 wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
 
 async-io-wisckey-lint:
-    cargo clippy --no-default-features --features=async-io,async,snappy-compression,wisckey -- -D warnings
+    cargo clippy --no-default-features --features=async-io,snappy-compression,wisckey -- -D warnings
