@@ -193,7 +193,7 @@ impl MemtableRef {
     }
 
     /// This is only safe to call from the DbLogic while holding the memtable lock
-    pub unsafe fn get_mut(&mut self) -> &mut Memtable {
+    pub(crate) unsafe fn get_mut(&mut self) -> &mut Memtable {
         Arc::get_mut_unchecked(&mut self.inner)
     }
 }

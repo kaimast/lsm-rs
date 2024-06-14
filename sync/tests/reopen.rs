@@ -1,4 +1,4 @@
-use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
+use lsm_sync::{Database, KvTrait, Params, StartMode, WriteOptions};
 use tempfile::{Builder, TempDir};
 
 fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {

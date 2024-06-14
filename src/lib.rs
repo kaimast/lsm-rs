@@ -6,22 +6,11 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use bincode::Options;
-use cfg_if::cfg_if;
 
-#[cfg(feature = "sync")]
-pub mod sync_iter;
-
-#[cfg(feature = "sync")]
-pub use sync_iter as iterate;
-
-#[cfg(not(feature = "sync"))]
-pub mod async_iter;
-
-#[cfg(not(feature = "sync"))]
-pub use async_iter as iterate;
+pub mod iterate;
 
 #[cfg(feature = "wisckey")]
-mod values;
+pub mod values;
 
 mod params;
 pub use params::Params;
@@ -29,33 +18,27 @@ pub use params::Params;
 mod write_batch;
 pub use write_batch::{WriteBatch, WriteOp, WriteOptions};
 
-mod sorted_table;
+pub mod sorted_table;
 use sorted_table::{Key, Value};
 
 mod level_logger;
 
-mod memtable;
-mod tasks;
+pub mod memtable;
+pub mod tasks;
 
-mod logic;
+pub mod logic;
 use logic::DbLogic;
 
+pub mod manifest;
+
 mod data_blocks;
+mod database;
 mod disk;
 mod index_blocks;
 mod level;
-mod manifest;
 mod wal;
 
-cfg_if! {
-    if #[cfg(feature = "sync")] {
-        mod sync_api;
-        pub use sync_api::Database;
-    } else {
-        mod async_api;
-        pub use async_api::Database;
-    }
-}
+pub use database::Database;
 
 /// Keys and values must be (de-)serializable
 pub trait KvTrait = Send
@@ -120,7 +103,7 @@ pub enum StartMode {
     CreateOrOverride,
 }
 
-fn get_encoder(
+pub fn get_encoder(
 ) -> bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
     // Use BigEndian to make integers sortable properly
     bincode::options().with_big_endian()

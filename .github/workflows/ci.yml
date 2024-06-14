@@ -24,23 +24,23 @@ jobs:
       with:
         tool: just
     - name: "Test: Async"
-      run: just async-test
+      run: just async-tests
       timeout-minutes: 10
     - name: "Test: Async I/O"
-      run: just async-io-test
+      run: just async-io-tests
     - name: "Tests: Sync"
-      run: just sync-test
+      run: just sync-tests
       timeout-minutes: 10
     - name: "Tests: No compression"
-      run: just no-compression-test
+      run: just no-compression-tests
       timeout-minutes: 10
     - name: "Tests: Wisckey"
-      run: just wisckey-test
+      run: just wisckey-tests
     - name: "Tests: Wisckey with no compression"
-      run: just wisckey-no-compression-test
+      run: just wisckey-no-compression-tests
       timeout-minutes: 10
     - name: "Tests: Sync Wisckey"
-      run: just wisckey-sync-test
+      run: just wisckey-sync-tests
       timeout-minutes: 10
     - name: "Lint Checks: Async"
       run: just async-lint

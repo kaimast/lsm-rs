@@ -54,12 +54,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Instead, it will just mark the most recent version (which could be the first one) as deleted
     #[tracing::instrument(skip(self))]
     pub async fn delete(&self, key: &K) -> Result<(), Error> {
-        const OPTS: WriteOptions = WriteOptions::new();
-
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.write_opts(batch, &OPTS).await
+        self.write_opts(batch, &WriteOptions::default()).await
     }
 
     /// Ensure all data is written to disk
@@ -91,18 +89,52 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Iterate over all entries in the database
     pub async fn iter(&self) -> DbIterator<K, V> {
-        self.inner.iter(None, None).await
+        let (mem_iters, table_iters, min_key, max_key) = self.inner.prepare_iter(None, None).await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
-        self.inner.iter(Some(min_key), Some(max_key)).await
+        let (mem_iters, table_iters, min_key, max_key) =
+            self.inner.prepare_iter(Some(min_key), Some(max_key)).await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Like range_iter(), but in reverse.
     /// It will only include entries with keys in (min_key;max_key]
     pub async fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
-        self.inner.reverse_iter(Some(max_key), Some(min_key)).await
+        let (mem_iters, table_iters, min_key, max_key) = self
+            .inner
+            .prepare_reverse_iter(Some(max_key), Some(min_key))
+            .await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            true,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Write a batch of updates to the database

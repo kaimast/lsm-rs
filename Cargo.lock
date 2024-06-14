@@ -568,6 +568,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsm-sync"
+version = "0.3.0"
+dependencies = [
+ "bincode",
+ "cfg-if",
+ "env_logger",
+ "lsm",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

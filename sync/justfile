@@ -1,0 +1,21 @@
+LOG_LEVEL := "debug"
+
+tests: default-tests wisckey-tests
+
+default-tests:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test
+
+lint:
+    cargo clippy --no-default-features -- -D warnings
+
+check-formatting:
+    cargo fmt --check
+
+fix-formatting:
+    cargo fmt
+
+udeps:
+    cargo udeps --all-targets --release
+
+wisckey-tests:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=snappy-compression,wisckey
