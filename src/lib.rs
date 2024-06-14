@@ -10,7 +10,7 @@ use bincode::Options;
 pub mod iterate;
 
 #[cfg(feature = "wisckey")]
-mod values;
+pub mod values;
 
 mod params;
 pub use params::Params;

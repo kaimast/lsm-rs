@@ -193,7 +193,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
                 max_key,
                 true,
                 #[cfg(feature = "wisckey")]
-                self.value_log.clone(),
+                self.inner.get_value_log(),
                 tokio_rt,
             )
         })
@@ -203,8 +203,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     ///
     /// If you only want to write to a single key, use `Database::put` instead
     pub fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
-        const OPTS: WriteOptions = WriteOptions::new();
-        self.write_opts(write_batch, &OPTS)
+        self.write_opts(write_batch, &WriteOptions::default())
     }
 
     pub fn write_opts(

@@ -54,12 +54,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Instead, it will just mark the most recent version (which could be the first one) as deleted
     #[tracing::instrument(skip(self))]
     pub async fn delete(&self, key: &K) -> Result<(), Error> {
-        const OPTS: WriteOptions = WriteOptions::new();
-
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.write_opts(batch, &OPTS).await
+        self.write_opts(batch, &WriteOptions::default()).await
     }
 
     /// Ensure all data is written to disk
