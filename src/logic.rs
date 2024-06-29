@@ -1,9 +1,8 @@
 use crate::data_blocks::{DataBlocks, DataEntryType};
-use crate::iterate::DbIterator;
 use crate::level::Level;
 use crate::level_logger::LevelLogger;
 use crate::manifest::{LevelId, Manifest};
-use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableRef};
+use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableIterator, MemtableRef};
 use crate::sorted_table::{InternalIterator, Key, TableIterator};
 use crate::wal::WriteAheadLog;
 use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
@@ -21,7 +20,7 @@ use std::sync::Arc;
 #[cfg(not(feature = "async-io"))]
 use std::fs;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_condvar::Condvar;
 
 use bincode::Options;
@@ -34,16 +33,22 @@ enum CompactResult {
 }
 
 /// The main database logic
+///
+/// Generally, you will not interact with this directly but use
+/// Database instead.
+/// This is mainly kept public so that we can implement the sync
+/// API in a separate crate.
 pub struct DbLogic<K: KvTrait, V: KvTrait> {
     _marker: PhantomData<fn(K, V)>,
 
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
-    imm_memtables: Mutex<VecDeque<(u64, ImmMemtableRef)>>,
+    /// Immutable memtables are about to be compacted
+    imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
     levels: Vec<Level>,
-    wal: Mutex<WriteAheadLog>,
+    wal: WriteAheadLog,
     level_logger: Option<LevelLogger>,
 
     #[cfg(feature = "wisckey")]
@@ -134,7 +139,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
-            wal = Mutex::new(WriteAheadLog::new(params.clone()).await?);
+            wal = WriteAheadLog::new(params.clone()).await?;
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",
@@ -144,10 +149,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Mutex::new(
-                WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                    .await?,
-            );
+            wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
+                .await?;
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
@@ -155,8 +158,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
-        let imm_memtables = Mutex::new(VecDeque::new());
-        let imm_cond = Condvar::new();
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
         if params.num_levels == 0 {
@@ -178,15 +179,13 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        let _marker = PhantomData;
-
         Ok(Self {
-            _marker,
+            _marker: Default::default(),
             manifest,
             params,
             memtable,
-            imm_memtables,
-            imm_cond,
+            imm_memtables: Default::default(),
+            imm_cond: Default::default(),
             levels,
             wal,
             level_logger,
@@ -195,25 +194,36 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         })
     }
 
-    pub async fn iter(
+    #[cfg(feature = "wisckey")]
+    pub fn get_value_log(&self) -> Arc<ValueLog> {
+        self.value_log.clone()
+    }
+
+    pub async fn prepare_iter(
         &self,
         min_key: Option<&K>,
         max_key: Option<&K>,
-        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
-    ) -> DbIterator<K, V> {
+    ) -> (
+        Vec<MemtableIterator>,
+        Vec<TableIterator>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+        if let Some(min_key) = &min_key
+            && let Some(max_key) = &max_key
+        {
             assert!(min_key < max_key);
         }
 
         {
             let memtable = self.memtable.read().await;
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             mem_iters.push(memtable.clone_immutable().into_iter(false).await);
 
@@ -248,39 +258,35 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(
-            mem_iters,
-            table_iters,
-            min_key,
-            max_key,
-            false,
-            #[cfg(feature = "wisckey")]
-            self.value_log.clone(),
-            #[cfg(feature = "sync")]
-            tokio_rt,
-        )
+        (mem_iters, table_iters, min_key, max_key)
     }
 
     /// Iterate over the specified range in reverse
-    pub async fn reverse_iter(
+    pub async fn prepare_reverse_iter(
         &self,
         max_key: Option<&K>,
         min_key: Option<&K>,
-        #[cfg(feature = "sync")] tokio_rt: Arc<tokio::runtime::Runtime>,
-    ) -> DbIterator<K, V> {
+    ) -> (
+        Vec<MemtableIterator>,
+        Vec<TableIterator>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
 
         let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
         let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
-        if let Some(min_key) = &min_key && let Some(max_key) = &max_key {
+        if let Some(min_key) = &min_key
+            && let Some(max_key) = &max_key
+        {
             assert!(min_key < max_key);
         };
 
         {
             let memtable = self.memtable.read().await;
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             mem_iters.push(memtable.clone_immutable().into_iter(true).await);
 
@@ -315,23 +321,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        DbIterator::new(
-            mem_iters,
-            table_iters,
-            min_key,
-            max_key,
-            true,
-            #[cfg(feature = "wisckey")]
-            self.value_log.clone(),
-            #[cfg(feature = "sync")]
-            tokio_rt,
-        )
+        (mem_iters, table_iters, min_key, max_key)
     }
 
     #[cfg(feature = "wisckey")]
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
         let mut compaction_triggered = false;
 
@@ -352,7 +347,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         {
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
@@ -396,7 +391,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[cfg(not(feature = "wisckey"))]
     #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        log::trace!("Starting to seek for key `{key:?}`");
         let encoder = get_encoder();
         let mut compaction_triggered = false;
 
@@ -417,7 +411,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         {
-            let imm_mems = self.imm_memtables.lock().await;
+            let imm_mems = self.imm_memtables.read().await;
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
@@ -458,9 +452,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     }
 
     pub async fn synchronize(&self) -> Result<(), Error> {
-        let mut wal = self.wal.lock().await;
-        wal.sync().await?;
-
+        self.wal.sync().await?;
         Ok(())
     }
 
@@ -473,50 +465,34 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         let mut memtable = self.memtable.write().await;
         let mem_inner = unsafe { memtable.get_mut() };
 
-        let mut wal = self.wal.lock().await;
+        let wal_offset = {
+            let log_pos = self.wal.store(&write_batch.writes).await?;
 
-        for op in write_batch.writes.iter() {
-            wal.store(op).await?;
-        }
+            if opt.sync {
+                self.wal.sync().await?;
+            }
 
-        if opt.sync {
-            wal.sync().await?;
-        }
-
-        for op in write_batch.writes.drain(..) {
-            match op {
-                WriteOp::Put(key, value) => {
-                    log::trace!("Storing new value for key `{key:?}`");
-                    mem_inner.put(key, value);
-                }
-                WriteOp::Delete(key) => {
-                    log::trace!("Storing deletion for key `{key:?}`");
-                    mem_inner.delete(key);
+            for op in write_batch.writes.drain(..) {
+                match op {
+                    WriteOp::Put(key, value) => mem_inner.put(key, value),
+                    WriteOp::Delete(key) => mem_inner.delete(key),
                 }
             }
-        }
+
+            log_pos
+        };
 
         // If the current memtable is full, mark it as immutable, so it can be flushed to L0
         if mem_inner.is_full(&self.params) {
-            let mut imm_mems = self.imm_memtables.lock().await;
-
             let next_seq_num = mem_inner.get_next_seq_number();
             let imm = memtable.take(next_seq_num);
+            let mut imm_mems = self.imm_memtables.write().await;
 
-            let wal_offset = wal.get_log_position().await;
-
-            // Drop lock to write-ahead lock so compaction can continue while we are waiting
-            // (compaction flushes the WAL)
-            drop(wal);
-
-            // Currently only one immutable memtable is supported
-            // Wait for it to be flushed...
-            loop {
-                if imm_mems.is_empty() {
-                    break;
-                }
-
-                imm_mems = self.imm_cond.wait(imm_mems).await;
+            while !imm_mems.is_empty() {
+                imm_mems = self
+                    .imm_cond
+                    .rw_write_wait(&self.imm_memtables, imm_mems)
+                    .await;
             }
 
             imm_mems.push_back((wal_offset, imm));
@@ -531,17 +507,20 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     pub async fn do_memtable_compaction(&self) -> Result<bool, Error> {
         log::trace!("Attempting memtable compaction");
 
-        let mut wal = self.wal.lock().await;
-        let mut imm_mems = self.imm_memtables.lock().await;
+        // SAFETY
+        // Only one task will do the memtable compaction, so it is
+        // fine to not hold the lock the entire time
 
-        if let Some((log_offset, mem)) = imm_mems.pop_front() {
+        let to_compact = self.imm_memtables.read().await.front().cloned();
+
+        if let Some((log_offset, mem)) = to_compact {
             log::trace!("Found memtable to compact");
 
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
-            let l0 = self.levels.get(0).unwrap();
+            let l0 = self.levels.first().unwrap();
             let table_id = self.manifest.next_table_id().await;
-            let mut table_builder = l0.build_table(table_id, min_key, max_key).await;
+            let mut table_builder = l0.build_table(table_id, min_key, max_key);
 
             let memtable_entries = mem.get().get_entries();
 
@@ -591,9 +570,15 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 .update_table_set(vec![(0, table_id)], vec![])
                 .await;
 
-            wal.set_offset(log_offset).await;
+            self.wal.set_offset(log_offset).await;
             self.manifest.set_log_offset(log_offset).await;
 
+            // Finally, remove immutable memtable
+            {
+                let mut imm_mems = self.imm_memtables.write().await;
+                let entry = imm_mems.pop_front();
+                assert!(entry.is_some());
+            }
             log::debug!("Created new L0 table");
             self.imm_cond.notify_all();
 
@@ -624,7 +609,9 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                         log::trace!("Cannot compact level {level_pos} right now; lock was held");
                         was_locked = true;
                     }
-                    CompactResult::NothingToDo => {}
+                    CompactResult::NothingToDo => {
+                        log::trace!("Nothing to do for level {level_pos}");
+                    }
                 }
             }
         }
@@ -755,7 +742,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         #[cfg(feature = "wisckey")]
         let mut deleted_values = vec![];
 
-        let mut table_builder = child_level.build_table(table_id, min, max).await;
+        let mut table_builder = child_level.build_table(table_id, min, max);
 
         loop {
             log::trace!("Starting compaction for next key");
@@ -817,7 +804,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                         min_iter = Some(table_iter);
                     }
                 } else {
-                    log::trace!("Found new key {:?}", key);
+                    log::trace!("Found new key {key:?}");
                     min_iter = Some(table_iter);
                 }
             }

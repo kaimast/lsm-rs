@@ -1,4 +1,4 @@
-use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
+use lsm_sync::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
 use tempfile::{Builder, TempDir};
 
 const SM: StartMode = StartMode::CreateOrOverride;

@@ -29,7 +29,6 @@ pub trait InternalIterator: Send {
 }
 
 /// Returns the entries within a table in order
-#[derive(Debug)]
 pub struct TableIterator {
     block_pos: i64,
     block_offset: u32,
@@ -144,7 +143,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     async fn step(&mut self) {
         if self.reverse {
             match self.block_pos.cmp(&(-1)) {

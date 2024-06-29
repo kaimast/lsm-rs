@@ -33,14 +33,14 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, key))]
     pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
         let key_data = get_encoder().serialize(key)?;
 
         match self.inner.get(&key_data).await {
             Ok((needs_compaction, data)) => {
                 if needs_compaction {
-                    self.tasks.wake_up(&TaskType::LevelCompaction).await;
+                    self.tasks.wake_up(&TaskType::LevelCompaction);
                 }
 
                 Ok(data)
@@ -54,12 +54,10 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Instead, it will just mark the most recent version (which could be the first one) as deleted
     #[tracing::instrument(skip(self))]
     pub async fn delete(&self, key: &K) -> Result<(), Error> {
-        const OPTS: WriteOptions = WriteOptions::new();
-
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
-        self.write_opts(batch, &OPTS).await
+        self.write_opts(batch, &WriteOptions::default()).await
     }
 
     /// Ensure all data is written to disk
@@ -91,18 +89,52 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Iterate over all entries in the database
     pub async fn iter(&self) -> DbIterator<K, V> {
-        self.inner.iter(None, None).await
+        let (mem_iters, table_iters, min_key, max_key) = self.inner.prepare_iter(None, None).await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
     pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
-        self.inner.iter(Some(min_key), Some(max_key)).await
+        let (mem_iters, table_iters, min_key, max_key) =
+            self.inner.prepare_iter(Some(min_key), Some(max_key)).await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            false,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Like range_iter(), but in reverse.
     /// It will only include entries with keys in (min_key;max_key]
     pub async fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
-        self.inner.reverse_iter(Some(max_key), Some(min_key)).await
+        let (mem_iters, table_iters, min_key, max_key) = self
+            .inner
+            .prepare_reverse_iter(Some(max_key), Some(min_key))
+            .await;
+
+        DbIterator::new(
+            mem_iters,
+            table_iters,
+            min_key,
+            max_key,
+            true,
+            #[cfg(feature = "wisckey")]
+            self.inner.get_value_log(),
+        )
     }
 
     /// Write a batch of updates to the database
@@ -114,7 +146,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Write a batch of updates to the database
-    /// This version of write allows you to specifiy options such as "synchronous"
+    /// This version of write allows you to specify options such as "synchronous"
+    #[tracing::instrument(skip(self, write_batch, opts))]
     pub async fn write_opts(
         &self,
         write_batch: WriteBatch<K, V>,
@@ -123,7 +156,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
 
         if needs_compaction {
-            self.tasks.wake_up(&TaskType::MemtableCompaction).await;
+            self.tasks.wake_up(&TaskType::MemtableCompaction);
         }
 
         Ok(())

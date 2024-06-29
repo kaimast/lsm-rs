@@ -34,6 +34,7 @@ pub struct TableBuilder<'a> {
 }
 
 impl<'a> TableBuilder<'a> {
+    #[tracing::instrument(skip(params, data_blocks, min_key, max_key))]
     pub fn new(
         identifier: TableId,
         params: &'a Params,
@@ -66,6 +67,7 @@ impl<'a> TableBuilder<'a> {
     }
 
     #[cfg(feature = "wisckey")]
+    #[tracing::instrument(skip(self, key, seq_number, value_ref))]
     pub async fn add_value(
         &mut self,
         key: &[u8],
@@ -77,12 +79,14 @@ impl<'a> TableBuilder<'a> {
     }
 
     #[cfg(feature = "wisckey")]
+    #[tracing::instrument(skip(self, key, seq_number))]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
         self.add_entry(key, seq_number, WriteOp::DELETE_OP, ValueId::default())
             .await
     }
 
     #[cfg(not(feature = "wisckey"))]
+    #[tracing::instrument(skip(self, key, seq_number, value))]
     pub async fn add_value(
         &mut self,
         key: &[u8],
@@ -94,6 +98,7 @@ impl<'a> TableBuilder<'a> {
     }
 
     #[cfg(not(feature = "wisckey"))]
+    #[tracing::instrument(skip(self, key, seq_number))]
     pub async fn add_deletion(&mut self, key: &[u8], seq_number: SeqNumber) -> Result<(), Error> {
         self.add_entry(key, seq_number, WriteOp::DELETE_OP, &[])
             .await
@@ -144,7 +149,8 @@ impl<'a> TableBuilder<'a> {
 
         self.last_key = key.to_vec();
 
-        self.data_block.add_entry(pkey, seq_number, op_type, value);
+        self.data_block
+            .add_entry(pkey, key, seq_number, op_type, value);
 
         if self.block_entry_count >= self.params.max_key_block_size {
             let mut next_block = DataBlocks::build_block(self.data_blocks.clone());
@@ -161,6 +167,7 @@ impl<'a> TableBuilder<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn finish(mut self) -> Result<SortedTable, Error> {
         if let Some(id) = self.data_block.finish().await? {
             self.block_index.push((self.index_key.take().unwrap(), id));

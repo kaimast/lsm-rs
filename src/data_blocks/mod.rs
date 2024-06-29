@@ -1,10 +1,9 @@
-use std::convert::TryInto;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 use lru::LruCache;
 
@@ -49,7 +48,7 @@ pub enum DataEntryType {
     Delete,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DataEntry {
     block: Arc<DataBlock>,
     offset: usize,
@@ -191,27 +190,32 @@ impl DataBlocks {
         DataBlockBuilder::new(self_ptr)
     }
 
+    /// Get a block by its id
+    /// Will either return the block from cache or load it from disk
     #[tracing::instrument(skip(self))]
     pub async fn get_block(&self, id: &DataBlockId) -> Arc<DataBlock> {
         let shard_id = Self::block_to_shard_id(*id);
+        let cache = &self.block_caches[shard_id];
 
-        let mut cache = self.block_caches[shard_id].lock().await;
-        if let Some(block) = cache.get(id) {
-            block.clone()
-        } else {
-            log::trace!("Loading data block from disk");
-            let fpath = self.get_file_path(id);
-            let data = disk::read(&fpath, 0)
-                .await
-                .expect("Failed to load data block from disk");
-            let block = Arc::new(DataBlock::new_from_data(
-                data,
-                self.params.block_restart_interval,
-            ));
-
-            cache.put(*id, block.clone());
-            block
+        if let Some(block) = cache.lock().get(id) {
+            return block.clone();
         }
+
+        // Do not hold the lock while loading form disk for better concurrency
+        // Worst case this means we load the same block multiple times...
+        let fpath = self.get_file_path(id);
+        log::trace!("Loading data block from disk at {fpath:?}");
+        let data = disk::read(&fpath, 0)
+            .await
+            .expect("Failed to load data block from disk at {fpath:?}");
+        let block = Arc::new(DataBlock::new_from_data(
+            data,
+            self.params.block_restart_interval,
+        ));
+
+        cache.lock().put(*id, block.clone());
+        log::trace!("Stored new block in cache");
+        block
     }
 }
 
@@ -245,7 +249,7 @@ mod tests {
         };
         let seq1 = 14234524;
         let val1 = (4, 2);
-        builder.add_entry(key1, seq1, WriteOp::PUT_OP, val1);
+        builder.add_entry(key1, &[5], seq1, WriteOp::PUT_OP, val1);
 
         let key2 = PrefixedKey {
             prefix_len: 1,
@@ -253,7 +257,7 @@ mod tests {
         };
         let seq2 = 424234;
         let val2 = (4, 5);
-        builder.add_entry(key2, seq2, WriteOp::PUT_OP, val2);
+        builder.add_entry(key2, &[5, 2], seq2, WriteOp::PUT_OP, val2);
 
         let id = builder.finish().await.unwrap().unwrap();
         let data_block1 = data_blocks.get_block(&id).await;
@@ -294,7 +298,7 @@ mod tests {
         };
         let seq1 = 14234524;
         let val1 = vec![4, 2];
-        builder.add_entry(key1, seq1, WriteOp::PUT_OP, &val1);
+        builder.add_entry(key1, &[5u8], seq1, WriteOp::PUT_OP, &val1);
 
         let key2 = PrefixedKey {
             prefix_len: 1,
@@ -302,7 +306,7 @@ mod tests {
         };
         let seq2 = 424234;
         let val2 = vec![24, 50];
-        builder.add_entry(key2, seq2, WriteOp::PUT_OP, &val2);
+        builder.add_entry(key2, &[5u8, 2u8], seq2, WriteOp::PUT_OP, &val2);
 
         let id = builder.finish().await.unwrap().unwrap();
         let data_block1 = data_blocks.get_block(&id).await;

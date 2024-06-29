@@ -3,12 +3,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use parking_lot::Mutex as StdMutex;
+use parking_lot::{Mutex, RwLock};
 
 use super::KvTrait;
 
-use tokio::sync::Mutex;
-use tokio_condvar::Condvar;
+use tokio::sync::Notify;
 
 use crate::{DbLogic, Error};
 
@@ -49,14 +48,12 @@ pub struct TaskManager {
 /// e.g., all compaction tasks
 struct TaskGroup {
     condition: Arc<UpdateCond>,
-    //    #[allow(dead_code)]
-    //    tasks: Vec<StdMutex<Arc<TaskHandle>>>,
 }
 
 /// Keeps track of a condition variables shared within a task group
 struct UpdateCond {
-    last_change: Mutex<Instant>,
-    condition: Condvar,
+    last_change: RwLock<Instant>,
+    condition: Notify,
 }
 
 struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
@@ -92,7 +89,7 @@ impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
         if did_work {
-            self.level_update_cond.wake_up().await;
+            self.level_update_cond.wake_up();
         }
         Ok(did_work)
     }
@@ -109,14 +106,14 @@ impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
 impl UpdateCond {
     fn new() -> Self {
         Self {
-            last_change: Mutex::new(Instant::now()),
-            condition: Condvar::new(),
+            last_change: RwLock::new(Instant::now()),
+            condition: Default::default(),
         }
     }
 
     /// Notify the task that there is new work to do
-    async fn wake_up(&self) {
-        let mut last_change = self.last_change.lock().await;
+    fn wake_up(&self) {
+        let mut last_change = self.last_change.write();
         *last_change = Instant::now();
         self.condition.notify_one();
     }
@@ -144,15 +141,24 @@ impl TaskHandle {
         let mut idle = false;
 
         loop {
-            // Record the time we last checked for changes
             let now = Instant::now();
 
-            if idle {
-                let mut lchange = self.update_cond.last_change.lock().await;
+            loop {
+                let fut = self.update_cond.condition.notified();
+                tokio::pin!(fut);
 
-                while self.is_running() && idle && *lchange < last_update {
-                    lchange = self.update_cond.condition.wait(lchange).await;
+                {
+                    let lchange = self.update_cond.last_change.read();
+
+                    if !self.is_running() || !idle || *lchange > last_update {
+                        break;
+                    }
+
+                    // wait for change to queue and retry
+                    fut.as_mut().enable();
                 }
+
+                fut.await;
             }
 
             if !self.is_running() {
@@ -184,6 +190,9 @@ impl TaskManager {
 
         let level_update_cond = Arc::new(UpdateCond::new());
 
+        #[cfg(feature = "async-io")]
+        let mut spawn_pos = tokio_uring_executor::SpawnPos::default();
+
         {
             let memtable_update_cond = Arc::new(UpdateCond::new());
 
@@ -199,7 +208,8 @@ impl TaskManager {
                 cfg_if::cfg_if! {
                     if #[cfg(feature="async-io")] {
                         unsafe {
-                            tokio_uring_executor::unsafe_spawn(task);
+                            tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
+                            spawn_pos.advance();
                         }
                     } else {
                         tokio::spawn(task);
@@ -208,7 +218,6 @@ impl TaskManager {
             }
 
             let task_group = TaskGroup {
-                //tasks: vec![StdMutex::new(hdl)],
                 condition: memtable_update_cond,
             };
 
@@ -231,7 +240,8 @@ impl TaskManager {
                     cfg_if::cfg_if! {
                         if #[cfg(feature="async-io")] {
                             unsafe {
-                                tokio_uring_executor::unsafe_spawn(task);
+                                tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
+                                spawn_pos.advance();
                             }
                         } else {
                             tokio::spawn(task);
@@ -239,7 +249,7 @@ impl TaskManager {
                     }
                 }
 
-                compaction_tasks.push(StdMutex::new(hdl));
+                compaction_tasks.push(Mutex::new(hdl));
             }
 
             let task_group = TaskGroup {
@@ -254,26 +264,17 @@ impl TaskManager {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn wake_up(&self, task_type: &TaskType) {
+    pub fn wake_up(&self, task_type: &TaskType) {
         let task_group = self.tasks.get(task_type).expect("No such task");
-        task_group.condition.wake_up().await;
+        task_group.condition.wake_up();
     }
 
     pub fn terminate(&self) {
         self.stop_flag.store(false, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
-            task_group.condition.condition.notify_all();
+            task_group.condition.condition.notify_one();
         }
-
-        /*
-        for (_, task_group) in self.tasks.iter() {
-            for (fut, _) in task_group.tasks.iter() {
-                if let Some(future) = fut.lock().take() {
-                    future.abort();
-                }
-            }
-        }*/
     }
 
     pub async fn stop_all(&self) -> Result<(), Error> {
@@ -282,21 +283,8 @@ impl TaskManager {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         for (_, task_group) in self.tasks.iter() {
-            task_group.condition.condition.notify_all();
+            task_group.condition.condition.notify_waiters();
         }
-        /*
-        for (_, task_group) in self.tasks.iter() {
-            for (join_hdl, _) in task_group.tasks.iter() {
-                let inner = join_hdl.lock().take();
-
-                if let Some(future) = inner {
-                    // Ignore already terminated/aborted tasks
-                    if let Ok(res) = future.await {
-                        res?;
-                    }
-                }
-            }
-        }*/
 
         Ok(())
     }

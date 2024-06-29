@@ -1,7 +1,7 @@
 [package]
 name = "lsm"
 version = "0.3.0"
-authors = ["Kai Mast <kaimast@cs.cornell.edu>"]
+authors = ["Kai Mast <kai@kaimast.com>"]
 edition = "2021"
 repository = "https://github.com/kaimast/lsm-rs"
 description = "An implementation of log-structured merge trees in pure Rust"
@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["storage", "database", "async"]
 
 [dependencies]
-lru = "0.10"
+lru = "0.12"
 parking_lot = "0.12"
 bincode = "^1.3"
 serde = { version="1", features=["derive"] }
@@ -21,59 +21,46 @@ async-trait = "0.1"
 cfg-if = "1"
 tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
-tokio-condvar = "0.1"
+tokio-condvar = { version="0.3", features=["parking_lot"] }
 #tokio-uring = { version="0.4", optional=true }
 tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", optional=true }
 tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.git", optional=true }
+bloomfilter = { version="1", optional=true }
 
 [dependencies.tokio]
 version="1"
 default-features=false
-features=["rt-multi-thread", "io-util", "sync", "macros", "tracing"]
+features=["io-util", "sync", "macros", "tracing"]
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
-env_logger = "0.10"
+env_logger = "0.11"
 tempfile = "3"
-tracing-tracy = "0.10"
+tracing-tracy = "0.11"
+tokio = { version="1", default-features=false, features=["rt-multi-thread"] }
 tracing-subscriber = { version="0.3", default-features=false }
 
 [lib]
 path = "src/lib.rs"
 
 [features]
-default = ["snappy-compression", "async-io"]
-snappy-compression = ["snap"]
-# cargo doesn't support mutually exclusive features
-# so all this does is enable async test, async APIs are always enabled
-# when 'sync' is not set
-async = []
-sync = []
+default = ["snappy-compression", "bloom-filters"]
+snappy-compression = ["dep:snap"]
 wisckey = []
-async-io = ["async", "tokio-uring", "tokio-uring-executor"]
+bloom-filters = ["dep:bloomfilter"]
+async-io = ["dep:tokio-uring", "dep:tokio-uring-executor"]
 
 [[test]]
-name = "sync-basic"
-path = "tests/sync/basic.rs"
-required-features = ["sync"]
+name = "basic"
+path = "tests/basic.rs"
 
 [[test]]
-name = "sync-reopen"
-path = "tests/sync/reopen.rs"
-required-features = ["sync"]
-
-[[test]]
-name = "async-basic"
-path = "tests/async/basic.rs"
-required-features = ["async"]
-
-[[test]]
-name = "async-reopen"
-path = "tests/async/reopen.rs"
-required-features = ["async"]
-
+name = "reopen"
+path = "tests/reopen.rs"
 
 [[example]]
 name = "lsm-benchmark"
 path = "benchmarks/async.rs"
-required-features = ["async"]
+
+[workspace]
+members = ["sync"]

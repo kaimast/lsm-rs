@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -252,6 +251,7 @@ impl ValueLog {
 
         // we might need to delete more than one batch
         let mut batch_id = batch_id;
+
         // FIXME make sure there aren't any race conditions here
         let most_recent = self.manifest.most_recent_value_batch_id().await;
         while batch_id <= most_recent {
@@ -618,13 +618,13 @@ impl ValueLog {
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let file = File::open(&fpath).await?;
+                let file = File::open(fpath).await?;
                 let pos = size_of::<u8>() as u64;
                 let (res, buf) = file.read_exact_at(data, pos).await;
                 res?;
                 data = buf;
             } else {
-                let mut file = File::open(&fpath)?;
+                let mut file = File::open(fpath)?;
                 file.seek(SeekFrom::Start(size_of::<u8>() as u64))?;
                 file.read_exact(&mut data)?;
             }
@@ -719,7 +719,6 @@ mod tests {
         (tmp_dir, ValueLog::new(params, manifest).await)
     }
 
-    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_value() {
         const SIZE: usize = 1_000;
@@ -754,7 +753,6 @@ mod tests {
         assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
     }
 
-    #[cfg(feature = "wisckey-fold")]
     #[tokio::test]
     async fn delete_batch() {
         const SIZE: usize = 1_000;

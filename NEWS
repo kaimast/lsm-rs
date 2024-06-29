@@ -1,7 +1,13 @@
+UNRELEASED:
+    - Move sync API into a separate lsm-sync crate
+
 0.3:
     - Write-Ahead logging moved to a dedicated thread (or async task)
     - Support for io_uring
     - Allow iterating in reverse order
+    - Add bloom filter support
+    - Various performance improvements
+    - Use tokio-condvar in more places
 
 0.2:
     - Support for tracing to benchmark the library
