@@ -38,6 +38,8 @@ mod index_blocks;
 mod level;
 mod wal;
 
+pub(crate) mod utils;
+
 pub use database::Database;
 
 /// Keys and values must be (de-)serializable

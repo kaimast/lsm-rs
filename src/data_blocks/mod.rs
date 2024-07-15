@@ -208,10 +208,10 @@ impl DataBlocks {
         let data = disk::read(&fpath, 0)
             .await
             .expect("Failed to load data block from disk at {fpath:?}");
-        let block = Arc::new(DataBlock::new_from_data(
-            data,
-            self.params.block_restart_interval,
-        ));
+        let block = Arc::new(
+            DataBlock::new_from_data(data, self.params.block_restart_interval)
+                .expect("Failed to load block from disk"),
+        );
 
         cache.lock().put(*id, block.clone());
         log::trace!("Stored new block in cache");

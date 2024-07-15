@@ -58,27 +58,32 @@ pub struct ValueBatchBuilder<'a> {
     offsets: Vec<u8>,
 }
 
+#[repr(C)]
+#[derive(bytemuck::Pod)]
+struct ValueBatchHeaderLayout {
+    folded: bool,
+    num_values: u32,
+}
+
 impl<'a> ValueBatchBuilder<'a> {
     pub async fn finish(self) -> Result<ValueBatchId, Error> {
         let fpath = self.vlog.get_file_path(&self.identifier);
         let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
 
-        // The first byte is the fold flag
-        let prefix_len = 1 + std::mem::size_of::<u32>() + (num_values as usize);
-        let mut prefix = vec![0u8; prefix_len];
-        prefix[1..5].copy_from_slice(num_values.to_le_bytes().as_slice());
+        let header = ValueBatchHeaderLayout {
+            folded: false,
+            num_values,
+        };
 
         // write file header
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let file = File::create(&fpath).await?;
-                let (res, _buf) = file.write_all_at(prefix, 0).await;
-                res?;
-                let (res, _buf) = file.write_all_at(self.offsets, prefix_len as u64).await;
-                res?;
+                let prefix_len = std::mem::size_of::<ValueBatchLayout>();
+                file.write_all_at(bytemuck::bytes_of(&header), 0).await.0?;
+                file.write_all_at(self.offsets, prefix_len as u64).await.0?;
             } else {
                 let mut file = File::create(&fpath)?;
-                file.write_all(&prefix)?;
+                file.write_all(bytes_of(&header))?;
                 file.write_all(self.offsets[..].try_into().unwrap())?;
             }
         }

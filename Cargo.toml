@@ -10,6 +10,8 @@ readme = "README.md"
 keywords = ["storage", "database", "async"]
 
 [dependencies]
+bytemuck = { version="1", features=["derive"] }
+anyhow = "1"
 lru = "0.12"
 parking_lot = "0.12"
 bincode = "^1.3"

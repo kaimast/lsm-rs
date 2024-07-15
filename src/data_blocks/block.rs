@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cfg_if::cfg_if;
 
 use crate::sorted_table::Key;
+use crate::utils::{EncodedU32, EncodedU64};
 
 use super::{DataEntry, SearchResult};
 
@@ -12,9 +13,6 @@ use bloomfilter::Bloom;
 
 #[cfg(feature = "wisckey")]
 use super::ENTRY_LENGTH;
-
-#[cfg(not(feature = "wisckey"))]
-use super::DataLen;
 
 #[cfg(feature = "bloom-filters")]
 //TODO change the size of this depending on max_key_block_length
@@ -27,14 +25,27 @@ pub(super) const BLOOM_KEY_NUM: usize = 1024;
 pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
 
 /**
- * Data Layout
+ * Layout of a data block on disk
+ *
  * 1. 4 bytes marking where the restart list starts
  * 2. 4 bytes indicating the number of entries in this block
  * 3. 1024+32 bytes for the bloom filter (if enabled)
- * 4. Sequence of variable-length entries, where each entry is structured as listed below
+ * 4. Sequence of variable-length entries
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
- *
- * For WiscKey the layout of an entry is the following:
+ */
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DataBlockHeaderLayout {
+    restart_list_start: u32,
+    number_of_entries: u32,
+    #[cfg(feature = "bloom-filters")]
+    bloom_filter: [u8; 1024],
+    #[cfg(feature = "bloom-filters")]
+    bloom_filter_keys: [(u64, u64); 2],
+}
+
+/**
+ * For WiscKey the layout of an entry is:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
  *  - Variable length key suffix
@@ -43,16 +54,44 @@ pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
  *    - entry type (1 byte)
  *    - value block id
  *    - offset
+ */
+#[cfg(feature = "wisckey")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EntryHeaderLayout {
+    prefix_len: u32, //P
+    suffix_len: u32, //N
+    entry_type: u8,
+    seq_number: u64,
+    block: ValueBatchId,
+    offset: u32,
+}
+
+/**
+ * The layout of a entry when not using WiscKey
  *
- * Otherwise:
+ * Header:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
- *  - Variable length key suffix
  *  - Value length (8 bytes)
  *  - Entry Type (1 byte)
  *  - Sequence number (8 bytes)
+ *
+ * Content:
+ *  - Variable length key suffix
  *  - Variable length value
  */
+#[cfg(not(feature = "wisckey"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EntryHeaderLayout {
+    prefix_len: EncodedU32,
+    suffix_len: EncodedU32,
+    value_length: EncodedU64,
+    entry_type: u8,
+    seq_number: EncodedU32,
+}
+
 //TODO support data block layouts without prefixed keys
 pub struct DataBlock {
     pub(super) restart_list_start: usize,
@@ -64,41 +103,29 @@ pub struct DataBlock {
 }
 
 impl DataBlock {
-    pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
+    pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> anyhow::Result<Self> {
         assert!(!data.is_empty(), "No data?");
 
-        let rls_len = std::mem::size_of::<u32>();
-        let len_len = std::mem::size_of::<u32>();
-        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
-        let num_entries = u32::from_le_bytes(data[rls_len..rls_len + len_len].try_into().unwrap());
+        let header: &DataBlockHeaderLayout = crate::utils::apply_layout(data.as_slice())?;
 
         #[cfg(feature = "bloom-filters")]
-        let bloom_filter = {
-            let filter = &data[rls_len + len_len..rls_len + len_len + BLOOM_LENGTH];
-            let keys: [(u64, u64); 2] = bincode::deserialize(
-                &data[rls_len + len_len + BLOOM_LENGTH..Self::header_length()],
-            )
-            .unwrap();
+        let bloom_filter = Bloom::from_existing(
+            header.bloom_filter.as_slice(),
+            (BLOOM_LENGTH * 8) as u64,
+            BLOOM_KEY_NUM as u32,
+            header.bloom_filter_keys,
+        );
 
-            Bloom::from_existing(
-                filter,
-                (BLOOM_LENGTH * 8) as u64,
-                BLOOM_KEY_NUM as u32,
-                keys,
-            )
-        };
-
-        assert!(restart_list_start <= data.len(), "Data corrupted?");
         log::trace!("Created new data block from existing data");
 
-        Self {
+        Ok(Self {
+            num_entries: header.number_of_entries,
+            restart_list_start: header.restart_list_start as usize,
             data,
-            num_entries,
-            restart_list_start,
             restart_interval,
             #[cfg(feature = "bloom-filters")]
             bloom_filter,
-        }
+        })
     }
 
     fn header_length() -> usize {
@@ -123,34 +150,20 @@ impl DataBlock {
         previous_key: &[u8],
     ) -> (Key, DataEntry, u32) {
         let mut offset = (offset as usize) + Self::header_length();
-        let len_len = std::mem::size_of::<u32>();
-
         assert!(offset < self_ptr.restart_list_start);
 
-        let pkey_len =
-            u32::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-        offset += len_len;
-
-        let skey_len =
-            u32::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-        offset += len_len;
+        let header: &EntryHeaderLayout = crate::utils::apply_layout(&self_ptr.data[offset..]).expect("Failed to read entry");
+        offset += std::mem::size_of::<EntryHeaderLayout>();
 
         let kdata = [
-            &previous_key[..pkey_len as usize],
-            &self_ptr.data[offset..offset + (skey_len as usize)],
+            &previous_key[..header.prefix_len.get_as_usize()],
+            &self_ptr.data[offset..offset + header.suffix_len.get_as_usize()],
         ]
         .concat();
-        offset += skey_len as usize;
+        offset += header.suffix_len.get_as_usize();
 
         #[cfg(not(feature = "wisckey"))]
-        let entry_len = {
-            let len_len = std::mem::size_of::<DataLen>();
-            let elen =
-                DataLen::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-            offset += len_len;
-
-            elen as usize
-        };
+        let entry_len = header.value_length.get_as_usize();
 
         // WiscKey has constant-size entries
         #[cfg(feature = "wisckey")]
