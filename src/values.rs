@@ -4,6 +4,8 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
+use rkyv::{Archive, Deserialize, Serialize};
+
 use tokio::sync::Mutex;
 
 use crate::sorted_table::Value;
@@ -54,13 +56,15 @@ struct ValueBatch {
 pub struct ValueBatchBuilder<'a> {
     vlog: &'a ValueLog,
     identifier: ValueBatchId,
-    data: Vec<u8>,
+    /// The locations of the values within this block
     offsets: Vec<u8>,
+    /// The value data
+    data: Vec<u8>,
 }
 
-#[repr(C)]
-#[derive(bytemuck::Pod)]
-struct ValueBatchHeaderLayout {
+#[derive(Archive, Serialize, Deserialize)]
+#[archive(check_bytes)]
+struct ValueBatchHeader {
     folded: bool,
     num_values: u32,
 }
@@ -70,30 +74,31 @@ impl<'a> ValueBatchBuilder<'a> {
         let fpath = self.vlog.get_file_path(&self.identifier);
         let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
 
-        let header = ValueBatchHeaderLayout {
+        let header = ValueBatchHeader {
             folded: false,
             num_values,
         };
 
+        let header_bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(&header).expect("Failed to serialize heaer");
+        let offsets_len = self.offsets.len();
+
         // write file header
         cfg_if! {
             if #[cfg(feature="async-io")] {
-                let prefix_len = std::mem::size_of::<ValueBatchLayout>();
-                file.write_all_at(bytemuck::bytes_of(&header), 0).await.0?;
-                file.write_all_at(self.offsets, prefix_len as u64).await.0?;
+                let file = File::create(&fpath).await?;
+                file.write_all_at(header_bytes.to_vec(), 0).await.0?;
+                file.write_all_at(self.offsets, header_bytes.len() as u64).await.0?;
             } else {
                 let mut file = File::create(&fpath)?;
-                file.write_all(bytes_of(&header))?;
-                file.write_all(self.offsets[..].try_into().unwrap())?;
+                file.write_all(&header_bytes)?;
+                file.write_all(&self.offsets)?;
             }
         }
 
-        let offset = (size_of::<u8>() as u64)
-            + (size_of::<u32>() as u64)
-            + ((size_of::<u32>() + size_of::<u8>()) as u64) * (num_values as u64);
-
         //TODO use same fd
-        disk::write(&fpath, &self.data, offset).await?;
+        let data_pos = header_bytes.len() + offsets_len;
+        disk::write(&fpath, &self.data, data_pos as u64).await?;
 
         let batch = ValueBatch {
             fold_table: None,
@@ -112,6 +117,7 @@ impl<'a> ValueBatchBuilder<'a> {
     }
 
     pub async fn add_value(&mut self, mut val: Value) -> ValueId {
+        // The encoded length of this value
         let val_len = (val.len() as u32).to_le_bytes();
 
         let offset = self.data.len() as u32;
@@ -151,8 +157,8 @@ impl ValueLog {
         let (batch_id, value_offset) = vid;
         let fpath = self.get_file_path(&batch_id);
 
-        const HEADER_LEN: u64 = (size_of::<u8>() + size_of::<u32>()) as u64;
-        let mut header_data = vec![0u8; HEADER_LEN as usize];
+        const HEADER_LEN: usize = std::mem::size_of::<ArchivedValueBatchHeader>();
+        let mut header_data = vec![0u8; HEADER_LEN];
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -172,24 +178,23 @@ impl ValueLog {
             }
         }
 
-        let is_folded = header_data[0] != 0u8;
-        let num_values = u32::from_le_bytes(header_data[size_of::<u8>()..].try_into().unwrap());
-
+        let header =
+            rkyv::access::<ArchivedValueBatchHeader, rkyv::rancor::Error>(&header_data).unwrap();
         let mut offset_pos = None;
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
                 // Skip delete and fold marker
-                let pos = 1 + num_values;
+                let pos = 1 + header.num_values.to_native();
 
-                if is_folded {
-                    let len = (num_values as usize)*2*size_of::<u32>();
+                if header.folded {
+                    let len = (header.num_values.to_native() as usize)*2*size_of::<u32>();
                     let buf = vec![0u8; len];
 
                     let (res, offset_positions) = file.read_exact_at(buf, pos as u64).await;
                     res?;
 
-                    for idx in 0..num_values {
+                    for idx in 0..header.num_values.to_native() {
                         let start = (idx as usize)*2*size_of::<u32>();
                         let offset = u32::from_le_bytes(offset_positions[start..size_of::<u32>()].try_into().unwrap());
 
@@ -199,13 +204,13 @@ impl ValueLog {
                         }
                     }
                 } else {
-                    let len = (num_values as usize)*size_of::<u32>();
+                    let len = (header.num_values.to_native() as usize)*size_of::<u32>();
                     let buf = vec![0u8; len];
 
                     let (res, offset_positions) = file.read_exact_at(buf, pos as u64).await;
                     res?;
 
-                    for idx in 0..num_values {
+                    for idx in 0..header.num_values.to_native() {
                         let start = (idx as usize)*size_of::<u32>();
                         let offset = u32::from_le_bytes(offset_positions[start..size_of::<u32>()].try_into().unwrap());
 
@@ -220,12 +225,12 @@ impl ValueLog {
                 let (res, _buf) = file.write_all_at(vec![1u8], offset_pos as u64).await;
                 res?;
             } else {
-                file.seek(SeekFrom::Current(num_values as i64))?;
+                file.seek(SeekFrom::Current(header.num_values.to_native() as i64))?;
 
-                if is_folded {
+                if header.folded {
                      let mut data = [0u8; 2*size_of::<u32>()];
 
-                     for pos in 0..num_values {
+                     for pos in 0..header.num_values.to_native() {
                         file.read_exact(&mut data)?;
                         let old_offset = u32::from_le_bytes(data[..size_of::<u32>()].try_into().unwrap());
 
@@ -238,7 +243,7 @@ impl ValueLog {
                 } else {
                     let mut data = [0u8; size_of::<u32>()];
 
-                    for pos in 0..num_values {
+                    for pos in 0..header.num_values.to_native() {
                         file.read_exact(&mut data)?;
                         let offset = u32::from_le_bytes(data);
 
@@ -249,7 +254,7 @@ impl ValueLog {
                 }
 
                 let offset_pos = offset_pos.expect("Not a valid offset");
-                file.seek(SeekFrom::Start(HEADER_LEN + (offset_pos as u64)))?;
+                file.seek(SeekFrom::Start((HEADER_LEN as u64) + (offset_pos as u64)))?;
                 file.write_all(&[1u8])?;
             }
         }

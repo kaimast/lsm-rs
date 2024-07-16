@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use cfg_if::cfg_if;
 
+use rkyv::{Archive, Deserialize, Serialize};
+
 use crate::sorted_table::Key;
-use crate::utils::{EncodedU32, EncodedU64};
 
 use super::{DataEntry, SearchResult};
 
@@ -33,9 +34,9 @@ pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
  * 4. Sequence of variable-length entries
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
  */
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct DataBlockHeaderLayout {
+#[derive(Archive, Serialize, Deserialize)]
+#[archive(check_bytes)]
+struct DataBlockHeader {
     restart_list_start: u32,
     number_of_entries: u32,
     #[cfg(feature = "bloom-filters")]
@@ -56,14 +57,14 @@ struct DataBlockHeaderLayout {
  *    - offset
  */
 #[cfg(feature = "wisckey")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct EntryHeaderLayout {
-    prefix_len: u32, //P
-    suffix_len: u32, //N
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(check_bytes)]
+struct EntryHeader {
+    prefix_len: u32,
+    suffix_len: u32,
     entry_type: u8,
     seq_number: u64,
-    block: ValueBatchId,
+    block: crate::data_blocks::ValueBatchId,
     offset: u32,
 }
 
@@ -82,14 +83,14 @@ struct EntryHeaderLayout {
  *  - Variable length value
  */
 #[cfg(not(feature = "wisckey"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct EntryHeaderLayout {
-    prefix_len: EncodedU32,
-    suffix_len: EncodedU32,
-    value_length: EncodedU64,
+#[derive(Archive, Serialize, Deserialize)]
+#[archive(check_bytes)]
+struct EntryHeader {
+    prefix_len: u32,
+    suffix_len: u32,
+    value_length: u64,
     entry_type: u8,
-    seq_number: EncodedU32,
+    seq_number: u32,
 }
 
 //TODO support data block layouts without prefixed keys
@@ -103,29 +104,30 @@ pub struct DataBlock {
 }
 
 impl DataBlock {
-    pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> anyhow::Result<Self> {
+    pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
         assert!(!data.is_empty(), "No data?");
-
-        let header: &DataBlockHeaderLayout = crate::utils::apply_layout(data.as_slice())?;
+        let header =
+            rkyv::access::<ArchivedDataBlockHeader, rkyv::rancor::Error>(&data[..]).unwrap();
 
         #[cfg(feature = "bloom-filters")]
         let bloom_filter = Bloom::from_existing(
             header.bloom_filter.as_slice(),
             (BLOOM_LENGTH * 8) as u64,
             BLOOM_KEY_NUM as u32,
-            header.bloom_filter_keys,
+            rkyv::deserialize::<_, _, rkyv::rancor::Error>(&header.bloom_filter_keys, &mut ())
+                .unwrap(),
         );
 
         log::trace!("Created new data block from existing data");
 
-        Ok(Self {
-            num_entries: header.number_of_entries,
-            restart_list_start: header.restart_list_start as usize,
+        Self {
+            num_entries: header.number_of_entries.to_native(),
+            restart_list_start: header.restart_list_start.to_native() as usize,
             data,
             restart_interval,
             #[cfg(feature = "bloom-filters")]
             bloom_filter,
-        })
+        }
     }
 
     fn header_length() -> usize {
@@ -152,18 +154,20 @@ impl DataBlock {
         let mut offset = (offset as usize) + Self::header_length();
         assert!(offset < self_ptr.restart_list_start);
 
-        let header: &EntryHeaderLayout = crate::utils::apply_layout(&self_ptr.data[offset..]).expect("Failed to read entry");
-        offset += std::mem::size_of::<EntryHeaderLayout>();
+        let header =
+            rkyv::access::<ArchivedEntryHeader, rkyv::rancor::Error>(&self_ptr.data[offset..])
+                .expect("Failed to read entry");
+        offset += std::mem::size_of::<ArchivedEntryHeader>();
 
         let kdata = [
-            &previous_key[..header.prefix_len.get_as_usize()],
-            &self_ptr.data[offset..offset + header.suffix_len.get_as_usize()],
+            &previous_key[..(header.prefix_len.to_native() as usize)],
+            &self_ptr.data[offset..offset + (header.suffix_len.to_native() as usize)],
         ]
         .concat();
-        offset += header.suffix_len.get_as_usize();
+        offset += header.suffix_len.to_native() as usize;
 
         #[cfg(not(feature = "wisckey"))]
-        let entry_len = header.value_length.get_as_usize();
+        let entry_len = header.value_length.to_native() as usize;
 
         // WiscKey has constant-size entries
         #[cfg(feature = "wisckey")]
