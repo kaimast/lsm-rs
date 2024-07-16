@@ -1,10 +1,11 @@
-use std::sync::Arc;
-
 use cfg_if::cfg_if;
+
+use std::sync::Arc;
 
 use crate::manifest::SeqNumber;
 use crate::{disk, Error};
 
+use super::block::{ArchivedDataBlockHeader, DataBlockHeader, EntryHeader};
 use super::{DataBlock, DataBlockId, DataBlocks, PrefixedKey};
 
 #[cfg(feature = "bloom-filters")]
@@ -13,17 +14,19 @@ use bloomfilter::Bloom;
 #[cfg(feature = "bloom-filters")]
 use super::block::{BLOOM_KEY_NUM, BLOOM_LENGTH};
 
-#[cfg(not(feature = "wisckey"))]
-use super::DataLen;
-
 #[cfg(feature = "wisckey")]
-use super::ValueId;
+use crate::data_blocks::ValueId;
 
 pub struct DataBlockBuilder {
     data_blocks: Arc<DataBlocks>,
     data: Vec<u8>,
 
+    /// The position/index of the next entry
+    /// This is also the current number of entries in this block builder
     position: u32,
+
+    /// The restart list keeps track of when the keys are fully reset
+    /// This enables using binary search in get() instead of seeking linearly
     restart_list: Vec<u32>,
 
     #[cfg(feature = "bloom-filters")]
@@ -33,34 +36,16 @@ pub struct DataBlockBuilder {
 impl DataBlockBuilder {
     #[tracing::instrument(skip(data_blocks))]
     pub(super) fn new(data_blocks: Arc<DataBlocks>) -> Self {
-        let mut data = vec![];
-
-        // The restart list keeps track of when the keys are fully reset
-        // This enables using binary search in get() instead of seeking linearly
-        let restart_list = vec![];
-
         // Reserve space for the header
-        data.extend_from_slice(0u32.to_le_bytes().as_ref());
-        data.extend_from_slice(0u32.to_le_bytes().as_ref());
-
-        #[cfg(feature = "bloom-filters")]
-        let bloom_filter = {
-            let filter = Bloom::new(BLOOM_LENGTH, BLOOM_KEY_NUM);
-            data.extend_from_slice(&[0u8; BLOOM_LENGTH]);
-            data.extend_from_slice(&bincode::serialize(&filter.sip_keys()).unwrap());
-
-            filter
-        };
-
-        let position = 0;
+        let data = vec![0u8; std::mem::size_of::<ArchivedDataBlockHeader>()];
 
         Self {
             data_blocks,
             data,
-            position,
-            restart_list,
+            position: 0,
+            restart_list: vec![],
             #[cfg(feature = "bloom-filters")]
-            bloom_filter,
+            bloom_filter: Bloom::new(BLOOM_LENGTH, BLOOM_KEY_NUM),
         }
     }
 
@@ -86,33 +71,31 @@ impl DataBlockBuilder {
             }
         }
 
-        let pkey_len = key.prefix_len.to_le_bytes();
-        let skey_len = (key.suffix.len() as u32).to_le_bytes();
-        let seq_number = seq_number.to_le_bytes();
+        // Add paddig to ensure word alignment?
+        let diff = self.data.len() % crate::WORD_ALIGNMENT;
+        if diff > 0 {
+            println!("Adding {diff} bytes of padding");
+            self.data.resize(self.data.len() + diff, 0u8);
+        }
 
-        self.data.extend_from_slice(&pkey_len[..]);
-        self.data.extend_from_slice(&skey_len[..]);
+        let header = EntryHeader {
+            prefix_len: key.prefix_len,
+            suffix_len: key.suffix.len() as u32,
+            seq_number,
+            entry_type,
+            #[cfg(feature = "wisckey")]
+            value_ref,
+            #[cfg(not(feature = "wisckey"))]
+            value_length: entry_data.len() as u64,
+        };
+
+        self.data
+            .extend_from_slice(&rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap());
+
         self.data.append(&mut key.suffix);
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "wisckey")] {
-                let block_id = value_ref.0.to_le_bytes();
-                let offset = value_ref.1.to_le_bytes();
-
-                self.data.extend_from_slice(&seq_number[..]);
-                self.data.extend_from_slice(&[entry_type]);
-                self.data.extend_from_slice(&block_id[..]);
-                self.data.extend_from_slice(&offset[..]);
-            } else {
-                let entry_len = std::mem::size_of::<SeqNumber>() + 1 + entry_data.len();
-
-                let mut entry_len = (entry_len as DataLen).to_le_bytes().to_vec();
-                self.data.append(&mut entry_len);
-                self.data.extend_from_slice(&seq_number[..]);
-                self.data.extend_from_slice(&[entry_type]);
-                self.data.extend_from_slice(entry_data);
-            }
-        }
+        #[cfg(not(feature = "wisckey"))]
+        self.data.extend_from_slice(entry_data);
 
         self.position += 1;
     }
@@ -129,32 +112,32 @@ impl DataBlockBuilder {
 
         let identifier = self.data_blocks.manifest.next_data_block_id().await;
 
-        let rl_len_len = std::mem::size_of::<u32>();
-        let len_len = std::mem::size_of::<u32>();
-        let restart_list_start = self.data.len() as u32;
+        let header = DataBlockHeader {
+            #[cfg(feature = "bloom-filters")]
+            bloom_filter: *<&[u8; 1024]>::try_from(self.bloom_filter.bitmap().as_slice()).unwrap(),
+            #[cfg(feature = "bloom-filters")]
+            bloom_filter_keys: self.bloom_filter.sip_keys(),
+            number_of_entries: self.position,
+            restart_list_start: self.data.len() as u32,
+        };
 
-        self.data[..rl_len_len].copy_from_slice(&restart_list_start.to_le_bytes());
-        self.data[rl_len_len..rl_len_len + len_len].copy_from_slice(&self.position.to_le_bytes());
+        // Write header
+        self.data[..std::mem::size_of::<ArchivedDataBlockHeader>()]
+            .copy_from_slice(&rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap());
 
-        #[cfg(feature = "bloom-filters")]
-        self.data[rl_len_len + len_len..rl_len_len + len_len + BLOOM_LENGTH]
-            .copy_from_slice(&self.bloom_filter.bitmap());
-
+        // Write restart list
         for restart_offset in self.restart_list.drain(..) {
             let mut offset = restart_offset.to_le_bytes().to_vec();
             self.data.append(&mut offset);
         }
 
-        #[cfg(feature = "bloom-filters")]
-        let bloom_filter = Bloom::new(BLOOM_LENGTH, BLOOM_KEY_NUM);
-
         let block = Arc::new(DataBlock {
             data: self.data,
-            num_entries: self.position,
+            num_entries: header.number_of_entries,
             restart_interval: self.data_blocks.params.block_restart_interval,
-            restart_list_start: restart_list_start as usize,
+            restart_list_start: header.restart_list_start as usize,
             #[cfg(feature = "bloom-filters")]
-            bloom_filter,
+            bloom_filter: self.bloom_filter,
         });
         let shard_id = DataBlocks::block_to_shard_id(identifier);
 
@@ -169,5 +152,10 @@ impl DataBlockBuilder {
             .put(identifier, block);
 
         Ok(Some(identifier))
+    }
+
+    /// How big is the block now?
+    pub fn current_size(&self) -> usize {
+        self.data.len()
     }
 }

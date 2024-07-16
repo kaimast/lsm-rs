@@ -6,10 +6,6 @@ use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
 use crate::{Error, Key, KvTrait, Params, WriteOp};
 
-use cfg_if::cfg_if;
-
-#[cfg(feature = "wisckey")]
-use crate::data_blocks::ENTRY_LENGTH;
 #[cfg(feature = "wisckey")]
 use crate::values::ValueId;
 
@@ -133,15 +129,6 @@ impl<'a> TableBuilder<'a> {
 
         let suffix = key[prefix_len..].to_vec();
 
-        cfg_if! {
-            if #[ cfg(feature="wisckey") ] {
-                let this_size = std::mem::size_of::<PrefixedKey>() + ENTRY_LENGTH + prefix_len;
-            } else {
-                let this_size = std::mem::size_of::<PrefixedKey>() + value.len() + prefix_len;
-            }
-        }
-
-        self.size += this_size as u64;
         self.block_entry_count += 1;
         self.restart_count += 1;
 
@@ -153,12 +140,13 @@ impl<'a> TableBuilder<'a> {
             .add_entry(pkey, key, seq_number, op_type, value);
 
         if self.block_entry_count >= self.params.max_key_block_size {
+            self.size += self.data_block.current_size() as u64;
+
             let mut next_block = DataBlocks::build_block(self.data_blocks.clone());
             std::mem::swap(&mut next_block, &mut self.data_block);
 
             let id = next_block.finish().await?.unwrap();
             self.block_index.push((self.index_key.take().unwrap(), id));
-
             self.block_entry_count = 0;
             self.restart_count = 0;
             self.last_key.clear();
@@ -169,7 +157,11 @@ impl<'a> TableBuilder<'a> {
 
     #[tracing::instrument(skip(self))]
     pub async fn finish(mut self) -> Result<SortedTable, Error> {
+        let block_size = self.data_block.current_size();
+
+        // Block will only be created if it contained entries
         if let Some(id) = self.data_block.finish().await? {
+            self.size += block_size as u64;
             self.block_index.push((self.index_key.take().unwrap(), id));
         }
 

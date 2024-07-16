@@ -40,6 +40,15 @@ mod wal;
 
 pub use database::Database;
 
+/// Use 8 byte word aligment for on disk storage to make lookups more efficient
+/// and ensure interoperability with rkyv
+const WORD_ALIGNMENT: usize = 8;
+
+/// Move the offset within a buffer to account for word alignment
+fn align_offset(offset: usize) -> usize {
+    offset + (offset % WORD_ALIGNMENT)
+}
+
 /// Keys and values must be (de-)serializable
 pub trait KvTrait = Send
     + serde::Serialize

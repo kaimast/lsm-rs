@@ -1,4 +1,6 @@
-use std::mem::size_of;
+/// Data blocks hold the actual contents of storted table
+/// (In the case of WiscKey the content is only the key and the value reference)
+
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,7 +9,7 @@ use parking_lot::Mutex;
 
 use lru::LruCache;
 
-use crate::manifest::{Manifest, SeqNumber};
+use crate::manifest::Manifest;
 use crate::Params;
 use crate::{disk, WriteOp};
 
@@ -18,7 +20,7 @@ mod block;
 pub use block::DataBlock;
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueBatchId, ValueId, ValueOffset};
+use crate::values::ValueId;
 
 pub type DataBlockId = u64;
 const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -40,9 +42,6 @@ impl PrefixedKey {
 
 type BlockShard = LruCache<DataBlockId, Arc<DataBlock>>;
 
-#[cfg(not(feature = "wisckey"))]
-type DataLen = u64;
-
 pub enum DataEntryType {
     Put,
     Delete,
@@ -50,11 +49,16 @@ pub enum DataEntryType {
 
 #[derive(Clone)]
 pub struct DataEntry {
+    /// The start of the value of this entry
+    #[cfg(not(feature = "wisckey"))]
     block: Arc<DataBlock>,
+
+    /// The start of the value of this entry
+    #[cfg(not(feature = "wisckey"))]
     offset: usize,
 
-    #[cfg(not(feature = "wisckey"))]
-    length: usize,
+    /// The header of this entry
+    header: block::EntryHeader,
 }
 
 enum SearchResult {
@@ -62,39 +66,15 @@ enum SearchResult {
     Range(u32, u32),
 }
 
-#[cfg(feature = "wisckey")]
-pub const ENTRY_LENGTH: usize =
-    size_of::<SeqNumber>() + size_of::<u8>() + size_of::<ValueBatchId>() + size_of::<ValueOffset>();
-
 impl DataEntry {
-    #[inline(always)]
-    fn get_length(&self) -> usize {
-        cfg_if::cfg_if! {
-            if #[cfg(feature="wisckey")] {
-                ENTRY_LENGTH
-            } else {
-                self.length
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn data(&self) -> &[u8] {
-        &self.block.data[self.offset..self.offset + self.get_length()]
-    }
-
     pub fn get_sequence_number(&self) -> u64 {
-        let seq_len = size_of::<SeqNumber>();
-        u64::from_le_bytes(self.data()[0..seq_len].try_into().unwrap())
+        self.header.seq_number
     }
 
     pub fn get_type(&self) -> DataEntryType {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let type_data = self.data()[seq_len];
-
-        if type_data == WriteOp::PUT_OP {
+        if self.header.entry_type == WriteOp::PUT_OP {
             DataEntryType::Put
-        } else if type_data == WriteOp::DELETE_OP {
+        } else if self.header.entry_type == WriteOp::DELETE_OP {
             DataEntryType::Delete
         } else {
             panic!("Unknown data entry type");
@@ -103,14 +83,9 @@ impl DataEntry {
 
     #[cfg(not(feature = "wisckey"))]
     pub fn get_value(&self) -> Option<&[u8]> {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let type_data = self.data()[seq_len];
-
-        let header_len = seq_len + 1;
-
-        if type_data == WriteOp::PUT_OP {
-            Some(&self.data()[header_len..])
-        } else if type_data == WriteOp::DELETE_OP {
+        if self.header.entry_type == WriteOp::PUT_OP {
+            Some(&self.block.data[self.offset..self.offset + (self.header.value_length as usize)])
+        } else if self.header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -119,26 +94,9 @@ impl DataEntry {
 
     #[cfg(feature = "wisckey")]
     pub fn get_value_ref(&self) -> Option<ValueId> {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let batch_id_len = std::mem::size_of::<ValueBatchId>();
-        let offset_len = std::mem::size_of::<ValueOffset>();
-
-        let type_data = self.data()[seq_len];
-
-        if type_data == WriteOp::PUT_OP {
-            let offset = seq_len + 1;
-            let batch_id = ValueBatchId::from_le_bytes(
-                self.data()[offset..offset + batch_id_len]
-                    .try_into()
-                    .unwrap(),
-            );
-            let offset = offset + batch_id_len;
-            let value_offset = ValueOffset::from_le_bytes(
-                self.data()[offset..offset + offset_len].try_into().unwrap(),
-            );
-
-            Some((batch_id, value_offset))
-        } else if type_data == WriteOp::DELETE_OP {
+        if self.header.entry_type == WriteOp::PUT_OP {
+            Some(self.header.value_ref)
+        } else if self.header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -185,6 +143,7 @@ impl DataBlocks {
         self.params.db_path.join(Path::new(&fname))
     }
 
+    /// Start creation of a new block
     #[tracing::instrument]
     pub fn build_block(self_ptr: Arc<DataBlocks>) -> DataBlockBuilder {
         DataBlockBuilder::new(self_ptr)

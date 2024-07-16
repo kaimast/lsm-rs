@@ -15,7 +15,7 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *Bloom filters* for faster lookups
 
 ## Latest Version:
-The version on crates.io is quite outdated. It is recommended using the `main` git branch.
+The version on crates.io is quite outdated. It is recommended to use the `main` git branch.
 
 ## Supported Architectures:
 Currently, the code is only tested on Linux machines, but it should run on all systems supported by the rust compiler.
@@ -50,10 +50,17 @@ just lint #runs cargo clippy
 ```
 
 ## Notes on io-uring
-Currently, this uses [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a very simplistic multi-threaded wrapper around `tokio-uring`.
+Currently, this uses [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a simplistic multi-threaded wrapper around `tokio-uring`.
 Eventually `tokio-uring` will [support multiple threads natively](https://github.com/tokio-rs/tokio-uring/issues/258) and this workaround will be removed.
 
 ## Similar Crates
+### LSM trees
 * [rust-rocksdb](https://github.com/rust-rocksdb/rust-rocksdb): Rust bindings for RocksDB
 * [leveldb](https://github.com/skade/leveldb): Rust bindings for LevelDB
 * [wickdb](https://github.com/Fullstop000/wickdb): Rust re-implementation of vanilla LevelDB
+* [agatedb](https://github.com/tikv/agatedb): A WiscKey implementation in Rust for TiKV
+
+### Other Key-Value Store
+These differ significantly in their approach but also provide a key-value store abstraction
+* [redb](https://github.com/cberner/redb)
+
