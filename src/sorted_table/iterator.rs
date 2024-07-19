@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::data_blocks::{DataBlock, DataEntry, DataEntryType};
 use crate::manifest::SeqNumber;
-use crate::Key;
+use crate::{EntryRef, Key};
 
 use super::SortedTable;
 
@@ -17,7 +17,11 @@ use super::ValueResult;
 pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
-    fn get_key(&self) -> &Key;
+
+    /// Returns None if this refers to a deletion
+    fn get_entry(&self) -> Option<EntryRef>;
+
+    fn get_key(&self) -> &[u8];
     fn get_seq_number(&self) -> SeqNumber;
     fn get_entry_type(&self) -> DataEntryType;
 
@@ -115,12 +119,19 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    fn get_key(&self) -> &Key {
+    fn get_key(&self) -> &[u8] {
         &self.key
     }
 
     fn get_seq_number(&self) -> SeqNumber {
         self.entry.get_sequence_number()
+    }
+
+    fn get_entry(&self) -> Option<EntryRef> {
+        match self.entry.get_type() {
+            DataEntryType::Put => Some(EntryRef::SortedTable(self.entry.clone())),
+            DataEntryType::Delete => None,
+        }
     }
 
     fn get_entry_type(&self) -> DataEntryType {

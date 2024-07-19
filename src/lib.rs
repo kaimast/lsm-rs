@@ -6,8 +6,6 @@
 // Temporary workaround for the io_uring code
 #![allow(clippy::arc_with_non_send_sync)]
 
-use bincode::Options;
-
 pub mod iterate;
 
 #[cfg(feature = "wisckey")]
@@ -29,6 +27,7 @@ pub mod tasks;
 
 pub mod logic;
 use logic::DbLogic;
+pub use logic::EntryRef;
 
 pub mod manifest;
 
@@ -40,15 +39,6 @@ mod level;
 mod wal;
 
 pub use database::Database;
-
-/// Keys and values must be (de-)serializable
-pub trait KvTrait = Send
-    + serde::Serialize
-    + serde::de::DeserializeOwned
-    + 'static
-    + Unpin
-    + Clone
-    + std::fmt::Debug;
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -102,10 +92,4 @@ pub enum StartMode {
     Open,
     /// Create a new, or override an existing, database
     CreateOrOverride,
-}
-
-pub fn get_encoder(
-) -> bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
-    // Use BigEndian to make integers sortable properly
-    bincode::options().with_big_endian()
 }

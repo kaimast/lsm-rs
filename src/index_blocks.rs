@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::path::Path;
 
-use bincode::Options;
-
 /// Index blocks hold metadata about a sorted table
 /// Each table has exactly one index block
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,7 +35,7 @@ impl IndexBlock {
         };
 
         // Store on disk before grabbing the lock
-        let block_data = crate::get_encoder().serialize(&block)?;
+        let block_data = bincode::serialize(&block)?;
         let fpath = Self::get_file_path(params, &id);
         disk::write(&fpath, &block_data, 0).await?;
 
@@ -49,7 +47,7 @@ impl IndexBlock {
         let fpath = Self::get_file_path(params, &id);
         let data = disk::read(&fpath, 0).await?;
 
-        Ok(crate::get_encoder().deserialize(&data)?)
+        Ok(bincode::deserialize(&data)?)
     }
 
     /// where is this index block located on disk?

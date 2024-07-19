@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use crate::data_blocks::DataEntryType;
 use crate::manifest::SeqNumber;
 use crate::sorted_table::{InternalIterator, Key};
-use crate::{KvTrait, Params};
+use crate::{EntryRef, Params};
 
 #[cfg(feature = "wisckey")]
 use crate::sorted_table::ValueResult;
@@ -26,6 +26,28 @@ pub struct ImmMemtableRef {
 pub enum MemtableEntry {
     Value { seq_number: u64, value: Vec<u8> },
     Deletion { seq_number: u64 },
+}
+
+/// Reference to an entry in the memtable
+/// TODO: make this zerocopy somehow
+pub struct MemtableEntryRef {
+    entry: MemtableEntry,
+}
+
+impl MemtableEntryRef {
+    pub fn get_type(&self) -> DataEntryType {
+        match &self.entry {
+            MemtableEntry::Value { .. } => DataEntryType::Put,
+            MemtableEntry::Deletion { .. } => DataEntryType::Delete,
+        }
+    }
+
+    pub fn get_value(&self) -> Option<&[u8]> {
+        match &self.entry {
+            MemtableEntry::Value { value, .. } => Some(value),
+            MemtableEntry::Deletion { .. } => None,
+        }
+    }
 }
 
 impl MemtableEntry {
@@ -119,8 +141,14 @@ impl InternalIterator for MemtableIterator {
         }
     }
 
-    fn get_key(&self) -> &Key {
+    fn get_key(&self) -> &[u8] {
         self.key.as_ref().expect("Not a valid iterator")
+    }
+
+    fn get_entry(&self) -> Option<EntryRef> {
+        self.entry
+            .clone()
+            .map(|entry| EntryRef::Memtable(MemtableEntryRef { entry }))
     }
 
     fn get_seq_number(&self) -> SeqNumber {
@@ -203,7 +231,7 @@ impl MemtableRef {
 #[derive(Debug)]
 pub struct Memtable {
     /// Sorted updates
-    entries: Vec<(Key, MemtableEntry)>,
+    entries: Vec<(Vec<u8>, MemtableEntry)>,
     size: usize,
     next_seq_number: SeqNumber,
 }
@@ -225,20 +253,22 @@ impl Memtable {
         self.next_seq_number
     }
 
-    pub fn get_min_max_key(&self) -> (Key, Key) {
+    pub fn get_min_max_key(&self) -> (&[u8], &[u8]) {
         let len = self.entries.len();
 
         if len == 0 {
             panic!("Memtable is empty");
         }
 
-        (self.entries[0].0.clone(), self.entries[len - 1].0.clone())
+        (&self.entries[0].0, &self.entries[len - 1].0)
     }
 
     #[tracing::instrument(skip(self, key))]
-    pub fn get(&self, key: &[u8]) -> Option<MemtableEntry> {
+    pub fn get(&self, key: &[u8]) -> Option<MemtableEntryRef> {
         match self.entries.binary_search_by_key(&key, |t| t.0.as_slice()) {
-            Ok(pos) => Some(self.entries[pos].1.clone()),
+            Ok(pos) => Some(MemtableEntryRef {
+                entry: self.entries[pos].1.clone(),
+            }),
             Err(_) => None,
         }
     }
@@ -265,7 +295,7 @@ impl Memtable {
     }
 
     #[tracing::instrument(skip(self, key, value))]
-    pub fn put(&mut self, key: Key, value: Vec<u8>) {
+    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
         let entry_len = key.len() + value.len();
 
@@ -285,7 +315,7 @@ impl Memtable {
     }
 
     #[tracing::instrument(skip(self, key))]
-    pub fn delete(&mut self, key: Key) {
+    pub fn delete(&mut self, key: Vec<u8>) {
         let pos = self.get_key_pos(key.as_slice());
         let entry_len = key.len();
 

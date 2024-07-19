@@ -1,22 +1,21 @@
 use std::sync::Arc;
 
-use bincode::Options;
-
 use tokio::runtime::Runtime as TokioRuntime;
 
 use lsm::logic::DbLogic;
+use lsm::sorted_table::{Key, Value};
 use lsm::tasks::{TaskManager, TaskType};
-use lsm::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
+use lsm::{EntryRef, Error, Params, StartMode, WriteBatch, WriteOptions};
 
 use crate::iterate::DbIterator;
 
-pub struct Database<K: KvTrait, V: KvTrait> {
-    inner: Arc<DbLogic<K, V>>,
+pub struct Database {
+    inner: Arc<DbLogic>,
     tasks: Arc<TaskManager>,
     tokio_rt: Arc<TokioRuntime>,
 }
 
-impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
+impl Database {
     pub fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
         Self::new_with_params(mode, params)
@@ -48,12 +47,11 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Will deserialize V from the raw data (avoids an additional copy)
     #[inline]
-    pub fn get(&self, key: &K) -> Result<Option<V>, Error> {
-        let key_data = get_encoder().serialize(key)?;
+    pub fn get(&self, key: &[u8]) -> Result<Option<EntryRef>, Error> {
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async {
-            let result = inner.get(&key_data).await;
+            let result = inner.get(key).await;
 
             match result {
                 Ok((needs_compaction, data)) => {
@@ -79,14 +77,14 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Store entry
     #[inline]
-    pub fn put(&self, key: &K, value: &V) -> Result<(), Error> {
+    pub fn put(&self, key: Key, value: Value) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS)
     }
 
     /// Store entry (with options)
     #[inline]
-    pub fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
+    pub fn put_opts(&self, key: Key, value: Value, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts)
@@ -95,7 +93,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent (which could be the first one) as deleted
-    pub fn delete(&self, key: &K) -> Result<(), Error> {
+    pub fn delete(&self, key: Key) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
 
         let mut batch = WriteBatch::new();
@@ -105,7 +103,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Delete an existing entry (with additional options)
-    pub fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
+    pub fn delete_opts(&self, key: Key, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
@@ -113,7 +111,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Iterate over all entries in the database
-    pub fn iter(&self) -> DbIterator<K, V> {
+    pub fn iter(&self) -> DbIterator {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
@@ -134,7 +132,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Like iter(), but reverse
-    pub fn reverse_iter(&self) -> DbIterator<K, V> {
+    pub fn reverse_iter(&self) -> DbIterator {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
@@ -155,7 +153,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
-    pub fn range_iter(&self, min: &K, max: &K) -> DbIterator<K, V> {
+    pub fn range_iter(&self, min: &[u8], max: &[u8]) -> DbIterator {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
@@ -177,7 +175,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Like range_iter(), but in reverse.
     /// It will only include entries with keys in (min_key;max_key]
-    pub fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
+    pub fn reverse_range_iter(&self, max_key: &[u8], min_key: &[u8]) -> DbIterator {
         let tokio_rt = self.tokio_rt.clone();
 
         self.tokio_rt.block_on(async {
@@ -202,15 +200,11 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Write a batch of updates to the database
     ///
     /// If you only want to write to a single key, use `Database::put` instead
-    pub fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
+    pub fn write(&self, write_batch: WriteBatch) -> Result<(), Error> {
         self.write_opts(write_batch, &WriteOptions::default())
     }
 
-    pub fn write_opts(
-        &self,
-        write_batch: WriteBatch<K, V>,
-        opts: &WriteOptions,
-    ) -> Result<(), Error> {
+    pub fn write_opts(&self, write_batch: WriteBatch, opts: &WriteOptions) -> Result<(), Error> {
         let inner = &*self.inner;
 
         self.tokio_rt.block_on(async move {
@@ -232,7 +226,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Drop for Database<K, V> {
+impl Drop for Database {
     /// This might abort some tasks is stop() has not been called
     /// crash consistency should prevent this from being a problem
     fn drop(&mut self) {

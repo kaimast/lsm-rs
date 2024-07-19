@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::data_blocks::{DataBlockBuilder, DataBlockId, DataBlocks, PrefixedKey};
 use crate::index_blocks::IndexBlock;
 use crate::manifest::SeqNumber;
-use crate::{Error, Key, KvTrait, Params, WriteOp};
+use crate::{Error, Key, Params, WriteOp};
 
 #[cfg(feature = "wisckey")]
 use crate::values::ValueId;

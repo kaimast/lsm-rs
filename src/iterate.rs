@@ -1,40 +1,38 @@
-#[cfg(feature = "wisckey")]
-use crate::values::{ValueId, ValueLog};
-
-#[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
-
-use crate::memtable::MemtableIterator;
-use crate::sorted_table::{InternalIterator, TableIterator};
-use crate::{Error, KvTrait};
-
-use bincode::Options;
-
 use std::cmp::Ordering;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 #[cfg(feature = "wisckey")]
 use std::sync::Arc;
 
+#[cfg(feature = "wisckey")]
+use crate::values::{ValueId, ValueLog};
+
+#[cfg(feature = "wisckey")]
+use crate::sorted_table::ValueResult;
+
+use crate::logic::EntryRef;
+use crate::memtable::MemtableIterator;
+use crate::sorted_table::{InternalIterator, TableIterator};
+use crate::{Error, Key};
+
 use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
 #[cfg(feature = "async-io")]
-type IterFuture<K, V> = dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>>;
+type IterFuture = dyn Future<Output = Result<(DbIteratorInner, Option<(Key, EntryRef)>), Error>>;
 
 #[cfg(not(feature = "async-io"))]
-type IterFuture<K, V> =
-    dyn Future<Output = Result<(DbIteratorInner<K, V>, Option<(K, V)>), Error>> + Send;
+type IterFuture =
+    dyn Future<Output = Result<(DbIteratorInner, Option<(Key, EntryRef)>), Error>> + Send;
 
-pub struct DbIterator<K: KvTrait, V: KvTrait> {
-    state: Option<Pin<Box<IterFuture<K, V>>>>,
+pub struct DbIterator {
+    state: Option<Pin<Box<IterFuture>>>,
 }
 
-impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
+impl DbIterator {
     pub(crate) fn new(
         mem_iters: Vec<MemtableIterator>,
         table_iters: Vec<TableIterator>,
@@ -58,8 +56,8 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
-    type Item = (K, V);
+impl Stream for DbIterator {
+    type Item = (Key, EntryRef);
 
     fn poll_next(mut self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Option<Self::Item>> {
         let (inner, res) = if let Some(mut fut) = self.state.take() {
@@ -92,9 +90,7 @@ impl<K: KvTrait, V: KvTrait> Stream for DbIterator<K, V> {
     }
 }
 
-struct DbIteratorInner<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<(K, V)>,
-
+struct DbIteratorInner {
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
 
@@ -108,14 +104,14 @@ struct DbIteratorInner<K: KvTrait, V: KvTrait> {
 }
 
 #[cfg(feature = "wisckey")]
-enum IterResult<V: KvTrait> {
+enum IterResult {
     Value(V),
     ValueRef(ValueId),
 }
 
 type NextKV = Option<(crate::manifest::SeqNumber, usize)>;
 
-impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
+impl DbIteratorInner {
     fn new(
         mem_iters: Vec<MemtableIterator>,
         table_iters: Vec<TableIterator>,
@@ -135,7 +131,6 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         Self {
             iterators,
             last_key: None,
-            _marker: PhantomData,
             min_key,
             max_key,
             reverse,
@@ -153,19 +148,19 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         if self.reverse {
             // This iterator might be "behind" other iterators
             if let Some(last_key) = &self.last_key {
-                while !iter.at_end() && iter.get_key() >= last_key {
+                while !iter.at_end() && iter.get_key() >= last_key.as_slice() {
                     iter.step().await;
                 }
             }
 
             // Don't pick a key that is greater than the maximum
             if let Some(max_key) = &self.max_key {
-                while !iter.at_end() && iter.get_key() > max_key {
+                while !iter.at_end() && iter.get_key() > max_key.as_slice() {
                     iter.step().await;
                 }
 
                 // There might be no key in this iterator that is <=max_key
-                if iter.at_end() || iter.get_key() > max_key {
+                if iter.at_end() || iter.get_key() > max_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -178,7 +173,7 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
 
             // Don't pick a key that is less or equal to the minimum
             if let Some(min_key) = &self.min_key {
-                if iter.get_key().as_slice() <= min_key.as_slice() {
+                if iter.get_key() <= min_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -206,19 +201,19 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         } else {
             // This iterator might be "behind" other iterators
             if let Some(last_key) = &self.last_key {
-                while !iter.at_end() && iter.get_key() <= last_key {
+                while !iter.at_end() && iter.get_key() <= last_key.as_slice() {
                     iter.step().await;
                 }
             }
 
             // Don't pick a key that is smaller than the minimum
             if let Some(min_key) = &self.min_key {
-                while !iter.at_end() && iter.get_key() < min_key {
+                while !iter.at_end() && iter.get_key() < min_key.as_slice() {
                     iter.step().await;
                 }
 
                 // There might be no key in this iterator that is >=min_key
-                if iter.at_end() || iter.get_key() < min_key {
+                if iter.at_end() || iter.get_key() < min_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -231,7 +226,7 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
 
             // Don't pick a key that is greater or equal to the maximum
             if let Some(max_key) = &self.max_key {
-                if iter.get_key().as_slice() >= max_key.as_slice() {
+                if iter.get_key() >= max_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -259,7 +254,7 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
         }
     }
 
-    async fn next(mut self) -> Result<(Self, Option<(K, V)>), Error> {
+    async fn next(mut self) -> Result<(Self, Option<(Key, EntryRef)>), Error> {
         let mut result = None;
 
         while result.is_none() {
@@ -275,30 +270,28 @@ impl<K: KvTrait, V: KvTrait> DbIteratorInner<K, V> {
             }
 
             if let Some((_, pos)) = next_kv.take() {
-                let encoder = crate::get_encoder();
                 let iter = &*self.iterators[pos];
 
-                let res_key = encoder.deserialize(iter.get_key())?;
-                self.last_key = Some(iter.get_key().clone());
+                let res_key = iter.get_key();
+                self.last_key = Some(iter.get_key().to_vec());
 
                 cfg_if! {
                     if #[ cfg(feature="wisckey") ] {
                         match iter.get_value() {
                             ValueResult::Value(value) => {
                                 let encoder = crate::get_encoder();
-                                result = Some(Some((res_key, IterResult::Value(encoder.deserialize(value)?))));
+                                result = Some(Some((res_key.to_vec(), IterResult::Value(encoder.deserialize(value)?))));
                             }
                             ValueResult::Reference(value_ref) => {
-                                result = Some(Some((res_key, IterResult::ValueRef(value_ref))));
+                                result = Some(Some((res_key.to_vec(), IterResult::ValueRef(value_ref))));
                                                     }
                             ValueResult::NoValue => {
                                 // this is a deletion... skip
                             }
                         }
                     } else {
-                        if let Some(value) = iter.get_value() {
-                            let res_val = encoder.deserialize(value)?;
-                            result = Some(Some((res_key, res_val)));
+                        if let Some(entry) = iter.get_entry() {
+                            result = Some(Some((res_key.to_vec(), entry)));
                         } else {
                             // this is a deletion... skip
                         }

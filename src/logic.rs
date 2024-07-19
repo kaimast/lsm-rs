@@ -1,20 +1,4 @@
-use crate::data_blocks::{DataBlocks, DataEntryType};
-use crate::level::Level;
-use crate::level_logger::LevelLogger;
-use crate::manifest::{LevelId, Manifest};
-use crate::memtable::{ImmMemtableRef, Memtable, MemtableEntry, MemtableIterator, MemtableRef};
-use crate::sorted_table::{InternalIterator, Key, TableIterator};
-use crate::wal::WriteAheadLog;
-use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
-
-#[cfg(feature = "wisckey")]
-use crate::values::ValueLog;
-
-#[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
-
 use std::collections::VecDeque;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 #[cfg(not(feature = "async-io"))]
@@ -23,13 +7,46 @@ use std::fs;
 use tokio::sync::RwLock;
 use tokio_condvar::Condvar;
 
-use bincode::Options;
 use cfg_if::cfg_if;
+
+use crate::data_blocks::{DataBlocks, DataEntryType};
+use crate::level::Level;
+use crate::level_logger::LevelLogger;
+use crate::manifest::{LevelId, Manifest};
+use crate::memtable::{
+    ImmMemtableRef, Memtable, MemtableEntry, MemtableEntryRef, MemtableIterator, MemtableRef,
+};
+use crate::sorted_table::{InternalIterator, Key, TableIterator};
+use crate::wal::WriteAheadLog;
+use crate::{Error, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
+
+#[cfg(feature = "wisckey")]
+use crate::values::ValueLog;
+
+#[cfg(feature = "wisckey")]
+use crate::sorted_table::ValueResult;
+
+use crate::data_blocks::DataEntry;
 
 enum CompactResult {
     NothingToDo,
     DidWork,
     Locked,
+}
+
+pub enum EntryRef {
+    SortedTable(DataEntry),
+    Memtable(MemtableEntryRef),
+}
+
+impl EntryRef {
+    /// Returns None if this entry refers to a deletion
+    pub fn value(&self) -> Option<&[u8]> {
+        match self {
+            Self::SortedTable(inner) => inner.get_value(),
+            Self::Memtable(inner) => inner.get_value(),
+        }
+    }
 }
 
 /// The main database logic
@@ -38,9 +55,7 @@ enum CompactResult {
 /// Database instead.
 /// This is mainly kept public so that we can implement the sync
 /// API in a separate crate.
-pub struct DbLogic<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
-
+pub struct DbLogic {
     manifest: Arc<Manifest>,
     params: Arc<Params>,
     memtable: RwLock<MemtableRef>,
@@ -55,7 +70,7 @@ pub struct DbLogic<K: KvTrait, V: KvTrait> {
     value_log: Arc<ValueLog>,
 }
 
-impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
+impl DbLogic {
     pub async fn new(start_mode: StartMode, params: Params) -> Result<Self, Error> {
         if params.db_path.components().next().is_none() {
             return Err(Error::InvalidParams(
@@ -180,7 +195,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
         }
 
         Ok(Self {
-            _marker: Default::default(),
             manifest,
             params,
             memtable,
@@ -201,8 +215,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
     pub async fn prepare_iter(
         &self,
-        min_key: Option<&K>,
-        max_key: Option<&K>,
+        min_key: Option<&[u8]>,
+        max_key: Option<&[u8]>,
     ) -> (
         Vec<MemtableIterator>,
         Vec<TableIterator>,
@@ -211,9 +225,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
-
-        let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
-        let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
         if let Some(min_key) = &min_key
             && let Some(max_key) = &max_key
@@ -239,14 +250,14 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             for table in tables.iter() {
                 let mut skip = false;
 
-                if let Some(min_key) = &min_key {
-                    if table.get_max() < min_key.as_slice() {
+                if let Some(min_key) = min_key {
+                    if table.get_max() < min_key {
                         skip = true;
                     }
                 }
 
-                if let Some(max_key) = &max_key {
-                    if table.get_min() > max_key.as_slice() {
+                if let Some(max_key) = max_key {
+                    if table.get_min() > max_key {
                         skip = true;
                     }
                 }
@@ -258,14 +269,19 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        (mem_iters, table_iters, min_key, max_key)
+        (
+            mem_iters,
+            table_iters,
+            min_key.map(|k| k.to_vec()),
+            max_key.map(|k| k.to_vec()),
+        )
     }
 
     /// Iterate over the specified range in reverse
     pub async fn prepare_reverse_iter(
         &self,
-        max_key: Option<&K>,
-        min_key: Option<&K>,
+        max_key: Option<&[u8]>,
+        min_key: Option<&[u8]>,
     ) -> (
         Vec<MemtableIterator>,
         Vec<TableIterator>,
@@ -274,9 +290,6 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     ) {
         let mut table_iters = Vec::new();
         let mut mem_iters = Vec::new();
-
-        let min_key = min_key.map(|key| get_encoder().serialize(key).unwrap());
-        let max_key = max_key.map(|key| get_encoder().serialize(key).unwrap());
 
         if let Some(min_key) = &min_key
             && let Some(max_key) = &max_key
@@ -302,14 +315,14 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             for table in tables.iter() {
                 let mut skip = false;
 
-                if let Some(min_key) = &min_key {
-                    if table.get_max() < min_key.as_slice() {
+                if let Some(min_key) = min_key {
+                    if table.get_max() < min_key {
                         skip = true;
                     }
                 }
 
-                if let Some(max_key) = &max_key {
-                    if table.get_min() > max_key.as_slice() {
+                if let Some(max_key) = max_key {
+                    if table.get_min() > max_key {
                         skip = true;
                     }
                 }
@@ -321,7 +334,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             }
         }
 
-        (mem_iters, table_iters, min_key, max_key)
+        (
+            mem_iters,
+            table_iters,
+            min_key.map(|k| k.to_vec()),
+            max_key.map(|k| k.to_vec()),
+        )
     }
 
     #[cfg(feature = "wisckey")]
@@ -390,24 +408,23 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
     #[cfg(not(feature = "wisckey"))]
     #[tracing::instrument(skip(self, key))]
-    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        let encoder = get_encoder();
+    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<EntryRef>), Error> {
         let mut compaction_triggered = false;
 
         {
             let memtable = self.memtable.read().await;
 
             if let Some(entry) = memtable.get().get(key) {
-                match entry {
-                    MemtableEntry::Value { value, .. } => {
-                        let value = encoder.deserialize(&value)?;
-                        return Ok((compaction_triggered, Some(value)));
+                match entry.get_type() {
+                    DataEntryType::Put => {
+                        let entry = EntryRef::Memtable(entry);
+                        return Ok((compaction_triggered, Some(entry)));
                     }
-                    MemtableEntry::Deletion { .. } => {
+                    DataEntryType::Delete => {
                         return Ok((compaction_triggered, None));
                     }
                 }
-            };
+            }
         }
 
         {
@@ -415,12 +432,12 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
-                    match entry {
-                        MemtableEntry::Value { value, .. } => {
-                            let value = encoder.deserialize(&value)?;
-                            return Ok((compaction_triggered, Some(value)));
+                    match entry.get_type() {
+                        DataEntryType::Put => {
+                            let entry = EntryRef::Memtable(entry);
+                            return Ok((compaction_triggered, Some(entry)));
                         }
-                        MemtableEntry::Deletion { .. } => {
+                        DataEntryType::Delete => {
                             return Ok((compaction_triggered, None));
                         }
                     }
@@ -437,9 +454,8 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             if let Some(entry) = result {
                 match entry.get_type() {
                     DataEntryType::Put => {
-                        let data = entry.get_value().unwrap();
-                        let value = encoder.deserialize(data)?;
-                        return Ok((compaction_triggered, Some(value)));
+                        let entry = EntryRef::SortedTable(entry);
+                        return Ok((compaction_triggered, Some(entry)));
                     }
                     DataEntryType::Delete => {
                         return Ok((compaction_triggered, None));
@@ -459,7 +475,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
     #[tracing::instrument(skip(self, write_batch, opt))]
     pub async fn write_opts(
         &self,
-        mut write_batch: WriteBatch<K, V>,
+        mut write_batch: WriteBatch,
         opt: &WriteOptions,
     ) -> Result<bool, Error> {
         let mut memtable = self.memtable.write().await;
@@ -520,7 +536,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.first().unwrap();
             let table_id = self.manifest.next_table_id().await;
-            let mut table_builder = l0.build_table(table_id, min_key, max_key);
+            let mut table_builder = l0.build_table(table_id, min_key.to_vec(), max_key.to_vec());
 
             let memtable_entries = mem.get().get_entries();
 
@@ -746,21 +762,23 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
 
         loop {
             log::trace!("Starting compaction for next key");
-            let mut min_key = None;
+            let mut min_key: Option<Vec<u8>> = None;
 
             for table_iter in table_iters.iter_mut() {
                 // Advance the iterator, if needed
                 if let Some(last_key) = &last_key {
-                    while !table_iter.at_end() && table_iter.get_key() <= last_key {
+                    while !table_iter.at_end() && table_iter.get_key() <= last_key.as_slice() {
                         table_iter.step().await;
                     }
                 }
 
                 if !table_iter.at_end() {
-                    if let Some(key) = min_key {
-                        min_key = Some(std::cmp::min(table_iter.get_key(), key));
+                    if let Some(key) = &min_key {
+                        if table_iter.get_key() < key.as_slice() {
+                            min_key = Some(table_iter.get_key().to_vec());
+                        }
                     } else {
-                        min_key = Some(table_iter.get_key());
+                        min_key = Some(table_iter.get_key().to_vec());
                     }
                 }
             }
@@ -780,7 +798,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 // Figure out if this table's entry is more recent
                 let key = table_iter.get_key();
 
-                if key != &min_key {
+                if key != min_key {
                     continue;
                 }
 
@@ -832,7 +850,7 @@ impl<K: KvTrait, V: KvTrait> DbLogic<K, V> {
                 }
             }
 
-            last_key = Some(min_key);
+            last_key = Some(min_key.to_vec());
         }
 
         let new_table = table_builder.finish().await?;
