@@ -7,17 +7,12 @@ use std::task::{Context, Poll};
 use std::sync::Arc;
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueId, ValueLog};
-
-#[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
+use crate::values::ValueLog;
 
 use crate::logic::EntryRef;
 use crate::memtable::MemtableIterator;
 use crate::sorted_table::{InternalIterator, TableIterator};
 use crate::{Error, Key};
-
-use cfg_if::cfg_if;
 
 use futures::stream::Stream;
 
@@ -101,12 +96,6 @@ struct DbIteratorInner {
 
     #[cfg(feature = "wisckey")]
     value_log: Arc<ValueLog>,
-}
-
-#[cfg(feature = "wisckey")]
-enum IterResult {
-    Value(V),
-    ValueRef(ValueId),
 }
 
 type NextKV = Option<(crate::manifest::SeqNumber, usize)>;
@@ -275,27 +264,15 @@ impl DbIteratorInner {
                 let res_key = iter.get_key();
                 self.last_key = Some(iter.get_key().to_vec());
 
-                cfg_if! {
-                    if #[ cfg(feature="wisckey") ] {
-                        match iter.get_value() {
-                            ValueResult::Value(value) => {
-                                let encoder = crate::get_encoder();
-                                result = Some(Some((res_key.to_vec(), IterResult::Value(encoder.deserialize(value)?))));
-                            }
-                            ValueResult::Reference(value_ref) => {
-                                result = Some(Some((res_key.to_vec(), IterResult::ValueRef(value_ref))));
-                                                    }
-                            ValueResult::NoValue => {
-                                // this is a deletion... skip
-                            }
-                        }
-                    } else {
-                        if let Some(entry) = iter.get_entry() {
-                            result = Some(Some((res_key.to_vec(), entry)));
-                        } else {
-                            // this is a deletion... skip
-                        }
-                    }
+                #[cfg(feature = "wisckey")]
+                let entry = iter.get_entry(&self.value_log).await;
+                #[cfg(not(feature = "wisckey"))]
+                let entry = iter.get_entry();
+
+                if let Some(entry) = entry {
+                    result = Some(Some((res_key.to_vec(), entry)));
+                } else {
+                    // this is a deletion... skip
                 }
             } else {
                 // at end
@@ -310,20 +287,6 @@ impl DbIteratorInner {
             }
         };
 
-        cfg_if! {
-            if #[ cfg(feature="wisckey") ] {
-                match result {
-                    IterResult::ValueRef(value_ref) => {
-                        let res_val = self.value_log.get(value_ref).await?;
-                        Ok((self, Some((key, res_val))))
-                    }
-                    IterResult::Value(value) => {
-                        Ok((self, Some((key, value))))
-                    }
-                }
-            } else {
-                Ok((self, Some((key, result))))
-            }
-        }
+        Ok((self, Some((key, result))))
     }
 }

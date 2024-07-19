@@ -9,7 +9,7 @@ use crate::sorted_table::{InternalIterator, Key};
 use crate::{EntryRef, Params};
 
 #[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
+use crate::values::ValueLog;
 
 #[derive(Debug, Clone)]
 pub struct MemtableRef {
@@ -145,10 +145,18 @@ impl InternalIterator for MemtableIterator {
         self.key.as_ref().expect("Not a valid iterator")
     }
 
+    #[cfg(feature = "wisckey")]
+    async fn get_entry(&self, _value_log: &ValueLog) -> Option<EntryRef> {
+        self.entry.clone().map(|entry| EntryRef::Memtable {
+            entry: MemtableEntryRef { entry },
+        })
+    }
+
+    #[cfg(not(feature = "wisckey"))]
     fn get_entry(&self) -> Option<EntryRef> {
-        self.entry
-            .clone()
-            .map(|entry| EntryRef::Memtable(MemtableEntryRef { entry }))
+        self.entry.clone().map(|entry| EntryRef::Memtable {
+            entry: MemtableEntryRef { entry },
+        })
     }
 
     fn get_seq_number(&self) -> SeqNumber {
@@ -164,22 +172,6 @@ impl InternalIterator for MemtableIterator {
             MemtableEntry::Value { .. } => DataEntryType::Put,
             MemtableEntry::Deletion { .. } => DataEntryType::Delete,
         }
-    }
-
-    #[cfg(feature = "wisckey")]
-    fn get_value(&self) -> ValueResult {
-        let entry = self.entry.as_ref().unwrap();
-
-        if let Some(value) = entry.get_value() {
-            ValueResult::Value(value)
-        } else {
-            ValueResult::NoValue
-        }
-    }
-
-    #[cfg(not(feature = "wisckey"))]
-    fn get_value(&self) -> Option<&[u8]> {
-        self.entry.as_ref().unwrap().get_value()
     }
 }
 

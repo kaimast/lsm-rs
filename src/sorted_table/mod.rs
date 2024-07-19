@@ -5,9 +5,6 @@ use crate::data_blocks::{DataBlock, DataBlocks, DataEntry};
 use crate::index_blocks::IndexBlock;
 use crate::{Error, Params};
 
-#[cfg(feature = "wisckey")]
-use crate::values::ValueId;
-
 mod iterator;
 pub use iterator::{InternalIterator, TableIterator};
 
@@ -36,14 +33,6 @@ pub struct SortedTable {
     /// The number of seek operations on this table before compaction is triggered
     /// This improves read performance for heavily queried keys
     allowed_seeks: AtomicI32,
-}
-
-#[cfg(feature = "wisckey")]
-#[derive(Debug, PartialEq, Eq)]
-pub enum ValueResult<'a> {
-    Reference(ValueId),
-    Value(&'a [u8]),
-    NoValue,
 }
 
 impl SortedTable {

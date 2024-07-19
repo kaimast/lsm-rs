@@ -112,7 +112,7 @@ impl DataEntry {
     }
 
     #[cfg(feature = "wisckey")]
-    pub fn get_value_ref(&self) -> Option<ValueId> {
+    pub fn get_value_id(&self) -> Option<ValueId> {
         let header = self.get_header();
 
         if header.entry_type == WriteOp::PUT_OP {

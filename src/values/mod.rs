@@ -6,12 +6,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::FromBytes;
 
-use crate::sorted_table::Value;
 use crate::Error;
-
-use bincode::Options;
 
 use lru::LruCache;
 
@@ -40,6 +37,10 @@ pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
+mod batch;
+pub use batch::ValueBatchBuilder;
+use batch::{ValueBatch, ValueBatchHeader};
+
 #[derive(Debug)]
 pub struct ValueLog {
     params: Arc<Params>,
@@ -47,86 +48,15 @@ pub struct ValueLog {
     batch_caches: Vec<Mutex<BatchShard>>,
 }
 
-#[derive(Debug)]
-struct ValueBatch {
-    fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
-    data: Vec<u8>,
+pub struct ValueRef {
+    batch: Arc<ValueBatch>,
+    offset: usize,
+    length: usize,
 }
 
-pub struct ValueBatchBuilder<'a> {
-    vlog: &'a ValueLog,
-    identifier: ValueBatchId,
-    /// The locations of the values within this block
-    offsets: Vec<u8>,
-    /// The value data
-    data: Vec<u8>,
-}
-
-#[derive(AsBytes, FromBytes, FromZeroes)]
-#[repr(packed)]
-struct ValueBatchHeader {
-    folded: u8, //boolean flag
-    num_values: u32,
-}
-
-impl<'a> ValueBatchBuilder<'a> {
-    pub async fn finish(self) -> Result<ValueBatchId, Error> {
-        let fpath = self.vlog.get_file_path(&self.identifier);
-        let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
-
-        let header = ValueBatchHeader {
-            folded: 0,
-            num_values,
-        };
-
-        let header_bytes = header.as_bytes();
-        let offsets_len = self.offsets.len();
-
-        // write file header
-        cfg_if! {
-            if #[cfg(feature="async-io")] {
-                let file = File::create(&fpath).await?;
-                file.write_all_at(header_bytes.to_vec(), 0).await.0?;
-                file.write_all_at(self.offsets, header_bytes.len() as u64).await.0?;
-            } else {
-                let mut file = File::create(&fpath)?;
-                file.write_all(header_bytes)?;
-                file.write_all(&self.offsets)?;
-            }
-        }
-
-        //TODO use same fd
-        let data_pos = header_bytes.len() + offsets_len;
-        disk::write(&fpath, &self.data, data_pos as u64).await?;
-
-        let batch = ValueBatch {
-            fold_table: None,
-            data: self.data,
-        };
-
-        // Store in the cache so we don't have to load immediately
-        {
-            let shard_id = ValueLog::batch_to_shard_id(self.identifier);
-            let mut shard = self.vlog.batch_caches[shard_id].lock().await;
-            shard.put(self.identifier, Arc::new(batch));
-        }
-
-        log::trace!("Created value batch #{}", self.identifier);
-        Ok(self.identifier)
-    }
-
-    pub async fn add_value(&mut self, mut val: Value) -> ValueId {
-        // The encoded length of this value
-        let val_len = (val.len() as u32).to_le_bytes();
-
-        let offset = self.data.len() as u32;
-        let mut offset_data = offset.to_le_bytes().to_vec();
-        self.offsets.append(&mut offset_data);
-
-        self.data.extend_from_slice(&val_len);
-        self.data.append(&mut val);
-
-        (self.identifier, offset)
+impl ValueRef {
+    pub fn get_value(&self) -> &[u8] {
+        &self.batch.get_data()[self.offset..self.offset + self.length]
     }
 }
 
@@ -185,7 +115,7 @@ impl ValueLog {
                 // Skip delete and fold marker
                 let pos = 1 + header.num_values;
 
-                if header.folded != 0 {
+                if header.is_folded() {
                     let len = (header.num_values as usize)*2*size_of::<u32>();
                     let buf = vec![0u8; len];
 
@@ -225,7 +155,7 @@ impl ValueLog {
             } else {
                 file.seek(SeekFrom::Current(header.num_values as i64))?;
 
-                if header.folded != 0 {
+                if header.is_folded() {
                      let mut data = [0u8; 2*size_of::<u32>()];
 
                      for pos in 0..header.num_values {
@@ -403,7 +333,7 @@ impl ValueLog {
                 let old_offset = offsets[pos];
                 let len_len = size_of::<u32>();
                 let data_start = old_offset as usize;
-                let vlen_data = batch.data[data_start..data_start + len_len]
+                let vlen_data = batch.get_data()[data_start..data_start + len_len]
                     .try_into()
                     .unwrap();
                 let vlen = u32::from_le_bytes(vlen_data);
@@ -417,7 +347,7 @@ impl ValueLog {
                 let new_offset = batch_data.len() as u32;
 
                 new_offsets.push((old_offset, new_offset));
-                batch_data.extend_from_slice(&batch.data[data_start..data_end]);
+                batch_data.extend_from_slice(&batch.get_data()[data_start..data_end]);
             }
 
             // re-write batch file
@@ -478,10 +408,7 @@ impl ValueLog {
 
             cache.put(
                 batch_id,
-                Arc::new(ValueBatch {
-                    fold_table: Some(fold_table),
-                    data: batch_data,
-                }),
+                Arc::new(ValueBatch::from_existing(Some(fold_table), batch_data)),
             );
 
             Ok(false)
@@ -503,12 +430,7 @@ impl ValueLog {
 
     pub async fn make_batch(&self) -> ValueBatchBuilder<'_> {
         let identifier = self.manifest.next_value_batch_id().await;
-        ValueBatchBuilder {
-            identifier,
-            vlog: self,
-            data: vec![],
-            offsets: vec![],
-        }
+        ValueBatchBuilder::new(identifier, self)
     }
 
     #[tracing::instrument(skip(self))]
@@ -579,24 +501,20 @@ impl ValueLog {
             };
 
             let data = disk::read(&fpath, offset).await?;
-            let batch = Arc::new(ValueBatch { fold_table, data });
+            let batch = Arc::new(ValueBatch::from_existing(fold_table, data));
 
             cache.put(identifier, batch.clone());
             Ok(batch)
         }
     }
 
-    pub async fn get<V: serde::de::DeserializeOwned>(
-        &self,
-        value_ref: ValueId,
-    ) -> Result<V, Error> {
+    pub async fn get_ref(&self, value_ref: ValueId) -> Result<ValueRef, Error> {
         log::trace!("Getting value at {value_ref:?}");
 
         let (id, offset) = value_ref;
         let batch = self.get_batch(id).await?;
 
-        let val = batch.get_value(offset);
-        Ok(super::get_encoder().deserialize(val)?)
+        Ok(ValueBatch::get_value(batch, offset))
     }
 
     #[allow(dead_code)]
@@ -682,26 +600,6 @@ impl ValueLog {
         }
 
         Ok(u32::from_le_bytes(data.as_slice().try_into().unwrap()))
-    }
-}
-
-impl ValueBatch {
-    fn get_value(&self, pos: ValueOffset) -> &[u8] {
-        let pos = if let Some(fold_table) = &self.fold_table {
-            *fold_table.get(&pos).expect("No such entry")
-        } else {
-            pos
-        };
-
-        let mut offset = pos as usize;
-
-        let len_len = size_of::<u32>();
-
-        let vlen_data = self.data[offset..offset + len_len].try_into().unwrap();
-        let vlen = u32::from_le_bytes(vlen_data);
-
-        offset += len_len;
-        &self.data[offset..offset + (vlen as usize)]
     }
 }
 

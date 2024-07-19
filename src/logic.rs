@@ -21,10 +21,7 @@ use crate::wal::WriteAheadLog;
 use crate::{Error, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
-use crate::values::ValueLog;
-
-#[cfg(feature = "wisckey")]
-use crate::sorted_table::ValueResult;
+use crate::values::{ValueLog, ValueRef};
 
 use crate::data_blocks::DataEntry;
 
@@ -34,17 +31,26 @@ enum CompactResult {
     Locked,
 }
 
+/// Refers to an entry in the key-value store without copying it
 pub enum EntryRef {
-    SortedTable(DataEntry),
-    Memtable(MemtableEntryRef),
+    SortedTable {
+        entry: DataEntry,
+        #[cfg(feature = "wisckey")]
+        value_ref: ValueRef,
+    },
+    Memtable {
+        entry: MemtableEntryRef,
+    },
 }
 
 impl EntryRef {
-    /// Returns None if this entry refers to a deletion
-    pub fn value(&self) -> Option<&[u8]> {
+    pub fn get_value(&self) -> &[u8] {
         match self {
-            Self::SortedTable(inner) => inner.get_value(),
-            Self::Memtable(inner) => inner.get_value(),
+            #[cfg(feature = "wisckey")]
+            Self::SortedTable { value_ref, .. } => value_ref.get_value(),
+            #[cfg(not(feature = "wisckey"))]
+            Self::SortedTable { entry } => entry.get_value().unwrap(),
+            Self::Memtable { entry } => entry.get_value().unwrap(),
         }
     }
 }
@@ -344,24 +350,23 @@ impl DbLogic {
 
     #[cfg(feature = "wisckey")]
     #[tracing::instrument(skip(self, key))]
-    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<V>), Error> {
-        let encoder = get_encoder();
+    pub async fn get(&self, key: &[u8]) -> Result<(bool, Option<EntryRef>), Error> {
         let mut compaction_triggered = false;
 
         {
             let memtable = self.memtable.read().await;
 
             if let Some(entry) = memtable.get().get(key) {
-                match entry {
-                    MemtableEntry::Value { value, .. } => {
-                        let val = encoder.deserialize(&value)?;
-                        return Ok((compaction_triggered, Some(val)));
+                match entry.get_type() {
+                    DataEntryType::Put => {
+                        let entry = EntryRef::Memtable { entry };
+                        return Ok((compaction_triggered, Some(entry)));
                     }
-                    MemtableEntry::Deletion { .. } => {
+                    DataEntryType::Delete => {
                         return Ok((compaction_triggered, None));
                     }
                 }
-            };
+            }
         }
 
         {
@@ -369,12 +374,12 @@ impl DbLogic {
 
             for (_, imm) in imm_mems.iter().rev() {
                 if let Some(entry) = imm.get().get(key) {
-                    match entry {
-                        MemtableEntry::Value { value, .. } => {
-                            let val = encoder.deserialize(&value)?;
-                            return Ok((compaction_triggered, Some(val)));
+                    match entry.get_type() {
+                        DataEntryType::Put => {
+                            let entry = EntryRef::Memtable { entry };
+                            return Ok((compaction_triggered, Some(entry)));
                         }
-                        MemtableEntry::Deletion { .. } => {
+                        DataEntryType::Delete => {
                             return Ok((compaction_triggered, None));
                         }
                     }
@@ -391,9 +396,13 @@ impl DbLogic {
             if let Some(entry) = result {
                 match entry.get_type() {
                     DataEntryType::Put => {
-                        let value_ref = entry.get_value_ref().unwrap();
-                        let data = self.value_log.get(value_ref).await?;
-                        return Ok((compaction_triggered, Some(data)));
+                        let value_ref = self
+                            .value_log
+                            .get_ref(entry.get_value_id().unwrap())
+                            .await
+                            .unwrap();
+                        let entry = EntryRef::SortedTable { entry, value_ref };
+                        return Ok((compaction_triggered, Some(entry)));
                     }
                     DataEntryType::Delete => {
                         return Ok((compaction_triggered, None));
@@ -417,7 +426,7 @@ impl DbLogic {
             if let Some(entry) = memtable.get().get(key) {
                 match entry.get_type() {
                     DataEntryType::Put => {
-                        let entry = EntryRef::Memtable(entry);
+                        let entry = EntryRef::Memtable { entry };
                         return Ok((compaction_triggered, Some(entry)));
                     }
                     DataEntryType::Delete => {
@@ -434,7 +443,7 @@ impl DbLogic {
                 if let Some(entry) = imm.get().get(key) {
                     match entry.get_type() {
                         DataEntryType::Put => {
-                            let entry = EntryRef::Memtable(entry);
+                            let entry = EntryRef::Memtable { entry };
                             return Ok((compaction_triggered, Some(entry)));
                         }
                         DataEntryType::Delete => {
@@ -454,7 +463,7 @@ impl DbLogic {
             if let Some(entry) = result {
                 match entry.get_type() {
                     DataEntryType::Put => {
-                        let entry = EntryRef::SortedTable(entry);
+                        let entry = EntryRef::SortedTable { entry };
                         return Ok((compaction_triggered, Some(entry)));
                     }
                     DataEntryType::Delete => {
@@ -813,11 +822,7 @@ impl DbLogic {
                         // Check whether we overwrote a key that is about to
                         // be garbage collected
                         #[cfg(feature = "wisckey")]
-                        if let ValueResult::Reference(vid) = other_iter.get_value() {
-                            deleted_values.push(vid);
-                        } else {
-                            panic!("Invalid state");
-                        }
+                        deleted_values.push(other_iter.get_value_id().unwrap());
 
                         min_iter = Some(table_iter);
                     }
@@ -830,18 +835,16 @@ impl DbLogic {
             let min_iter = min_iter.unwrap();
             match min_iter.get_entry_type() {
                 DataEntryType::Put => {
-                    cfg_if! {
-                        if #[cfg(feature="wisckey")] {
-                            if let ValueResult::Reference(value_ref) = min_iter.get_value() {
-                                table_builder.add_value(&min_key, min_iter.get_seq_number(), value_ref).await?;
-                            } else {
-                                panic!("Invalid state");
-                            }
-                        } else {
-                            let value = min_iter.get_value().unwrap();
-                            table_builder.add_value(&min_key, min_iter.get_seq_number(), value).await?;
-                        }
-                    }
+                    table_builder
+                        .add_value(
+                            &min_key,
+                            min_iter.get_seq_number(),
+                            #[cfg(feature = "wisckey")]
+                            min_iter.get_value_id().unwrap(),
+                            #[cfg(not(feature = "wisckey"))]
+                            min_iter.get_entry().unwrap().get_value(),
+                        )
+                        .await?;
                 }
                 DataEntryType::Delete => {
                     table_builder

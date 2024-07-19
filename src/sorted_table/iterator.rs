@@ -10,7 +10,7 @@ use crate::{EntryRef, Key};
 use super::SortedTable;
 
 #[cfg(feature = "wisckey")]
-use super::ValueResult;
+use crate::values::{ValueId, ValueLog};
 
 #[cfg_attr(feature="async-io", async_trait(?Send))]
 #[cfg_attr(not(feature = "async-io"), async_trait)]
@@ -19,17 +19,14 @@ pub trait InternalIterator: Send {
     async fn step(&mut self);
 
     /// Returns None if this refers to a deletion
+    #[cfg(feature = "wisckey")]
+    async fn get_entry(&self, value_log: &ValueLog) -> Option<EntryRef>;
+    #[cfg(not(feature = "wisckey"))]
     fn get_entry(&self) -> Option<EntryRef>;
 
     fn get_key(&self) -> &[u8];
     fn get_seq_number(&self) -> SeqNumber;
     fn get_entry_type(&self) -> DataEntryType;
-
-    #[cfg(feature = "wisckey")]
-    fn get_value(&self) -> ValueResult;
-
-    #[cfg(not(feature = "wisckey"))]
-    fn get_value(&self) -> Option<&[u8]>;
 }
 
 /// Returns the entries within a table in order
@@ -106,6 +103,11 @@ impl TableIterator {
             }
         }
     }
+
+    #[cfg(feature = "wisckey")]
+    pub fn get_value_id(&self) -> Option<ValueId> {
+        self.entry.get_value_id()
+    }
 }
 
 #[cfg_attr(feature="async-io", async_trait(?Send))]
@@ -127,33 +129,32 @@ impl InternalIterator for TableIterator {
         self.entry.get_sequence_number()
     }
 
+    #[cfg(feature = "wisckey")]
+    async fn get_entry(&self, value_log: &ValueLog) -> Option<EntryRef> {
+        match self.entry.get_type() {
+            DataEntryType::Put => Some(EntryRef::SortedTable {
+                value_ref: value_log
+                    .get_ref(self.entry.get_value_id().unwrap())
+                    .await
+                    .expect("No such value?"),
+                entry: self.entry.clone(),
+            }),
+            DataEntryType::Delete => None,
+        }
+    }
+
+    #[cfg(not(feature = "wisckey"))]
     fn get_entry(&self) -> Option<EntryRef> {
         match self.entry.get_type() {
-            DataEntryType::Put => Some(EntryRef::SortedTable(self.entry.clone())),
+            DataEntryType::Put => Some(EntryRef::SortedTable {
+                entry: self.entry.clone(),
+            }),
             DataEntryType::Delete => None,
         }
     }
 
     fn get_entry_type(&self) -> DataEntryType {
         self.entry.get_type()
-    }
-
-    #[cfg(feature = "wisckey")]
-    fn get_value(&self) -> ValueResult {
-        if let Some(value_ref) = self.entry.get_value_ref() {
-            ValueResult::Reference(value_ref)
-        } else {
-            ValueResult::NoValue
-        }
-    }
-
-    #[cfg(not(feature = "wisckey"))]
-    fn get_value(&self) -> Option<&[u8]> {
-        if let Some(value) = &self.entry.get_value() {
-            Some(value)
-        } else {
-            None
-        }
     }
 
     #[tracing::instrument(skip(self))]
