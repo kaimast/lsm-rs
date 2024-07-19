@@ -1,6 +1,5 @@
 /// Data blocks hold the actual contents of storted table
 /// (In the case of WiscKey the content is only the key and the value reference)
-
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -8,6 +7,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use lru::LruCache;
+
+use zerocopy::FromBytes;
 
 use crate::manifest::Manifest;
 use crate::Params;
@@ -18,6 +19,8 @@ pub use builder::DataBlockBuilder;
 
 mod block;
 pub use block::DataBlock;
+
+use block::EntryHeader;
 
 #[cfg(feature = "wisckey")]
 use crate::values::ValueId;
@@ -49,16 +52,14 @@ pub enum DataEntryType {
 
 #[derive(Clone)]
 pub struct DataEntry {
-    /// The start of the value of this entry
-    #[cfg(not(feature = "wisckey"))]
+    /// The block containing th
     block: Arc<DataBlock>,
 
-    /// The start of the value of this entry
-    #[cfg(not(feature = "wisckey"))]
+    /// The of this entry in the block's buffer
     offset: usize,
 
-    /// The header of this entry
-    header: block::EntryHeader,
+    /// The end of this entry
+    next_offset: u32,
 }
 
 enum SearchResult {
@@ -67,14 +68,27 @@ enum SearchResult {
 }
 
 impl DataEntry {
+    fn get_header(&self) -> &EntryHeader {
+        let header_len = std::mem::size_of::<EntryHeader>();
+        let header_data = &self.block.data[self.offset..self.offset + header_len];
+        EntryHeader::ref_from(header_data).expect("Failed to read entry header")
+    }
+
     pub fn get_sequence_number(&self) -> u64 {
-        self.header.seq_number
+        self.get_header().seq_number
+    }
+
+    /// The offset of the next entry
+    pub fn get_next_offset(&self) -> u32 {
+        self.next_offset
     }
 
     pub fn get_type(&self) -> DataEntryType {
-        if self.header.entry_type == WriteOp::PUT_OP {
+        let header = self.get_header();
+
+        if header.entry_type == WriteOp::PUT_OP {
             DataEntryType::Put
-        } else if self.header.entry_type == WriteOp::DELETE_OP {
+        } else if header.entry_type == WriteOp::DELETE_OP {
             DataEntryType::Delete
         } else {
             panic!("Unknown data entry type");
@@ -83,9 +97,14 @@ impl DataEntry {
 
     #[cfg(not(feature = "wisckey"))]
     pub fn get_value(&self) -> Option<&[u8]> {
-        if self.header.entry_type == WriteOp::PUT_OP {
-            Some(&self.block.data[self.offset..self.offset + (self.header.value_length as usize)])
-        } else if self.header.entry_type == WriteOp::DELETE_OP {
+        let header = self.get_header();
+        let value_offset =
+            self.offset + std::mem::size_of::<EntryHeader>() + (header.suffix_len as usize);
+
+        if header.entry_type == WriteOp::PUT_OP {
+            let end = value_offset + (header.value_length as usize);
+            Some(&self.block.data[value_offset..end])
+        } else if header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -94,9 +113,11 @@ impl DataEntry {
 
     #[cfg(feature = "wisckey")]
     pub fn get_value_ref(&self) -> Option<ValueId> {
-        if self.header.entry_type == WriteOp::PUT_OP {
-            Some(self.header.value_ref)
-        } else if self.header.entry_type == WriteOp::DELETE_OP {
+        let header = self.get_header();
+
+        if header.entry_type == WriteOp::PUT_OP {
+            Some((header.value_batch, header.value_offset))
+        } else if header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -275,15 +296,16 @@ mod tests {
         ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
         assert_eq!(entry.get_value(), Some(&val1[..]));
 
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
+        let (key, entry) =
+            DataBlock::get_entry_at_offset(data_block2.clone(), entry.get_next_offset(), &key);
 
         assert_eq!(key, vec![5, 2]);
         assert_eq!(entry.get_value(), Some(&val2[..]));
-        assert_eq!(pos, data_block2.byte_len());
+        assert_eq!(entry.get_next_offset(), data_block2.byte_len());
     }
 }

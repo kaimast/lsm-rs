@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::data_blocks::{DataBlock, DataEntry, DataEntryType};
 use crate::manifest::SeqNumber;
-use crate::{Key, KvTrait};
+use crate::Key;
 
 use super::SortedTable;
 
@@ -51,7 +51,7 @@ impl TableIterator {
 
             let len = first_block.get_num_entries();
             assert!(len > 0);
-            let (key, entry) = DataBlock::get_entry_at_index(first_block, len - 1);
+            let (key, entry) = DataBlock::get_entry_at_index(&first_block, len - 1);
 
             // Are we already at the end of the first block?
             let (block_pos, block_offset) = if len == 1 {
@@ -81,13 +81,15 @@ impl TableIterator {
             let block_id = table.index.get_block_id(0);
             let first_block = table.data_blocks.get_block(&block_id).await;
             let byte_len = first_block.byte_len();
-            let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+            let (key, entry) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+
+            let next_offset = entry.get_next_offset();
 
             // Are we already at the end of the first block?
-            let (block_pos, block_offset) = if byte_len == entry_len {
+            let (block_pos, block_offset) = if byte_len == next_offset {
                 (1, 0)
             } else {
-                (0, entry_len)
+                (0, next_offset)
             };
 
             Self {
@@ -155,8 +157,7 @@ impl InternalIterator for TableIterator {
                     let block_id = self.table.index.get_block_id(self.block_pos as usize);
                     let block = self.table.data_blocks.get_block(&block_id).await;
 
-                    let (key, entry) =
-                        DataBlock::get_entry_at_index(block.clone(), self.block_offset);
+                    let (key, entry) = DataBlock::get_entry_at_index(&block, self.block_offset);
 
                     self.key = key;
                     self.entry = entry;
@@ -192,17 +193,20 @@ impl InternalIterator for TableIterator {
                     let block = self.table.data_blocks.get_block(&block_id).await;
                     let byte_len = block.byte_len();
 
-                    let (key, entry, new_offset) =
+                    let (key, entry) =
                         DataBlock::get_entry_at_offset(block, self.block_offset, &self.key);
+
+                    let next_offset = entry.get_next_offset();
+
                     self.key = key;
                     self.entry = entry;
 
                     // At the end of the block?
-                    if new_offset >= byte_len {
+                    if next_offset >= byte_len {
                         self.block_pos += 1;
                         self.block_offset = 0;
                     } else {
-                        self.block_offset = new_offset;
+                        self.block_offset = next_offset;
                     }
                 }
             }

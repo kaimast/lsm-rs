@@ -5,7 +5,9 @@ use std::sync::Arc;
 use crate::manifest::SeqNumber;
 use crate::{disk, Error};
 
-use super::block::{ArchivedDataBlockHeader, DataBlockHeader, EntryHeader};
+use zerocopy::AsBytes;
+
+use super::block::{DataBlockHeader, EntryHeader};
 use super::{DataBlock, DataBlockId, DataBlocks, PrefixedKey};
 
 #[cfg(feature = "bloom-filters")]
@@ -37,7 +39,7 @@ impl DataBlockBuilder {
     #[tracing::instrument(skip(data_blocks))]
     pub(super) fn new(data_blocks: Arc<DataBlocks>) -> Self {
         // Reserve space for the header
-        let data = vec![0u8; std::mem::size_of::<ArchivedDataBlockHeader>()];
+        let data = vec![0u8; std::mem::size_of::<DataBlockHeader>()];
 
         Self {
             data_blocks,
@@ -71,26 +73,20 @@ impl DataBlockBuilder {
             }
         }
 
-        // Add paddig to ensure word alignment?
-        let diff = self.data.len() % crate::WORD_ALIGNMENT;
-        if diff > 0 {
-            println!("Adding {diff} bytes of padding");
-            self.data.resize(self.data.len() + diff, 0u8);
-        }
-
         let header = EntryHeader {
             prefix_len: key.prefix_len,
             suffix_len: key.suffix.len() as u32,
             seq_number,
             entry_type,
             #[cfg(feature = "wisckey")]
-            value_ref,
+            value_batch: value_ref.0,
+            #[cfg(feature = "wisckey")]
+            value_offset: value_ref.1,
             #[cfg(not(feature = "wisckey"))]
             value_length: entry_data.len() as u64,
         };
 
-        self.data
-            .extend_from_slice(&rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap());
+        self.data.extend_from_slice(header.as_bytes());
 
         self.data.append(&mut key.suffix);
 
@@ -112,18 +108,23 @@ impl DataBlockBuilder {
 
         let identifier = self.data_blocks.manifest.next_data_block_id().await;
 
+        #[cfg(feature = "bloom-filters")]
+        let bloom_filter_keys = {
+            let sip_keys = self.bloom_filter.sip_keys();
+            [sip_keys[0].0, sip_keys[0].1, sip_keys[1].0, sip_keys[1].1]
+        };
+
         let header = DataBlockHeader {
             #[cfg(feature = "bloom-filters")]
             bloom_filter: *<&[u8; 1024]>::try_from(self.bloom_filter.bitmap().as_slice()).unwrap(),
             #[cfg(feature = "bloom-filters")]
-            bloom_filter_keys: self.bloom_filter.sip_keys(),
+            bloom_filter_keys,
             number_of_entries: self.position,
             restart_list_start: self.data.len() as u32,
         };
 
         // Write header
-        self.data[..std::mem::size_of::<ArchivedDataBlockHeader>()]
-            .copy_from_slice(&rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap());
+        self.data[..std::mem::size_of::<DataBlockHeader>()].copy_from_slice(header.as_bytes());
 
         // Write restart list
         for restart_offset in self.restart_list.drain(..) {

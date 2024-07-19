@@ -118,7 +118,7 @@ impl SortedTable {
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
 
-        DataBlock::get(&block, key)
+        DataBlock::get_by_key(&block, key)
     }
 
     #[inline]
