@@ -68,7 +68,7 @@ async fn iterate() {
     let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
-        let key = format!("key_{pos}").into_bytes();
+        let key = format!("key_{pos:05}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
         database.put_opts(key, value, &options).await.unwrap();
     }
@@ -77,7 +77,7 @@ async fn iterate() {
     let mut iter = database.iter().await;
 
     while let Some((key, val)) = iter.next().await {
-        let expected_key = format!("key_{pos}").into_bytes();
+        let expected_key = format!("key_{pos:05}").into_bytes();
         let expected_val = format!("some_string_{pos}").into_bytes();
 
         assert_eq!(expected_key, key);
@@ -115,8 +115,8 @@ async fn range_iterate() {
 
     while let Some((key, val)) = iter.next().await {
         let real_pos = pos + 300;
-        let expected_key = format!("key_{real_pos}").into_bytes();
-        let expected_val = format!("some_string_{pos}").into_bytes();
+        let expected_key = format!("key_{real_pos:05}").into_bytes();
+        let expected_val = format!("some_string_{real_pos}").into_bytes();
 
         assert_eq!(expected_key, key);
         assert_eq!(expected_val, val.get_value());
@@ -153,7 +153,7 @@ async fn range_iterate_reverse() {
     while let Some((key, val)) = iter.next().await {
         let real_pos = 10150 - pos;
 
-        let expected_key = format!("key_{real_pos}").into_bytes();
+        let expected_key = format!("key_{real_pos:05}").into_bytes();
         let expected_val = format!("some_string_{real_pos}").into_bytes();
         assert_eq!(expected_key, key);
         assert_eq!(expected_val, val.get_value());

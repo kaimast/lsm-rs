@@ -248,16 +248,17 @@ mod tests {
         ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
-        assert_eq!(entry.get_value_ref(), Some(val1));
+        assert_eq!(entry.get_value_id(), Some(val1));
 
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
+        let (key, entry) =
+            DataBlock::get_entry_at_offset(data_block2.clone(), entry.get_next_offset(), &key);
 
         assert_eq!(key, vec![5, 2]);
-        assert_eq!(entry.get_value_ref(), Some(val2));
-        assert_eq!(pos, data_block2.byte_len());
+        assert_eq!(entry.get_value_id(), Some(val2));
+        assert_eq!(entry.get_next_offset(), data_block2.byte_len());
     }
 
     #[cfg(not(feature = "wisckey"))]

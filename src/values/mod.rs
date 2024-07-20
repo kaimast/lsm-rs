@@ -616,8 +616,10 @@ mod tests {
             .unwrap();
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut params = Params::default();
-        params.db_path = tmp_dir.path().to_path_buf();
+        let params = Params {
+            db_path: tmp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
 
         let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
@@ -634,13 +636,10 @@ mod tests {
         let mut builder = values.make_batch().await;
 
         let mut data = vec![];
-        data.resize(SIZE, 'a' as u8);
+        data.resize(SIZE, b'a');
 
-        let value = String::from_utf8(data).unwrap();
-
-        let e = crate::get_encoder();
-        let _ = builder.add_value(e.serialize(&value).unwrap()).await;
-        let vid2 = builder.add_value(e.serialize(&value).unwrap()).await;
+        let _ = builder.add_value(data.clone()).await;
+        let vid2 = builder.add_value(data.clone()).await;
 
         let batch_id = builder.finish().await.unwrap();
 
@@ -667,12 +666,9 @@ mod tests {
         let mut builder = values.make_batch().await;
 
         let mut data = vec![];
-        data.resize(SIZE, 'a' as u8);
+        data.resize(SIZE, b'a');
 
-        let value = String::from_utf8(data).unwrap();
-
-        let e = crate::get_encoder();
-        let vid = builder.add_value(e.serialize(&value).unwrap()).await;
+        let vid = builder.add_value(data).await;
 
         let batch_id = builder.finish().await.unwrap();
 
@@ -691,47 +687,43 @@ mod tests {
     #[tokio::test]
     async fn get_put_many() {
         let (_tmpdir, values) = test_init().await;
-        let e = crate::get_encoder();
 
         let mut builder = values.make_batch().await;
         let mut vids = vec![];
 
         for pos in 0..1000u32 {
-            let value = format!("Number {}", pos);
-
-            let vid = builder.add_value(e.serialize(&value).unwrap()).await;
+            let value = format!("Number {pos}").into_bytes();
+            let vid = builder.add_value(value).await;
             vids.push(vid);
         }
 
         builder.finish().await.unwrap();
 
         for (pos, vid) in vids.iter().enumerate() {
-            let value = format!("Number {}", pos);
+            let value = format!("Number {pos}").into_bytes();
 
-            let result = values.get::<String>(*vid).await.unwrap();
-            assert_eq!(result, value);
+            let result = values.get_ref(*vid).await.unwrap();
+            assert_eq!(result.get_value(), value);
         }
     }
 
     #[tokio::test]
     async fn fold() {
         let (_tmpdir, values) = test_init().await;
-        let e = crate::get_encoder();
 
         let mut vids = vec![];
         let mut builder = values.make_batch().await;
 
         for pos in 0..20u32 {
-            let value = format!("Number {}", pos);
-
-            let vid = builder.add_value(e.serialize(&value).unwrap()).await;
+            let value = format!("Number {pos}").into_bytes();
+            let vid = builder.add_value(value).await;
             vids.push(vid);
         }
 
         let batch_id = builder.finish().await.unwrap();
 
-        for pos in 2..19 {
-            values.mark_value_deleted(vids[pos]).await.unwrap();
+        for value_id in vids.iter().skip(2).take(19) {
+            values.mark_value_deleted(*value_id).await.unwrap();
         }
 
         assert!(values.is_batch_folded(batch_id).await.unwrap());
@@ -742,10 +734,10 @@ mod tests {
 
         for pos in [0u32, 1u32, 19u32] {
             let vid = vids[pos as usize];
-            let value = format!("Number {}", pos);
+            let value = format!("Number {pos}").into_bytes();
 
-            let result = values.get::<String>(vid).await.unwrap();
-            assert_eq!(result, value);
+            let result = values.get_ref(vid).await.unwrap();
+            assert_eq!(result.get_value(), value);
         }
     }
 
@@ -757,16 +749,12 @@ mod tests {
         let mut builder = values.make_batch().await;
 
         let mut data = vec![];
-        data.resize(SIZE, 'a' as u8);
+        data.resize(SIZE, b'a');
 
-        let value = String::from_utf8(data).unwrap();
-
-        let e = crate::get_encoder();
-        let vid = builder.add_value(e.serialize(&value).unwrap()).await;
+        let vid = builder.add_value(data.clone()).await;
 
         builder.finish().await.unwrap();
 
-        let result = values.get::<String>(vid).await.unwrap();
-        assert_eq!(result, value);
+        assert_eq!(values.get_ref(vid).await.unwrap().get_value(), data);
     }
 }

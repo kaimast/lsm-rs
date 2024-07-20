@@ -77,7 +77,7 @@ async fn get_put_many() {
     let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
-        let key = format!("key_{pos}").into_bytes();
+        let key = format!("key_{pos:05}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
         database.put_opts(key, value, &options).await.unwrap();
     }
@@ -91,7 +91,7 @@ async fn get_put_many() {
         .expect("Failed to create database instance");
 
     for pos in 0..COUNT {
-        let key = format!("key_{pos}").into_bytes();
+        let key = format!("key_{pos:05}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
 
         assert_eq!(
@@ -104,7 +104,7 @@ async fn get_put_many() {
     let mut iterator = database.iter().await;
     let mut pos = 0;
     while let Some((key, value)) = iterator.next().await {
-        assert_eq!(format!("key_{pos}").into_bytes(), key);
+        assert_eq!(format!("key_{pos:05}").into_bytes(), key);
         assert_eq!(format!("some_string_{pos}").into_bytes(), value.get_value());
         pos += 1;
     }
@@ -121,7 +121,7 @@ async fn get_put_large() {
     let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
-        let key = format!("key_{pos}").into_bytes();
+        let key = format!("key_{pos:05}").into_bytes();
         let value = format!("value_{pos}").repeat(SIZE).into_bytes();
 
         database.put_opts(key, value, &options).await.unwrap();
@@ -139,7 +139,7 @@ async fn get_put_large() {
     let mut pos = 0;
 
     while let Some((key, value)) = iterator.next().await {
-        let expected_key = format!("key_{pos}").into_bytes();
+        let expected_key = format!("key_{pos:05}").into_bytes();
         let expected_value = format!("value_{pos}").repeat(SIZE).into_bytes();
 
         assert_eq!(expected_key, key);
