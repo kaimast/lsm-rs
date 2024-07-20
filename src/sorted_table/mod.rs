@@ -22,7 +22,6 @@ pub type Value = Vec<u8>;
 /// These tables contain an ordered set of key/value-pairs
 ///
 /// Except for level 0, sorted tables do not overlap others on the same level
-#[derive(Debug)]
 pub struct SortedTable {
     identifier: TableId,
     /// The index of the table; it holds all relevant metadata
