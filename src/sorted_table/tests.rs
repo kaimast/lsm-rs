@@ -58,8 +58,10 @@ async fn iterate() {
 #[async_test]
 async fn iterate() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    };
 
     let params = Arc::new(params);
     let manifest = Arc::new(Manifest::new(params.clone()).await);
@@ -73,7 +75,7 @@ async fn iterate() {
     let value2 = vec![4, 50];
 
     let id = 124234;
-    let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
+    let mut builder = TableBuilder::new(id, &params, data_blocks, key1.clone(), key2.clone());
 
     builder.add_value(&key1, 1, &value1).await.unwrap();
 
@@ -83,27 +85,29 @@ async fn iterate() {
 
     let mut iter = TableIterator::new(table, false).await;
 
-    assert_eq!(iter.at_end(), false);
+    assert!(!iter.at_end());
     assert_eq!(iter.get_key(), &key1);
     assert_eq!(iter.get_entry().unwrap().get_value(), &value1);
 
     iter.step().await;
 
-    assert_eq!(iter.at_end(), false);
+    assert!(!iter.at_end());
     assert_eq!(iter.get_key(), &key2);
     assert_eq!(iter.get_entry().unwrap().get_value(), &value2);
 
     iter.step().await;
 
-    assert_eq!(iter.at_end(), true);
+    assert!(iter.at_end());
 }
 
 #[cfg(not(feature = "wisckey"))]
 #[async_test]
 async fn reverse_iterate() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    };
 
     let params = Arc::new(params);
     let manifest = Arc::new(Manifest::new(params.clone()).await);
@@ -117,7 +121,7 @@ async fn reverse_iterate() {
     let value2 = vec![4, 50];
 
     let id = 124234;
-    let mut builder = TableBuilder::new(id, &*params, data_blocks, key1.clone(), key2.clone());
+    let mut builder = TableBuilder::new(id, &params, data_blocks, key1.clone(), key2.clone());
 
     builder.add_value(&key1, 1, &value1).await.unwrap();
 
@@ -127,19 +131,19 @@ async fn reverse_iterate() {
 
     let mut iter = TableIterator::new(table, true).await;
 
-    assert_eq!(iter.at_end(), false);
+    assert!(!iter.at_end());
     assert_eq!(iter.get_key(), &key2);
     assert_eq!(iter.get_entry().unwrap().get_value(), &value2);
 
     iter.step().await;
 
-    assert_eq!(iter.at_end(), false);
+    assert!(!iter.at_end());
     assert_eq!(iter.get_key(), &key1);
     assert_eq!(iter.get_entry().unwrap().get_value(), &value1);
 
     iter.step().await;
 
-    assert_eq!(iter.at_end(), true);
+    assert!(iter.at_end());
 }
 
 #[cfg(feature = "wisckey")]
@@ -148,8 +152,9 @@ async fn iterate_many() {
     const COUNT: u32 = 5_000;
 
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Params {
+        db_path: dir.path().to_path_buf(),
+    };
 
     let params = Arc::new(params);
     let manifest = Arc::new(Manifest::new(params.clone()).await);

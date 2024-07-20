@@ -214,10 +214,11 @@ mod tests {
     #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
-        let mut params = Params::default();
-        params.db_path = dir.path().to_path_buf();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
 
-        let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
@@ -263,10 +264,11 @@ mod tests {
     #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
-        let mut params = Params::default();
-        params.db_path = dir.path().to_path_buf();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
 
-        let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
@@ -292,7 +294,7 @@ mod tests {
         let data_block1 = data_blocks.get_block(&id).await;
         let data_block2 = Arc::new(DataBlock::new_from_data(
             data_block1.data.clone(),
-            params.block_restart_interval as u32,
+            params.block_restart_interval,
         ));
 
         let prev_key = vec![];

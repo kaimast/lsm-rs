@@ -11,10 +11,12 @@ use tokio::test as async_test;
 #[async_test]
 async fn empty_sync() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
-    let wal = WriteAheadLog::new(Arc::new(params)).await.unwrap();
+    let wal = WriteAheadLog::new(params).await.unwrap();
 
     assert_eq!(wal.inner.status.read().sync_pos, 0);
     assert_eq!(wal.inner.status.read().write_pos, 0);
@@ -23,10 +25,12 @@ async fn empty_sync() {
 #[async_test]
 async fn write_and_sync() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
-    let wal = WriteAheadLog::new(Arc::new(params)).await.unwrap();
+    let wal = WriteAheadLog::new(params).await.unwrap();
 
     let key = vec![1, 2];
     let value = vec![2, 3];
@@ -40,10 +44,12 @@ async fn write_and_sync() {
 #[async_test]
 async fn write_large_value() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
-    let wal = WriteAheadLog::new(Arc::new(params)).await.unwrap();
+    let wal = WriteAheadLog::new(params).await.unwrap();
 
     let key = vec![1, 2];
     let value = vec![1; 2 * (PAGE_SIZE as usize)];
@@ -57,9 +63,10 @@ async fn write_large_value() {
 #[async_test]
 async fn reopen() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 
@@ -85,9 +92,10 @@ async fn reopen() {
 #[async_test]
 async fn reopen_with_offset1() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 
@@ -118,9 +126,11 @@ async fn reopen_with_offset1() {
 #[async_test]
 async fn reopen_with_offset_and_cleanup1() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 
@@ -153,9 +163,10 @@ async fn reopen_with_offset_and_cleanup1() {
 #[async_test]
 async fn reopen_with_offset_and_cleanup2() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 
@@ -191,9 +202,10 @@ async fn reopen_with_offset_and_cleanup2() {
 #[async_test]
 async fn reopen_with_offset2() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 
@@ -227,9 +239,10 @@ async fn reopen_with_offset2() {
 #[async_test]
 async fn reopen_large_file() {
     let dir = tempdir().unwrap();
-    let mut params = Params::default();
-    params.db_path = dir.path().to_path_buf();
-    let params = Arc::new(params);
+    let params = Arc::new(Params {
+        db_path: dir.path().to_path_buf(),
+        ..Default::default()
+    });
 
     let wal = WriteAheadLog::new(params.clone()).await.unwrap();
 

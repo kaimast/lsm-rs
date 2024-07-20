@@ -48,8 +48,11 @@ async fn get_put() {
         .await
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).await.unwrap().unwrap().get_valhue(), value1);
-    database.put(key1.cllone(), value2).await.unwrap();
+    assert_eq!(
+        database.get(&key1).await.unwrap().unwrap().get_value(),
+        value1
+    );
+    database.put(key1.clone(), value2.clone()).await.unwrap();
 
     drop(database);
 
@@ -58,7 +61,10 @@ async fn get_put() {
         .await
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).await.unwrap().unwarp().get_value(), value2);
+    assert_eq!(
+        database.get(&key1).await.unwrap().unwrap().get_value(),
+        value2
+    );
 }
 
 #[async_test]
@@ -68,12 +74,11 @@ async fn get_put_many() {
     let (_tmpdir, params, database) = test_init().await;
 
     // Write without fsync to speed up tests
-    let mut options = WriteOptions::default();
-    options.sync = false;
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
-        let value = format!("some_string_{pos}").repeat(SIZE).into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
         database.put_opts(key, value, &options).await.unwrap();
     }
 
@@ -87,18 +92,21 @@ async fn get_put_many() {
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
-        let value = format!("some_string_{pos}").repeat(SIZE).into_bytes();
- 
+        let value = format!("some_string_{pos}").into_bytes();
+
         assert_eq!(
             database.get(&key).await.unwrap().unwrap().get_value(),
-            value, 
+            value,
         );
     }
 
     // Ensure iteration still works
     let mut iterator = database.iter().await;
-    while let Some((pos, value)) = iterator.next().await {
-        assert_eq!(value, format!("some_string_{pos}"));
+    let mut pos = 0;
+    while let Some((key, value)) = iterator.next().await {
+        assert_eq!(format!("key_{pos}").into_bytes(), key);
+        assert_eq!(format!("some_string_{pos}").into_bytes(), value.get_value());
+        pos += 1;
     }
 }
 
@@ -110,13 +118,12 @@ async fn get_put_large() {
     let (_tmpdir, params, database) = test_init().await;
 
     // Write without fsync to speed up tests
-    let mut options = WriteOptions::default();
-    options.sync = false;
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("value_{pos}").repeat(SIZE).into_bytes();
- 
+
         database.put_opts(key, value, &options).await.unwrap();
     }
 
@@ -124,7 +131,7 @@ async fn get_put_large() {
     drop(database);
 
     // Reopen
-    let database = Database::<usize, String>::new_with_params(StartMode::Open, params.clone())
+    let database = Database::new_with_params(StartMode::Open, params.clone())
         .await
         .expect("Failed to create database instance");
 
@@ -134,10 +141,10 @@ async fn get_put_large() {
     while let Some((key, value)) = iterator.next().await {
         let expected_key = format!("key_{pos}").into_bytes();
         let expected_value = format!("value_{pos}").repeat(SIZE).into_bytes();
- 
+
         assert_eq!(expected_key, key);
-        assert_eq!(expected_value, value);
+        assert_eq!(expected_value, value.get_value());
 
         pos += 1;
-    }   
+    }
 }

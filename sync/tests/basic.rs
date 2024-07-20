@@ -48,7 +48,7 @@ fn iterate() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos:05}").into_bytes();
@@ -61,9 +61,9 @@ fn iterate() {
     for (pos, (key, val)) in database.iter().enumerate() {
         let expected_key = format!("key_{pos:05}").into_bytes();
         let expected_val = format!("some_string_{pos}").into_bytes();
-       
+
         assert_eq!(expected_key, key);
-        assert_eq!(expected_val, val.get_value()); 
+        assert_eq!(expected_val, val.get_value());
 
         count += 1;
     }
@@ -78,7 +78,7 @@ fn range_iterate() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos:05}").into_bytes();
@@ -95,7 +95,7 @@ fn range_iterate() {
         let real_pos = pos + 300;
         let expected_key = format!("key_{real_pos:05}").into_bytes();
         let expected_val = format!("some_string_{real_pos}").into_bytes();
- 
+
         assert_eq!(expected_key, key);
         assert_eq!(expected_val, val.get_value());
 
@@ -114,7 +114,7 @@ fn range_iterate_reverse() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos:05}").into_bytes();
@@ -123,17 +123,20 @@ fn range_iterate_reverse() {
     }
 
     let start = "key_10150".to_string().into_bytes();
-    let end =   "key_00300".to_string().into_bytes();
+    let end = "key_00300".to_string().into_bytes();
     let iter = database.reverse_range_iter(&start, &end);
 
     let mut pos = 0;
     for (key, val) in iter {
         let real_pos = 10150 - pos;
         let expected_key = format!("key_{real_pos:05}").into_bytes();
-       
+
         assert_eq!(expected_key, key);
-        assert_eq!(format!("some_string_{real_pos}").into_bytes(), val.get_value());
-    
+        assert_eq!(
+            format!("some_string_{real_pos}").into_bytes(),
+            val.get_value()
+        );
+
         pos += 1;
     }
 
@@ -149,7 +152,7 @@ fn range_iterate_empty() {
     const COUNT: u64 = 5_000;
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos:05}").into_bytes();
@@ -176,23 +179,20 @@ fn get_put_many() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
- 
+
         database.put_opts(key, value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
- 
-        assert_eq!(
-            database.get(&key).unwrap().unwrap().get_value(),
-            value, 
-        );
+
+        assert_eq!(database.get(&key).unwrap().unwrap().get_value(), value,);
     }
 }
 
@@ -203,12 +203,12 @@ fn get_put_delete_many() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
- 
+
         database.put_opts(key, value, &options).unwrap();
     }
 
@@ -230,30 +230,27 @@ fn override_many() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
- 
+
         database.put_opts(key, value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_other_string_{pos}").into_bytes();
-        
+
         database.put_opts(key, value, &options).unwrap();
     }
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_other_string_{pos}").into_bytes();
- 
-        assert_eq!(
-            database.get(&key).unwrap().unwrap().get_value(),
-            value
-        );
+
+        assert_eq!(database.get(&key).unwrap().unwrap().get_value(), value);
     }
 }
 
@@ -265,7 +262,7 @@ fn override_subset() {
     let (_tmpdir, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..NCOUNT {
         let key = format!("key_{pos}").into_bytes();
@@ -282,21 +279,15 @@ fn override_subset() {
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_other_string_{pos}").into_bytes();
- 
-        assert_eq!(
-            database.get(&key).unwrap().unwrap().get_value(),
-            value,
-        );
+
+        assert_eq!(database.get(&key).unwrap().unwrap().get_value(), value,);
     }
 
     for pos in COUNT..NCOUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
-  
-        assert_eq!(
-            database.get(&key).unwrap().unwrap().get_value(),
-            value,
-        );
+
+        assert_eq!(database.get(&key).unwrap().unwrap().get_value(), value,);
     }
 
     database.stop().unwrap();
@@ -312,7 +303,7 @@ fn batched_write() {
 
     for pos in 0..COUNT {
         let key = format!("key{pos}").into_bytes();
-        let value = format!("value{pos}").into_bytes(); 
+        let value = format!("value{pos}").into_bytes();
         batch.put(key, value);
     }
 

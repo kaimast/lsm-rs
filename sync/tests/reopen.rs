@@ -38,7 +38,10 @@ fn get_put() {
     let database = Database::new_with_params(StartMode::Open, params.clone())
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).unwrap().unwrap().get_value(), value1.clone());
+    assert_eq!(
+        database.get(&key1).unwrap().unwrap().get_value(),
+        value1.clone()
+    );
     database.put(key1.clone(), value2.clone()).unwrap();
 
     drop(database);
@@ -57,7 +60,7 @@ fn get_put_many() {
     let (_tmpdir, params, database) = test_init();
 
     // Write without fsync to speed up tests
-    let options = WriteOptions{ sync: false };
+    let options = WriteOptions { sync: false };
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
@@ -74,7 +77,7 @@ fn get_put_many() {
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let value = format!("some_string_{pos}").into_bytes();
- 
+
         assert_eq!(
             database.get(&key).unwrap().unwrap().get_value(),
             value.as_slice(),
