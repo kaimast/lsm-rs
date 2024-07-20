@@ -1,9 +1,6 @@
 #[cfg(feature = "wisckey")]
 use lsm::values::ValueLog;
 
-#[cfg(feature = "wisckey")]
-use lsm::sorted_table::ValueResult;
-
 use lsm::memtable::MemtableIterator;
 use lsm::sorted_table::{InternalIterator, Key, TableIterator};
 use lsm::EntryRef;
@@ -224,20 +221,8 @@ impl Iterator for DbIterator {
 
                     cfg_if! {
                         if #[ cfg(feature="wisckey") ] {
-                            match iter.get_value() {
-                                ValueResult::Value(value) => {
-                                    let encoder = lsm::get_encoder();
-                                    Some(Some((res_key, encoder.deserialize(value).unwrap())))
-                                }
-                                ValueResult::Reference(value_ref) => {
-                                    let res_val = self.value_log.get(value_ref).await.unwrap();
-                                    Some(Some((res_key, res_val)))
-                                }
-                                ValueResult::NoValue => {
-                                    // this is a deletion... skip
-                                    None
-                                }
-                            }
+                            iter.get_entry(&self.value_log).await
+                                .map(|entry| Some((res_key, entry)))
                         } else {
                             iter.get_entry().map(|entry|Some((res_key, entry)))
                         }
