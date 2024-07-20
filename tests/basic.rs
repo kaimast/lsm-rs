@@ -1,7 +1,7 @@
 use futures::stream::StreamExt;
 use tempfile::{Builder, TempDir};
 
-use lsm::{Database, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
+use lsm::{Database, Params, StartMode, WriteBatch, WriteOptions};
 
 const SM: StartMode = StartMode::CreateOrOverride;
 
@@ -11,7 +11,7 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
-async fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Database<K, V>) {
+async fn test_init() -> (TempDir, Database) {
     let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -210,19 +210,18 @@ async fn get_put_delete_large_entry() {
     options.sync = true;
 
     for _ in 0..10 {
+        let key = format!("key_424245").into_bytes();
+        
         let mut value = Vec::new();
         value.resize(SIZE, 'a' as u8);
 
-        let value = String::from_utf8(value).unwrap();
-        let key: u64 = 424245;
+        database.put_opts(key.clone(), value.clone(), &options).await.unwrap();
 
-        database.put_opts(&key, &value, &options).await.unwrap();
+        assert_eq!(database.get(&key).await.unwrap().unwrap().get_value(), value);
 
-        assert_eq!(database.get(&key).await.unwrap(), Some(value));
+        database.delete(key.clone()).await.unwrap();
 
-        database.delete(&key).await.unwrap();
-
-        assert_eq!(database.get(&key).await.unwrap(), None);
+        assert!(database.get(&key).await.unwrap().is_none());
     }
 
     database.stop().await.unwrap();
@@ -239,18 +238,19 @@ async fn get_put_delete_many() {
     options.sync = false;
 
     for pos in 0..COUNT {
-        let key = pos;
-        let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
-        let key = pos;
-        database.delete(&key).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        database.delete(key).await.unwrap();
     }
 
     for pos in 0..COUNT {
-        assert_eq!(database.get(&pos).await.unwrap(), None);
+        let key = format!("key_{pos}").into_bytes();
+        assert!(database.get(&pos).await.unwrap().is_none());
     }
 
     database.stop().await.unwrap();
@@ -267,21 +267,24 @@ async fn override_some() {
     options.sync = false;
 
     for pos in 0..COUNT {
-        let key = pos;
-        let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
-        let key = pos;
-        let value = format!("some_other_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+ 
         assert_eq!(
-            database.get(&pos).await.unwrap(),
-            Some(format!("some_other_string_{pos}"))
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value, 
         );
     }
 
@@ -300,28 +303,36 @@ async fn override_many() {
     options.sync = false;
 
     for pos in 0..NCOUNT {
-        let key = pos;
-        let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+ 
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
-        let key = pos;
-        let value = format!("some_other_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+ 
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+ 
         assert_eq!(
-            database.get(&pos).await.unwrap(),
-            Some(format!("some_other_string_{pos}"))
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value, 
         );
     }
 
     for pos in COUNT..NCOUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
         assert_eq!(
-            database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{pos}"))
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value, 
         );
     }
 
@@ -336,15 +347,19 @@ async fn batched_write() {
     let mut batch = WriteBatch::new();
 
     for pos in 0..COUNT {
-        let key = format!("key{}", pos);
-        batch.put(&key, &pos);
+        let key = format!("key{pos}").into_bytes();
+        let value = format!("value{pos}").into_bytes();
+
+        batch.put(key, value);
     }
 
     database.write(batch).await.unwrap();
 
     for pos in 0..COUNT {
-        let key = format!("key{}", pos);
-        assert_eq!(database.get(&key).await.unwrap(), Some(pos));
+        let key = format!("key{pos}").into_bytes();
+        let value = format!("value{pos}").into_bytes();
+
+        assert_eq!(database.get(&key).await.unwrap().unwrap().get_value(), value);
     }
 
     database.stop().await.unwrap();

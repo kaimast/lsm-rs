@@ -85,13 +85,13 @@ async fn iterate() {
 
     assert_eq!(iter.at_end(), false);
     assert_eq!(iter.get_key(), &key1);
-    assert_eq!(iter.get_value(), Some(&value1 as &[u8]));
+    assert_eq!(iter.get_entry().unwrap().get_value(), &value1);
 
     iter.step().await;
 
     assert_eq!(iter.at_end(), false);
     assert_eq!(iter.get_key(), &key2);
-    assert_eq!(iter.get_value(), Some(&value2 as &[u8]));
+    assert_eq!(iter.get_entry().unwrap().get_value(), &value2);
 
     iter.step().await;
 
@@ -129,13 +129,13 @@ async fn reverse_iterate() {
 
     assert_eq!(iter.at_end(), false);
     assert_eq!(iter.get_key(), &key2);
-    assert_eq!(iter.get_value(), Some(&value2 as &[u8]));
+    assert_eq!(iter.get_entry().unwrap().get_value(), &value2);
 
     iter.step().await;
 
     assert_eq!(iter.at_end(), false);
     assert_eq!(iter.get_key(), &key1);
-    assert_eq!(iter.get_value(), Some(&value1 as &[u8]));
+    assert_eq!(iter.get_entry().unwrap().get_value(), &value1);
 
     iter.step().await;
 

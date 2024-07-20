@@ -1,7 +1,7 @@
-use lsm_sync::{Database, KvTrait, Params, StartMode, WriteOptions};
+use lsm_sync::{Database, Params, StartMode, WriteOptions};
 use tempfile::{Builder, TempDir};
 
-fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
+fn test_init() -> (TempDir, Params, Database) {
     let tmp_dir = Builder::new()
         .prefix("lsm-sync-test-reopen-")
         .tempdir()
@@ -25,21 +25,21 @@ fn test_init<K: KvTrait, V: KvTrait>() -> (TempDir, Params, Database<K, V>) {
 fn get_put() {
     let (_tmpdir, params, database) = test_init();
 
-    let key1 = String::from("Foo");
-    let value1 = String::from("Bar");
-    let value2 = String::from("Baz");
+    let key1 = String::from("Foo").into_bytes();
+    let value1 = String::from("Bar").into_bytes();
+    let value2 = String::from("Baz").into_bytes();
 
-    assert_eq!(database.get(&key1).unwrap(), None);
+    assert!(database.get(&key1).unwrap().is_none());
 
-    database.put(&key1, &value1).unwrap();
+    database.put(key1.clone(), value1.clone()).unwrap();
     drop(database);
 
     // Reopen
     let database = Database::new_with_params(StartMode::Open, params.clone())
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).unwrap(), Some(value1.clone()));
-    database.put(&key1, &value2).unwrap();
+    assert_eq!(database.get(&key1).unwrap().unwrap().get_value(), value1.clone());
+    database.put(key1.clone(), value2.clone()).unwrap();
 
     drop(database);
 
@@ -47,7 +47,7 @@ fn get_put() {
     let database = Database::new_with_params(StartMode::Open, params)
         .expect("Failed to create database instance");
 
-    assert_eq!(database.get(&key1).unwrap(), Some(value2.clone()));
+    assert_eq!(database.get(&key1).unwrap().unwrap().get_value(), value2);
 }
 
 #[test]
@@ -57,13 +57,12 @@ fn get_put_many() {
     let (_tmpdir, params, database) = test_init();
 
     // Write without fsync to speed up tests
-    let mut options = WriteOptions::default();
-    options.sync = false;
+    let options = WriteOptions{ sync: false };
 
     for pos in 0..COUNT {
-        let key = pos;
-        let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).unwrap();
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).unwrap();
     }
 
     drop(database);
@@ -73,9 +72,12 @@ fn get_put_many() {
         .expect("Failed to create database instance");
 
     for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+ 
         assert_eq!(
-            database.get(&pos).unwrap(),
-            Some(format!("some_string_{pos}"))
+            database.get(&key).unwrap().unwrap().get_value(),
+            value.as_slice(),
         );
     }
 }

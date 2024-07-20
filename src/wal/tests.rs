@@ -110,7 +110,7 @@ async fn reopen_with_offset1() {
     assert_eq!(wal.inner.status.read().sync_pos, 43);
     assert_eq!(wal.inner.status.read().write_pos, 43);
 
-    assert_eq!(memtable.get(&key1), None);
+    assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
 }
@@ -145,7 +145,7 @@ async fn reopen_with_offset_and_cleanup1() {
     assert_eq!(wal.inner.status.read().sync_pos, 43);
     assert_eq!(wal.inner.status.read().write_pos, 43);
 
-    assert_eq!(memtable.get(&key1), None);
+    assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
 }
@@ -183,7 +183,7 @@ async fn reopen_with_offset_and_cleanup2() {
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
     assert_eq!(wal.inner.status.read().write_pos, 8233);
 
-    assert_eq!(memtable.get(&key1), None);
+    assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value2).as_deref());
 }
@@ -219,7 +219,7 @@ async fn reopen_with_offset2() {
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
     assert_eq!(wal.inner.status.read().write_pos, 8233);
 
-    assert_eq!(memtable.get(&key1), None);
+    assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value2).as_deref());
 }
