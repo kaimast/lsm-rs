@@ -56,6 +56,20 @@ impl<'a> ValueBatchBuilder<'a> {
         }
     }
 
+    /// Add another value to this batch
+    pub async fn add_value(&mut self, mut val: Value) -> ValueId {
+        // The encoded length of this value
+        let val_len = (val.len() as u32).to_le_bytes();
+
+        let offset = self.data.len() as u32;
+        self.offsets.extend_from_slice(&offset.to_le_bytes());
+        self.data.extend_from_slice(&val_len);
+        self.data.append(&mut val);
+
+        (self.identifier, offset)
+    }
+
+    /// Create the batch and write it to disk
     pub async fn finish(self) -> Result<ValueBatchId, Error> {
         let fpath = self.vlog.get_file_path(&self.identifier);
         let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
@@ -68,21 +82,26 @@ impl<'a> ValueBatchBuilder<'a> {
         let header_bytes = header.as_bytes();
         let offsets_len = self.offsets.len();
 
+        let delete_markers = vec![0u8; num_values as usize];
+
+        let data_pos = header_bytes.len() + delete_markers.len() + offsets_len;
+
         // write file header
         cfg_if! {
             if #[cfg(feature="async-io")] {
                 let file = File::create(&fpath).await?;
                 file.write_all_at(header_bytes.to_vec(), 0).await.0?;
-                file.write_all_at(self.offsets, header_bytes.len() as u64).await.0?;
+                file.write_all_at(delete_markers, header_bytes.len() as u64).await.0?;
+                file.write_all_at(self.offsets, (header_bytes.len() as u64) + (num_values as u64)).await.0?;
             } else {
                 let mut file = File::create(&fpath)?;
                 file.write_all(header_bytes)?;
+                file.write_all(&delete_markers)?;
                 file.write_all(&self.offsets)?;
             }
         }
 
         //TODO use same fd
-        let data_pos = header_bytes.len() + offsets_len;
         disk::write(&fpath, &self.data, data_pos as u64).await?;
 
         let batch = ValueBatch {
@@ -99,20 +118,6 @@ impl<'a> ValueBatchBuilder<'a> {
 
         log::trace!("Created value batch #{}", self.identifier);
         Ok(self.identifier)
-    }
-
-    pub async fn add_value(&mut self, mut val: Value) -> ValueId {
-        // The encoded length of this value
-        let val_len = (val.len() as u32).to_le_bytes();
-
-        let offset = self.data.len() as u32;
-        let mut offset_data = offset.to_le_bytes().to_vec();
-        self.offsets.append(&mut offset_data);
-
-        self.data.extend_from_slice(&val_len);
-        self.data.append(&mut val);
-
-        (self.identifier, offset)
     }
 }
 
