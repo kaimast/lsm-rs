@@ -145,7 +145,6 @@ impl DataBlock {
         if offset + header_len > self_ptr.restart_list_start {
             panic!("Invalid offset {offset}");
         }
-        println!("POST {offset}");
 
         let header = EntryHeader::ref_from(&self_ptr.data[offset..offset + header_len])
             .expect("Failed to read entry header");

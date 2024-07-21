@@ -577,7 +577,6 @@ impl ValueLog {
 
         let mut num_active = 0;
         for f in delete_flags.into_iter() {
-            println!("{f}");
             if f == 0u8 {
                 num_active += 1;
             }

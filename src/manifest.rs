@@ -4,6 +4,8 @@ use std::mem::size_of;
 use std::path::Path;
 use std::sync::Arc;
 
+use byte_slice_cast::{AsByteSlice, AsSliceOf};
+
 use memmap2::MmapMut;
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
@@ -47,6 +49,8 @@ struct LevelMetadataHeader {
 }
 
 struct LevelMetadata {
+    params: Arc<Params>,
+    identifier: LevelId,
     data: MmapMut,
 }
 
@@ -57,7 +61,7 @@ impl LevelMetadata {
         let start = size_of::<LevelMetadataHeader>();
         let end = start + (header.num_tables as usize * size_of::<TableId>());
 
-        unsafe { std::mem::transmute(&self.data[start..end]) }
+        self.data[start..end].as_slice_of::<TableId>().unwrap()
     }
 
     /// Returns false if the entry already existed
@@ -76,13 +80,34 @@ impl LevelMetadata {
         header.num_tables = tables.len() as u64;
 
         let start = size_of::<LevelMetadataHeader>();
-        let new_data: &[u8] = unsafe { std::mem::transmute(&tables[..]) };
+        let new_data: &[u8] = tables.as_byte_slice();
 
-        if new_data.len() - start >= self.data.len() {
-            todo!(); //RESIZE
+        // Resize file?
+        if start + new_data.len() >= self.data.len() {
+            let fname = self
+                .params
+                .db_path
+                .join(format!("{LEVEL_PREFIX}{}{LEVEL_SUFFIX}", self.identifier));
+
+            let file = OpenOptions::new()
+                .create(false)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(fname)
+                .expect("Failed to reopen file");
+
+            let new_size = (self.data.len() + PAGE_SIZE) as u64;
+            log::trace!(
+                "Resizing metadata file for level #{} to {new_size}",
+                self.identifier
+            );
+            file.set_len(new_size)
+                .expect("Failed to resize level metadata file");
+            self.data = unsafe { MmapMut::map_mut(&file) }.unwrap();
         }
 
-        self.data[start..new_data.len()].copy_from_slice(new_data);
+        self.data[start..start + new_data.len()].copy_from_slice(new_data);
         true
     }
 
@@ -102,9 +127,9 @@ impl LevelMetadata {
         header.num_tables = tables.len() as u64;
 
         let start = size_of::<LevelMetadataHeader>();
-        let new_data: &[u8] = unsafe { std::mem::transmute(&tables[..]) };
+        let new_data: &[u8] = tables.as_byte_slice();
 
-        self.data[start..new_data.len()].copy_from_slice(new_data);
+        self.data[start..start + new_data.len()].copy_from_slice(new_data);
         true
     }
 
@@ -181,7 +206,11 @@ impl Manifest {
             level_mmap[..size_of::<LevelMetadataHeader>()].copy_from_slice(level_header.as_bytes());
             level_mmap.flush().unwrap();
 
-            levels.push(LevelMetadata { data: level_mmap });
+            levels.push(LevelMetadata {
+                params: params.clone(),
+                identifier: idx as LevelId,
+                data: level_mmap,
+            });
         }
 
         Self {
@@ -228,7 +257,11 @@ impl Manifest {
             let header = LevelMetadataHeader::ref_from_prefix(&data[..]).unwrap();
             table_count += header.num_tables;
 
-            levels.push(LevelMetadata { data });
+            levels.push(LevelMetadata {
+                identifier: idx as LevelId,
+                params: params.clone(),
+                data,
+            });
         }
 
         log::debug!("Found {table_count} tables");
@@ -358,6 +391,8 @@ impl Manifest {
         add: Vec<(LevelId, TableId)>,
         remove: Vec<(LevelId, TableId)>,
     ) {
+        log::trace!("Updating table set: add={add:?} remove={remove:?}");
+
         let mut levels = self.levels.write().await;
         let mut affected = HashSet::new();
 

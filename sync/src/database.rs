@@ -68,7 +68,7 @@ impl Database {
 
     /// Ensure all data is written to disk
     /// Only has an effect if there were previous writes with sync=false
-    pub async fn synchronize(&self) -> Result<(), Error> {
+    pub fn synchronize(&self) -> Result<(), Error> {
         let inner = &*self.inner;
 
         self.tokio_rt

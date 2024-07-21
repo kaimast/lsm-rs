@@ -59,7 +59,6 @@ impl IndexBlock {
         };
 
         let mut block_data = header.as_bytes().to_vec();
-        println!("{}", block_data.len());
         block_data.extend_from_slice(&min_key);
         block_data.extend_from_slice(&max_key);
 
@@ -117,8 +116,6 @@ impl IndexBlock {
         let header = self.get_header();
         assert!((pos as u32) < header.num_data_blocks);
 
-        println!("{header:?}");
-
         let offset = size_of::<IndexBlockHeader>()
             + header.min_key_len as usize
             + header.max_key_len as usize;
@@ -131,7 +128,6 @@ impl IndexBlock {
     /// Get the unique id for the data block at the specified index
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
         let offset = self.get_entry_offset(pos);
-        println!("AB {offset}");
 
         let entry_header =
             IndexEntryHeader::ref_from(&self.data[offset..offset + size_of::<IndexEntryHeader>()])

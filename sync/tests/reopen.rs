@@ -84,3 +84,41 @@ fn get_put_many() {
         );
     }
 }
+
+#[test]
+fn get_put_large() {
+    const COUNT: usize = 100;
+    const SIZE: usize = 100_000;
+
+    let (_tmpdir, params, database) = test_init();
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos:05}").into_bytes();
+        let value = format!("value_{pos}").repeat(SIZE).into_bytes();
+
+        database.put_opts(key, value, &options).unwrap();
+    }
+
+    database.synchronize().unwrap();
+    drop(database);
+
+    // Reopen
+    let database = Database::new_with_params(StartMode::Open, params.clone())
+        .expect("Failed to create database instance");
+
+    let mut iterator = database.iter();
+    let mut pos = 0;
+
+    while let Some((key, value)) = iterator.next() {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_value = format!("value_{pos}").repeat(SIZE).into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_value, value.get_value());
+
+        pos += 1;
+    }
+}
