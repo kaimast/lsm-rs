@@ -9,13 +9,14 @@ use crate::{Key, Params};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
 #[repr(packed)]
 struct IndexBlockHeader {
     size: u64,
     min_key_len: u32,
     max_key_len: u32,
     num_data_blocks: u32,
+    _padding: u32,
 }
 
 #[derive(AsBytes, FromBytes, FromZeroes)]
@@ -23,6 +24,7 @@ struct IndexBlockHeader {
 struct IndexEntryHeader {
     block_id: DataBlockId,
     key_len: u32,
+    _padding: u32,
 }
 
 /** Index blocks hold metadata about a sorted table
@@ -53,25 +55,33 @@ impl IndexBlock {
             min_key_len: min_key.len() as u32,
             max_key_len: max_key.len() as u32,
             num_data_blocks: index.len() as u32,
+            _padding: 0,
         };
 
         let mut block_data = header.as_bytes().to_vec();
+        println!("{}", block_data.len());
         block_data.extend_from_slice(&min_key);
         block_data.extend_from_slice(&max_key);
 
+        crate::add_padding(&mut block_data);
+
         // Reserve space for offsets
         let offset_start = block_data.len();
-        block_data.append(&mut vec![0u8; index.len() * size_of::<u32>()]);
+        let offset_len = crate::pad_offset(index.len());
+        block_data.append(&mut vec![0u8; offset_len * size_of::<u32>()]);
 
         for (pos, (key, block_id)) in index.into_iter().enumerate() {
             let header = IndexEntryHeader {
                 block_id,
                 key_len: key.len() as u32,
+                _padding: 0,
             };
+
+            let entry_offset = block_data.len() as u32;
 
             block_data[offset_start + pos * size_of::<u32>()
                 ..offset_start + (pos + 1) * size_of::<u32>()]
-                .copy_from_slice((pos as u32).as_bytes());
+                .copy_from_slice(entry_offset.as_bytes());
 
             block_data.extend_from_slice(header.as_bytes());
             block_data.extend_from_slice(&key);
@@ -107,17 +117,21 @@ impl IndexBlock {
         let header = self.get_header();
         assert!((pos as u32) < header.num_data_blocks);
 
-        let offset_offset = size_of::<IndexBlockHeader>()
+        println!("{header:?}");
+
+        let offset = size_of::<IndexBlockHeader>()
             + header.min_key_len as usize
-            + header.max_key_len as usize
-            + pos * size_of::<u32>();
-        *u32::ref_from(&self.data[offset_offset..offset_offset + size_of::<u32>()]).unwrap()
-            as usize
+            + header.max_key_len as usize;
+
+        let offset_offset = crate::pad_offset(offset) + pos * size_of::<u32>();
+
+        *u32::ref_from_prefix(&self.data[offset_offset..]).unwrap() as usize
     }
 
     /// Get the unique id for the data block at the specified index
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
         let offset = self.get_entry_offset(pos);
+        println!("AB {offset}");
 
         let entry_header =
             IndexEntryHeader::ref_from(&self.data[offset..offset + size_of::<IndexEntryHeader>()])

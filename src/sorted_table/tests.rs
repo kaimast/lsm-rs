@@ -70,8 +70,8 @@ async fn iterate() {
 
     let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
-    let key1 = vec![5];
-    let key2 = vec![15];
+    let key1 = vec![5, 10, 3];
+    let key2 = vec![15, 10, 3];
 
     let value1 = vec![4, 2];
     let value2 = vec![4, 50];
@@ -116,8 +116,8 @@ async fn reverse_iterate() {
 
     let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
 
-    let key1 = vec![5];
-    let key2 = vec![15];
+    let key1 = vec![5, 10, 3];
+    let key2 = vec![15, 10, 3];
 
     let value1 = vec![4, 2];
     let value2 = vec![4, 50];

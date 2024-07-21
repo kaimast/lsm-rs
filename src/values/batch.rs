@@ -58,12 +58,9 @@ impl<'a> ValueBatchBuilder<'a> {
 
     /// Add another value to this batch
     pub async fn add_value(&mut self, mut val: Value) -> ValueId {
-        // The encoded length of this value
-        let val_len = (val.len() as u32).to_le_bytes();
-
         let offset = self.data.len() as u32;
-        self.offsets.extend_from_slice(&offset.to_le_bytes());
-        self.data.extend_from_slice(&val_len);
+        self.offsets.extend_from_slice(offset.as_bytes());
+        self.data.extend_from_slice((val.len() as u32).as_bytes());
         self.data.append(&mut val);
 
         (self.identifier, offset)
@@ -137,18 +134,14 @@ impl ValueBatch {
         };
 
         let mut offset = pos as usize;
+        let vlen = u32::ref_from_prefix(&self_ptr.data[offset..]).unwrap();
 
-        let len_len = size_of::<u32>();
-
-        let vlen_data = self_ptr.data[offset..offset + len_len].try_into().unwrap();
-        let vlen = u32::from_le_bytes(vlen_data);
-
-        offset += len_len;
+        offset += size_of::<u32>();
 
         ValueRef {
+            length: *vlen as usize,
             batch: self_ptr,
             offset,
-            length: vlen as usize,
         }
     }
 

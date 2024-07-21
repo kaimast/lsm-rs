@@ -37,11 +37,13 @@ pub const GARBAGE_COLLECT_THRESHOLD: f64 = 0.2;
 
 type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 
+#[cfg(test)]
+mod tests;
+
 mod batch;
 pub use batch::ValueBatchBuilder;
 use batch::{ValueBatch, ValueBatchHeader};
 
-#[derive(Debug)]
 pub struct ValueLog {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
@@ -109,6 +111,7 @@ impl ValueLog {
 
         let header = ValueBatchHeader::ref_from(&header_data).unwrap();
         let mut offset_pos = None;
+        let offset_len = size_of::<u32>();
 
         cfg_if! {
             if #[cfg(feature="async-io")] {
@@ -116,33 +119,30 @@ impl ValueLog {
                 let pos = header_len + (header.num_values as usize);
 
                 if header.is_folded() {
-                    let len = (header.num_values as usize)*2*size_of::<u32>();
-                    let buf = vec![0u8; len];
+                    let buf = vec![0u8; (header.num_values as usize)*2*size_of::<u32>()];
 
-                    let (res, offset_positions) = file.read_exact_at(buf, pos as u64).await;
+                    let (res, data) = file.read_exact_at(buf, pos as u64).await;
                     res?;
 
-                    for idx in 0..header.num_values {
-                        let start = (idx as usize)*2*size_of::<u32>();
-                        let offset = u32::from_le_bytes(offset_positions[start..size_of::<u32>()].try_into().unwrap());
+                    for pos in 0..header.num_values {
+                        let upos = pos as usize;
+                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
-                        if offset == value_offset {
+                        if old_offset == &value_offset {
                             offset_pos = Some(pos);
-                            break;
                         }
                     }
                 } else {
-                    let len = (header.num_values as usize)*size_of::<u32>();
-                    let buf = vec![0u8; len];
+                    let buf = vec![0u8; (header.num_values as usize)*size_of::<u32>()];
 
-                    let (res, offset_positions) = file.read_exact_at(buf, pos as u64).await;
+                    let (res, data) = file.read_exact_at(buf, pos as u64).await;
                     res?;
 
-                    for idx in 0..header.num_values {
-                        let start = (idx as usize)*size_of::<u32>();
-                        let offset = u32::from_le_bytes(offset_positions[start..size_of::<u32>()].try_into().unwrap());
+                    for pos in 0..header.num_values {
+                        let upos = pos as usize;
+                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
 
-                        if offset == value_offset {
+                        if offset == &value_offset {
                             offset_pos = Some(pos);
                             break;
                         }
@@ -157,15 +157,14 @@ impl ValueLog {
                 file.seek(SeekFrom::Current(header.num_values as i64))?;
 
                 if header.is_folded() {
-                    let offset_len = size_of::<u32>();
                     let mut data = vec![0u8; (header.num_values as usize)*2*offset_len];
                     file.read_exact(&mut data)?;
 
                      for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let old_offset = u32::from_le_bytes(data[2*upos*offset_len..(2*upos+1)*offset_len].try_into().unwrap());
+                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
-                        if old_offset == value_offset {
+                        if old_offset == &value_offset {
                             offset_pos = Some(pos);
                         }
                     }
@@ -176,9 +175,9 @@ impl ValueLog {
 
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let offset = u32::from_le_bytes(data[upos*offset_len..(upos+1)*offset_len].try_into().unwrap());
+                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
 
-                        if offset == value_offset {
+                        if offset == &value_offset {
                             offset_pos = Some(pos);
                         }
                     }
@@ -239,6 +238,7 @@ impl ValueLog {
 
         let header = ValueBatchHeader::ref_from(&header_data).unwrap();
 
+        let olen = std::mem::size_of::<u32>();
         let mut offsets = vec![0u32; header.num_values as usize];
         let mut delete_flags = vec![0u8; header.num_values as usize];
 
@@ -251,20 +251,17 @@ impl ValueLog {
                 let pos = header_len + header.num_values as usize;
 
                 if header.is_folded() {
-                    let buf = vec![0u8; offsets.len() * 2];
+                    let buf = vec![0u8; offsets.len() * 2 * olen];
                     let (res, buf) = file.read_exact_at(buf, pos as u64).await;
                     res?;
+
                     for idx in 0..(header.num_values as usize) {
-                        let olen = std::mem::size_of::<u32>();
-                        let slice = buf[idx*2*olen..(idx+1)*olen].try_into().unwrap();
-                        offsets[idx] = u32::from_le_bytes(slice);
+                        offsets[idx] = *u32::ref_from_prefix(&buf[idx*2*olen..]).unwrap();
                     }
                 } else {
-                    let buf = vec![0u8; offsets.len()];
+                    let buf = vec![0u8; offsets.len() * olen];
                     for idx in 0..(header.num_values as usize) {
-                        let olen = std::mem::size_of::<u32>();
-                        let slice = buf[idx*olen..(idx+1)*olen].try_into().unwrap();
-                        offsets[idx] = u32::from_le_bytes(slice);
+                        offsets[idx] = *u32::ref_from_prefix(&buf[idx*olen..]).unwrap();
                     }
                 }
             } else {
@@ -275,8 +272,8 @@ impl ValueLog {
 
                      for pos in 0..header.num_values {
                         file.read_exact(&mut data)?;
-                        let offset = u32::from_le_bytes(data[..size_of::<u32>()].try_into().unwrap());
-                        offsets[pos as usize] = offset;
+                        let offset = u32::ref_from(&data[..olen]).unwrap();
+                        offsets[pos as usize] = *offset;
                         // do we need the new offset?
                     }
                 } else {
@@ -284,8 +281,8 @@ impl ValueLog {
 
                     for pos in 0..header.num_values {
                         file.read_exact(&mut data)?;
-                        let offset = u32::from_le_bytes(data);
-                        offsets[pos as usize] = offset;
+                        let offset = u32::ref_from(&data).unwrap();
+                        offsets[pos as usize] = *offset;
                     }
                 }
             }
@@ -337,12 +334,9 @@ impl ValueLog {
                 let old_offset = offsets[pos];
                 let len_len = size_of::<u32>();
                 let data_start = old_offset as usize;
-                let vlen_data = batch.get_data()[data_start..data_start + len_len]
-                    .try_into()
-                    .unwrap();
-                let vlen = u32::from_le_bytes(vlen_data);
+                let vlen = u32::ref_from_prefix(&batch.get_data()[data_start..]).unwrap();
 
-                let data_end = data_start + len_len + (vlen as usize);
+                let data_end = data_start + len_len + (*vlen as usize);
 
                 if *flag != 0u8 {
                     continue;
@@ -376,9 +370,8 @@ impl ValueLog {
 
             for (pos, (old_offset, new_offset)) in new_offsets.iter().enumerate() {
                 let start = pos * 2 * nsize;
-                offsets[start..start + nsize].copy_from_slice(&old_offset.to_le_bytes());
-                offsets[start + nsize..start + 2 * nsize]
-                    .copy_from_slice(&new_offset.to_le_bytes());
+                offsets[start..start + nsize].copy_from_slice(old_offset.as_bytes());
+                offsets[start + nsize..start + 2 * nsize].copy_from_slice(new_offset.as_bytes());
                 fold_table.insert(*old_offset, *new_offset);
             }
 
@@ -484,14 +477,12 @@ impl ValueLog {
                 }
 
                 for pos in 0..header.num_values {
-                    let len = 2 * size_of::<u32>();
-                    let offset = (pos as usize) * len;
+                    let offset = (pos as usize) * 2 * size_of::<u32>();
 
-                    let old_offset =
-                        u32::from_le_bytes(data[offset..offset + len].try_into().unwrap());
+                    let old_offset = u32::ref_from_prefix(&data[offset..]).unwrap();
                     let new_offset =
-                        u32::from_le_bytes(data[offset..offset + len].try_into().unwrap());
-                    fold_table.insert(old_offset, new_offset);
+                        u32::ref_from_prefix(&data[offset + size_of::<u32>()..]).unwrap();
+                    fold_table.insert(*old_offset, *new_offset);
                 }
 
                 let offset = df_offset + data.len();
@@ -620,161 +611,5 @@ impl ValueLog {
         }
 
         Ok(ValueBatchHeader::ref_from(&header_data).unwrap().num_values)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use tempfile::{Builder, TempDir};
-
-    async fn test_init() -> (TempDir, ValueLog) {
-        let tmp_dir = Builder::new()
-            .prefix("lsm-value-log-test-")
-            .tempdir()
-            .unwrap();
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let params = Params {
-            db_path: tmp_dir.path().to_path_buf(),
-            ..Default::default()
-        };
-
-        let params = Arc::new(params);
-        let manifest = Arc::new(Manifest::new(params.clone()).await);
-
-        (tmp_dir, ValueLog::new(params, manifest).await)
-    }
-
-    #[tokio::test]
-    async fn delete_value() {
-        const SIZE: usize = 1_000;
-
-        let (_tmpdir, values) = test_init().await;
-
-        let mut builder = values.make_batch().await;
-
-        let mut data = vec![];
-        data.resize(SIZE, b'a');
-
-        let _ = builder.add_value(data.clone()).await;
-        let vid2 = builder.add_value(data.clone()).await;
-
-        let batch_id = builder.finish().await.unwrap();
-
-        assert_eq!(
-            values.get_active_values_in_batch(batch_id).await.unwrap(),
-            2
-        );
-        assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
-
-        values.mark_value_deleted(vid2).await.unwrap();
-
-        assert_eq!(
-            values.get_active_values_in_batch(batch_id).await.unwrap(),
-            1
-        );
-        assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
-    }
-
-    #[tokio::test]
-    async fn delete_batch() {
-        const SIZE: usize = 1_000;
-
-        let (_tmpdir, values) = test_init().await;
-        let mut builder = values.make_batch().await;
-
-        let mut data = vec![];
-        data.resize(SIZE, b'a');
-
-        let vid = builder.add_value(data).await;
-
-        let batch_id = builder.finish().await.unwrap();
-
-        assert_eq!(
-            values.get_active_values_in_batch(batch_id).await.unwrap(),
-            1
-        );
-        assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 1);
-
-        values.mark_value_deleted(vid).await.unwrap();
-
-        let result = values.get_batch(batch_id).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn get_put_many() {
-        let (_tmpdir, values) = test_init().await;
-
-        let mut builder = values.make_batch().await;
-        let mut vids = vec![];
-
-        for pos in 0..1000u32 {
-            let value = format!("Number {pos}").into_bytes();
-            let vid = builder.add_value(value).await;
-            vids.push(vid);
-        }
-
-        builder.finish().await.unwrap();
-
-        for (pos, vid) in vids.iter().enumerate() {
-            let value = format!("Number {pos}").into_bytes();
-
-            let result = values.get_ref(*vid).await.unwrap();
-            assert_eq!(result.get_value(), value);
-        }
-    }
-
-    #[tokio::test]
-    async fn fold() {
-        let (_tmpdir, values) = test_init().await;
-
-        let mut vids = vec![];
-        let mut builder = values.make_batch().await;
-
-        for pos in 0..20u32 {
-            let value = format!("Number {pos}").into_bytes();
-            let vid = builder.add_value(value).await;
-            vids.push(vid);
-        }
-
-        let batch_id = builder.finish().await.unwrap();
-
-        for value_id in vids.iter().take(19).skip(2) {
-            values.mark_value_deleted(*value_id).await.unwrap();
-        }
-
-        assert!(values.is_batch_folded(batch_id).await.unwrap());
-        assert_eq!(
-            values.get_active_values_in_batch(batch_id).await.unwrap(),
-            3
-        );
-
-        for pos in [0u32, 1u32, 19u32] {
-            let vid = vids[pos as usize];
-            let value = format!("Number {pos}").into_bytes();
-
-            let result = values.get_ref(vid).await.unwrap();
-            assert_eq!(result.get_value(), value);
-        }
-    }
-
-    #[tokio::test]
-    async fn get_put_large_value() {
-        let (_tmpdir, values) = test_init().await;
-
-        const SIZE: usize = 1_000_000;
-        let mut builder = values.make_batch().await;
-
-        let mut data = vec![];
-        data.resize(SIZE, b'a');
-
-        let vid = builder.add_value(data.clone()).await;
-
-        builder.finish().await.unwrap();
-
-        assert_eq!(values.get_ref(vid).await.unwrap().get_value(), data);
     }
 }

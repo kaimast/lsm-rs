@@ -126,7 +126,6 @@ impl DataEntry {
 }
 
 /// Keeps track of all in-memory data blocks
-#[derive(Debug)]
 pub struct DataBlocks {
     params: Arc<Params>,
     block_caches: Vec<Mutex<BlockShard>>,
@@ -165,7 +164,7 @@ impl DataBlocks {
     }
 
     /// Start creation of a new block
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self_ptr))]
     pub fn build_block(self_ptr: Arc<DataBlocks>) -> DataBlockBuilder {
         DataBlockBuilder::new(self_ptr)
     }
@@ -185,9 +184,9 @@ impl DataBlocks {
         // Worst case this means we load the same block multiple times...
         let fpath = self.get_file_path(id);
         log::trace!("Loading data block from disk at {fpath:?}");
-        let data = disk::read(&fpath, 0)
-            .await
-            .expect("Failed to load data block from disk at {fpath:?}");
+        let data = disk::read(&fpath, 0).await.unwrap_or_else(|err| {
+            panic!("Failed to load data block from disk at {fpath:?}: {err}")
+        });
         let block = Arc::new(DataBlock::new_from_data(
             data,
             self.params.block_restart_interval,

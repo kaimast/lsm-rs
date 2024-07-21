@@ -40,6 +40,29 @@ mod wal;
 
 pub use database::Database;
 
+/// How many bytes do we align by?
+const WORD_SIZE: usize = 8;
+
+fn pad_offset(offset: usize) -> usize {
+    offset + compute_padding(offset)
+}
+
+fn compute_padding(offset: usize) -> usize {
+    let remainder = offset % WORD_SIZE;
+    if remainder == 0 {
+        0
+    } else {
+        WORD_SIZE - remainder
+    }
+}
+
+fn add_padding(data: &mut Vec<u8>) {
+    let padding = compute_padding(data.len());
+    if padding > 0 {
+        data.resize(data.len() + padding, 0u8);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Error {
     Io(String),
@@ -68,18 +91,6 @@ impl std::fmt::Display for Error {
 impl From<std::io::Error> for Error {
     fn from(inner: std::io::Error) -> Self {
         Self::Io(inner.to_string())
-    }
-}
-
-impl From<bincode::ErrorKind> for Error {
-    fn from(inner: bincode::ErrorKind) -> Self {
-        Self::Serialization(inner.to_string())
-    }
-}
-
-impl From<Box<bincode::ErrorKind>> for Error {
-    fn from(inner: Box<bincode::ErrorKind>) -> Self {
-        Self::Serialization((*inner).to_string())
     }
 }
 

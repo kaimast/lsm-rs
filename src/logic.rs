@@ -193,7 +193,7 @@ impl DbLogic {
         }
 
         if !create {
-            for (level_id, tables) in manifest.get_table_set().await.iter().enumerate() {
+            for (level_id, tables) in manifest.get_tables().await.iter().enumerate() {
                 for table_id in tables {
                     levels[level_id].load_table(*table_id).await?;
                 }

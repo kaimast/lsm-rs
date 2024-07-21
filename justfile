@@ -13,6 +13,9 @@ async-tests:
 async-io-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async-io,bloom-filters -- --test-threads=1
 
+async-io-wisckey-tests:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=async-io,wisckey,bloom-filters -- --test-threads=1
+
 no-compression-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features
 

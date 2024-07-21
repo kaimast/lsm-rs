@@ -551,7 +551,6 @@ name = "lsm"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "bincode",
  "bloomfilter",
  "cfg-if",
  "clap",
@@ -560,8 +559,8 @@ dependencies = [
  "futures",
  "log",
  "lru",
+ "memmap2",
  "parking_lot",
- "serde",
  "snap",
  "tempfile",
  "tokio",
@@ -600,6 +599,15 @@ name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
+
+[[package]]
+name = "memmap2"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe751422e4a8caa417e13c3ea66452215d7d63e19e604f4980461212f3ae1322"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -1004,11 +1012,13 @@ dependencies = [
 [[package]]
 name = "tokio-uring"
 version = "0.5.0"
-source = "git+https://github.com/kaimast/tokio-uring.git#2a2af87fad5ebd170871c989a092b6a86060fa09"
+source = "git+https://github.com/kaimast/tokio-uring.git#0c8fd8acb3a9df9302bf45bab8dec8302aa0f132"
 dependencies = [
+ "bytes",
  "futures-util",
  "io-uring",
  "libc",
+ "memmap2",
  "slab",
  "socket2 0.4.10",
  "tokio",
@@ -1030,7 +1040,7 @@ dependencies = [
 [[package]]
 name = "tokio-uring-macros"
 version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring.git#2a2af87fad5ebd170871c989a092b6a86060fa09"
+source = "git+https://github.com/kaimast/tokio-uring.git#0c8fd8acb3a9df9302bf45bab8dec8302aa0f132"
 dependencies = [
  "proc-macro2",
  "quote",
