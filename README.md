@@ -4,14 +4,14 @@
 [![license-badge](https://img.shields.io/crates/l/lsm)](https://github.com/kaimast/lsm-rs/blob/main/LICENSE)
 [![crates-badge](https://img.shields.io/crates/v/lsm)](https://crates.io/crates/lsm)
 
-**Note: This is an experimental implementation and not intended for production environments.**
+**Note: While this implementation is used by us and has not caused major problems, we do not recommend it yet production environments.**
  Please use the [leveldb](https://github.com/skade/leveldb) or [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb) crate for this purpose.
 
 This implementation does *not* aim to reimplement LevelDB. The major differences are:
-* *Separation of keys and values*: like [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf), values are stored separately to increase compaction speed
+* *Separation of keys and values*: Values can be stored seperately to increase compaction speed as outlined in the [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf) paper
 * *Concurrent compaction*: Multiple threads can compact at the same time for higher write throughput
-* *Async-support*: All API calls are exposed as async functions.
-* *io_uring-support*: For async file system access on Linux
+* *Async-support*: All API calls are exposed as async functions
+* *io_uring-support*: For async file system access on Linux. Optional and still considered experimental.
 * *Bloom filters* for faster lookups
 
 ## Latest Version
@@ -35,7 +35,7 @@ Replication across machines should be handled at a different layer of the system
 * `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk *(enabled by default)*
 * `bloom-filters`: Add bloom filters to data blocks for more efficient searching. *(enabled by default)*
 * `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel. *(disabled by default)*
-* `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage *(disabled by default)*
+* `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage. *(disabled by default)*
 
 ## Synchronous API
 This crate exposes an async API intended to be used with Tokio or a similar runtime.
@@ -47,8 +47,7 @@ Keys are sorted by comparing their binary representation and ordering those [lex
 We plan to add custom order and serialization mechanisms in the future.
 
 ## Tests
-This library ships with several tests. Note, that you cannot run them concurrently as they will access the same on-disk location.
-We provide a [justfile](https://github.com/casey/just) for convenience:
+This library ships with several tests. We provide a [justfile](https://github.com/casey/just) for convenience:
 
 ```sh
 just test #runs all tests for all configurations
@@ -56,17 +55,19 @@ just lint #runs cargo clippy
 ```
 
 ## Notes on io-uring
-Currently, this uses [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a simplistic multi-threaded wrapper around `tokio-uring`.
+Currently, the io-uring feature relies on [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a simplistic multi-threaded wrapper around `tokio-uring`.
 Eventually `tokio-uring` will [support multiple threads natively](https://github.com/tokio-rs/tokio-uring/issues/258) and this workaround will be removed.
 
 ## Similar Crates
+This is an incomplete list of crates that provide similar functionality. Please reach out if you know of others to add.
+
 ### LSM trees
 * [rust-rocksdb](https://github.com/rust-rocksdb/rust-rocksdb): Rust bindings for RocksDB
 * [leveldb](https://github.com/skade/leveldb): Rust bindings for LevelDB
 * [wickdb](https://github.com/Fullstop000/wickdb): Rust re-implementation of vanilla LevelDB
 * [agatedb](https://github.com/tikv/agatedb): A WiscKey implementation in Rust for TiKV
 
-### Other Key-Value Store
+### Other Key-Value Stores
 These differ significantly in their approach but also provide a key-value store abstraction
 * [redb](https://github.com/cberner/redb)
 
