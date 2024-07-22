@@ -11,14 +11,36 @@ use std::path::Path;
 
 use cfg_if::cfg_if;
 
+/// Read from the offset to the end of the file
+/// Not supported by tokio-uring yet, so added as a helper function here
+#[cfg(feature = "async-io")]
+async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+    let mut buffer = vec![0u8; 4096];
+    let mut result = vec![];
+    let mut pos = offset;
+
+    loop {
+        let (res, buf) = file.read_at(buffer, pos).await;
+
+        match res {
+            Ok(0) => return Ok(result),
+            Ok(n) => {
+                buffer = buf;
+                result.extend_from_slice(&buffer[..n]);
+                pos += n as u64;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[inline(always)]
 #[tracing::instrument]
 pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
             let file = fs::File::open(fpath).await?;
-            let (res, buf) = file.read_at_to_end(offset, vec![]).await;
-            res?;
+            let buf = read_to_end(&file, offset).await?;
         } else {
             let mut file = fs::File::open(fpath)?;
 
