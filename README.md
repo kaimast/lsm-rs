@@ -14,10 +14,6 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *io_uring-support*: For async file system access on Linux. Optional and still considered experimental.
 * *Bloom filters* for faster lookups
 
-## Latest Version
-The version on crates.io is quite outdated as it does not allow to publish crates with git dependencies.
-It is recommended to use the `main` git branch instead.
-
 ## Supported Platfomrs and Architectures
 Currently, the code is only tested with Linux on x86 machines, but it should run on most systems supported by the Rust compiler.
 

@@ -300,16 +300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "executor-macros"
-version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring-executor.git#9f999ed52803a86ae4d3a3a21afef91232323bec"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,6 +487,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "kioto-uring-executor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d524055a91bab4a6567a543f04bb7ea6e75ba7f9642c072eeeed8b64e5224e62"
+dependencies = [
+ "kioto-uring-executor-macros",
+ "log",
+ "rand",
+ "tokio",
+ "tokio-uring",
+]
+
+[[package]]
+name = "kioto-uring-executor-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87826da5a57e29aa65d7cc5929629ec70705ad4ec9d6d9ca9625aa5c903b7c51"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -564,6 +578,7 @@ dependencies = [
  "csv",
  "env_logger",
  "futures",
+ "kioto-uring-executor",
  "log",
  "lru",
  "memmap2",
@@ -573,7 +588,6 @@ dependencies = [
  "tokio",
  "tokio-condvar",
  "tokio-uring",
- "tokio-uring-executor",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",
@@ -946,9 +960,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"
-version = "2.0.71"
+version = "2.0.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b146dcf730474b4bcd16c311627b31ede9ab149045db4d6088b3becaea046462"
+checksum = "dc4b9b9bf2add8093d3f2c0204471e951b2285580335de42f9d2534f3ae7a8af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1019,39 +1033,15 @@ dependencies = [
 [[package]]
 name = "tokio-uring"
 version = "0.5.0"
-source = "git+https://github.com/kaimast/tokio-uring.git#0c8fd8acb3a9df9302bf45bab8dec8302aa0f132"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "748482e3e13584a34664a710168ad5068e8cb1d968aa4ffa887e83ca6dd27967"
 dependencies = [
- "bytes",
  "futures-util",
  "io-uring",
  "libc",
- "memmap2",
  "slab",
  "socket2 0.4.10",
  "tokio",
- "tokio-uring-macros",
-]
-
-[[package]]
-name = "tokio-uring-executor"
-version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring-executor.git#9f999ed52803a86ae4d3a3a21afef91232323bec"
-dependencies = [
- "executor-macros",
- "log",
- "rand",
- "tokio",
- "tokio-uring",
-]
-
-[[package]]
-name = "tokio-uring-macros"
-version = "0.1.0"
-source = "git+https://github.com/kaimast/tokio-uring.git#0c8fd8acb3a9df9302bf45bab8dec8302aa0f132"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

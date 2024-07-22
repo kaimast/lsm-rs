@@ -204,7 +204,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[cfg(feature = "async-io")]
-    use tokio_uring::test as async_test;
+    use tokio_uring_executor::test as async_test;
 
     #[cfg(not(feature = "async-io"))]
     use tokio::test as async_test;
