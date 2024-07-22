@@ -88,7 +88,7 @@ impl IndexBlock {
 
         // Store on disk before grabbing the lock
         let fpath = Self::get_file_path(params, &id);
-        disk::write(&fpath, &block_data, 0).await?;
+        disk::write(&fpath, &block_data).await?;
 
         Ok(IndexBlock { data: block_data })
     }

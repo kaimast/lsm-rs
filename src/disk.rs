@@ -13,15 +13,12 @@ use cfg_if::cfg_if;
 
 #[inline(always)]
 #[tracing::instrument]
-pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut compressed = vec![];
-
+pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
             let file = fs::File::open(fpath).await?;
-            let (res, buf) = file.read_at_to_end(offset, compressed).await;
+            let (res, buf) = file.read_at_to_end(offset, vec![]).await;
             res?;
-            compressed = buf;
         } else {
             let mut file = fs::File::open(fpath)?;
 
@@ -29,9 +26,19 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
                 file.seek(std::io::SeekFrom::Start(offset))?;
             }
 
-            file.read_to_end(&mut compressed)?;
+            let mut buf = vec![];
+            file.read_to_end(&mut buf)?;
+
         }
     }
+
+    Ok(buf)
+}
+
+#[inline(always)]
+#[tracing::instrument]
+pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+    let compressed = read_uncompressed(fpath, offset).await?;
 
     cfg_if! {
         if #[ cfg(feature="snappy-compression") ] {
@@ -45,7 +52,7 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
 
 #[tracing::instrument(skip(data))]
 #[inline(always)]
-pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io::Error> {
+pub async fn write(fpath: &Path, data: &[u8]) -> Result<(), std::io::Error> {
     //TODO it might be worth investigating if encoding/decoding
     // chunks is more efficient
 
@@ -60,26 +67,27 @@ pub async fn write(fpath: &Path, data: &[u8], offset: u64) -> Result<(), std::io
         }
     }
 
+    write_uncompressed(fpath, compressed).await
+}
+
+#[tracing::instrument(skip(data))]
+#[inline(always)]
+pub async fn write_uncompressed(fpath: &Path, data: Vec<u8>) -> Result<(), std::io::Error> {
     cfg_if! {
         if #[ cfg(feature="async-io") ] {
             let file = fs::OpenOptions::new().create(true)
-                .truncate(false).write(true)
+                .truncate(true).write(true)
                 .open(fpath).await?;
 
-            let (res, _buf) = file.write_all_at(compressed, offset).await;
+            let (res, _buf) = file.write_all_at(data, 0).await;
             res?;
             file.sync_all().await?;
         } else {
             let mut file = fs::OpenOptions::new().create(true)
-                .truncate(false).write(true)
+                .truncate(true).write(true)
                 .open(fpath)?;
 
-            if offset > 0 {
-                file.set_len(offset)?;
-                file.seek(std::io::SeekFrom::Start(offset))?;
-            }
-
-            file.write_all(&compressed)?;
+            file.write_all(&data)?;
             file.sync_all()?;
         }
     }
