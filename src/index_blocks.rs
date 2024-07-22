@@ -1,23 +1,44 @@
+use std::cmp::Ordering;
+use std::mem::size_of;
+use std::path::Path;
+
 use crate::data_blocks::DataBlockId;
 use crate::sorted_table::TableId;
 use crate::{disk, Error};
 use crate::{Key, Params};
 
-use serde::{Deserialize, Serialize};
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use std::cmp::Ordering;
-use std::path::Path;
-
-use bincode::Options;
-
-/// Index blocks hold metadata about a sorted table
-/// Each table has exactly one index block
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IndexBlock {
-    index: Vec<(Key, DataBlockId)>,
+#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[repr(packed)]
+struct IndexBlockHeader {
     size: u64,
-    min: Key,
-    max: Key,
+    min_key_len: u32,
+    max_key_len: u32,
+    num_data_blocks: u32,
+    _padding: u32,
+}
+
+#[derive(AsBytes, FromBytes, FromZeroes)]
+#[repr(packed)]
+struct IndexEntryHeader {
+    block_id: DataBlockId,
+    key_len: u32,
+    _padding: u32,
+}
+
+/** Index blocks hold metadata about a sorted table
+ * Each table has exactly one index block
+ *
+ * Layout:
+ *   - Header
+ *   - Min key bytes
+ *   - Max key bytes
+ *   - Offset list
+ *   - Index Entries
+**/
+pub struct IndexBlock {
+    data: Vec<u8>,
 }
 
 impl IndexBlock {
@@ -26,22 +47,50 @@ impl IndexBlock {
         id: TableId,
         index: Vec<(Key, DataBlockId)>,
         size: u64,
-        min: Key,
-        max: Key,
+        min_key: Key,
+        max_key: Key,
     ) -> Result<Self, Error> {
-        let block = Self {
-            index,
+        let header = IndexBlockHeader {
             size,
-            min,
-            max,
+            min_key_len: min_key.len() as u32,
+            max_key_len: max_key.len() as u32,
+            num_data_blocks: index.len() as u32,
+            _padding: 0,
         };
 
-        // Store on disk before grabbing the lock
-        let block_data = crate::get_encoder().serialize(&block)?;
-        let fpath = Self::get_file_path(params, &id);
-        disk::write(&fpath, &block_data, 0).await?;
+        let mut block_data = header.as_bytes().to_vec();
+        block_data.extend_from_slice(&min_key);
+        block_data.extend_from_slice(&max_key);
 
-        Ok(block)
+        crate::add_padding(&mut block_data);
+
+        // Reserve space for offsets
+        let offset_start = block_data.len();
+        let offset_len = crate::pad_offset(index.len());
+        block_data.append(&mut vec![0u8; offset_len * size_of::<u32>()]);
+
+        for (pos, (key, block_id)) in index.into_iter().enumerate() {
+            let header = IndexEntryHeader {
+                block_id,
+                key_len: key.len() as u32,
+                _padding: 0,
+            };
+
+            let entry_offset = block_data.len() as u32;
+
+            block_data[offset_start + pos * size_of::<u32>()
+                ..offset_start + (pos + 1) * size_of::<u32>()]
+                .copy_from_slice(entry_offset.as_bytes());
+
+            block_data.extend_from_slice(header.as_bytes());
+            block_data.extend_from_slice(&key);
+        }
+
+        // Store on disk before grabbing the lock
+        let fpath = Self::get_file_path(params, &id);
+        disk::write(&fpath, &block_data).await?;
+
+        Ok(IndexBlock { data: block_data })
     }
 
     pub async fn load(params: &Params, id: TableId) -> Result<Self, Error> {
@@ -49,7 +98,7 @@ impl IndexBlock {
         let fpath = Self::get_file_path(params, &id);
         let data = disk::read(&fpath, 0).await?;
 
-        Ok(crate::get_encoder().deserialize(&data)?)
+        Ok(IndexBlock { data })
     }
 
     /// where is this index block located on disk?
@@ -59,30 +108,69 @@ impl IndexBlock {
         params.db_path.join(Path::new(&fname))
     }
 
+    fn get_header(&self) -> &IndexBlockHeader {
+        IndexBlockHeader::ref_from_prefix(&self.data[..]).unwrap()
+    }
+
+    fn get_entry_offset(&self, pos: usize) -> usize {
+        let header = self.get_header();
+        assert!((pos as u32) < header.num_data_blocks);
+
+        let offset = size_of::<IndexBlockHeader>()
+            + header.min_key_len as usize
+            + header.max_key_len as usize;
+
+        let offset_offset = crate::pad_offset(offset) + pos * size_of::<u32>();
+
+        *u32::ref_from_prefix(&self.data[offset_offset..]).unwrap() as usize
+    }
+
     /// Get the unique id for the data block at the specified index
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
-        self.index[pos].1
+        let offset = self.get_entry_offset(pos);
+
+        let entry_header =
+            IndexEntryHeader::ref_from(&self.data[offset..offset + size_of::<IndexEntryHeader>()])
+                .unwrap();
+
+        entry_header.block_id
+    }
+
+    /// Get the key for the data block at the specified index
+    pub fn get_block_key(&self, pos: usize) -> &[u8] {
+        let offset = self.get_entry_offset(pos);
+
+        let entry_header = IndexEntryHeader::ref_from_prefix(&self.data[offset..]).unwrap();
+
+        let key_start = offset + size_of::<IndexEntryHeader>();
+        &self.data[key_start..key_start + (entry_header.key_len as usize)]
     }
 
     /// How many data blocks does this table have?
     pub fn num_data_blocks(&self) -> usize {
-        self.index.len()
+        self.get_header().num_data_blocks as usize
     }
 
     /// The size of this table in bytes
     /// (for WiscKey this just counts the references, not the values themselves)
     pub fn get_size(&self) -> usize {
-        self.size as usize
+        self.get_header().size as usize
     }
 
     /// Whats the minimum key in this table?
     pub fn get_min(&self) -> &[u8] {
-        &self.min
+        let header = self.get_header();
+        let key_offset = size_of::<IndexBlockHeader>();
+
+        &self.data[key_offset..key_offset + (header.min_key_len as usize)]
     }
 
     /// What is the maximum key in this table?
     pub fn get_max(&self) -> &[u8] {
-        &self.max
+        let header = self.get_header();
+        let key_offset = size_of::<IndexBlockHeader>() + (header.min_key_len as usize);
+
+        &self.data[key_offset..key_offset + (header.max_key_len as usize)]
     }
 
     /// Search for a specific key
@@ -93,18 +181,18 @@ impl IndexBlock {
             return None;
         }
 
-        let idx = &self.index;
+        let header = self.get_header();
 
         let mut start = 0;
-        let mut end = idx.len() - 1;
+        let mut end = (header.num_data_blocks as usize) - 1;
 
         while end - start > 1 {
             let mid = (end - start) / 2 + start;
-            let mid_key = idx[mid].0.as_slice();
+            let mid_key = self.get_block_key(mid);
 
             match mid_key.cmp(key) {
                 Ordering::Equal => {
-                    return Some(idx[mid].1);
+                    return Some(self.get_block_id(mid));
                 }
                 Ordering::Greater => {
                     end = mid;
@@ -115,12 +203,12 @@ impl IndexBlock {
             }
         }
 
-        assert!(key >= idx[start].0.as_slice());
+        assert!(key >= self.get_block_key(start));
 
-        if key >= idx[end].0.as_slice() {
-            Some(idx[end].1)
+        if key >= self.get_block_key(end) {
+            Some(self.get_block_id(end))
         } else {
-            Some(idx[start].1)
+            Some(self.get_block_id(start))
         }
     }
 }

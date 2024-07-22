@@ -5,8 +5,6 @@ use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::KvTrait;
-
 use tokio::sync::Notify;
 
 use crate::{DbLogic, Error};
@@ -56,20 +54,17 @@ struct UpdateCond {
     condition: Notify,
 }
 
-struct MemtableCompactionTask<K: KvTrait, V: KvTrait> {
-    datastore: Arc<DbLogic<K, V>>,
+struct MemtableCompactionTask {
+    datastore: Arc<DbLogic>,
     level_update_cond: Arc<UpdateCond>,
 }
 
-struct LevelCompactionTask<K: KvTrait, V: KvTrait> {
-    datastore: Arc<DbLogic<K, V>>,
+struct LevelCompactionTask {
+    datastore: Arc<DbLogic>,
 }
 
-impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
-    fn new_boxed(
-        datastore: Arc<DbLogic<K, V>>,
-        level_update_cond: Arc<UpdateCond>,
-    ) -> Box<dyn Task> {
+impl MemtableCompactionTask {
+    fn new_boxed(datastore: Arc<DbLogic>, level_update_cond: Arc<UpdateCond>) -> Box<dyn Task> {
         Box::new(Self {
             datastore,
             level_update_cond,
@@ -77,15 +72,15 @@ impl<K: KvTrait, V: KvTrait> MemtableCompactionTask<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> LevelCompactionTask<K, V> {
-    fn new_boxed(datastore: Arc<DbLogic<K, V>>) -> Box<dyn Task> {
+impl LevelCompactionTask {
+    fn new_boxed(datastore: Arc<DbLogic>) -> Box<dyn Task> {
         Box::new(Self { datastore })
     }
 }
 
 #[cfg_attr(feature="async-io", async_trait(?Send))]
 #[cfg_attr(not(feature = "async-io"), async_trait)]
-impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
+impl Task for MemtableCompactionTask {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
         if did_work {
@@ -97,7 +92,7 @@ impl<K: KvTrait, V: KvTrait> Task for MemtableCompactionTask<K, V> {
 
 #[cfg_attr(feature="async-io", async_trait(?Send))]
 #[cfg_attr(not(feature = "async-io"), async_trait)]
-impl<K: KvTrait, V: KvTrait> Task for LevelCompactionTask<K, V> {
+impl Task for LevelCompactionTask {
     async fn run(&self) -> Result<bool, Error> {
         Ok(self.datastore.do_level_compaction().await?)
     }
@@ -181,10 +176,7 @@ impl TaskHandle {
 }
 
 impl TaskManager {
-    pub async fn new<K: KvTrait, V: KvTrait>(
-        datastore: Arc<DbLogic<K, V>>,
-        num_compaction_tasks: usize,
-    ) -> Self {
+    pub async fn new(datastore: Arc<DbLogic>, num_compaction_tasks: usize) -> Self {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 

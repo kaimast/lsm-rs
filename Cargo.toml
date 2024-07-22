@@ -12,8 +12,9 @@ keywords = ["storage", "database", "async"]
 [dependencies]
 lru = "0.12"
 parking_lot = "0.12"
-bincode = "^1.3"
-serde = { version="1", features=["derive"] }
+memmap2 = "0.9"
+byte-slice-cast = "1"
+zerocopy = { version="0.7", features=["derive"] }
 log = "0.4"
 futures = "0.3"
 snap = { version="1", optional=true }
@@ -23,7 +24,7 @@ tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = { version="0.3", features=["parking_lot"] }
 #tokio-uring = { version="0.4", optional=true }
-tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", optional=true }
+tokio-uring = { git="https://github.com/kaimast/tokio-uring.git", features=["mmap"], optional=true }
 tokio-uring-executor = { git="https://github.com/kaimast/tokio-uring-executor.git", optional=true }
 bloomfilter = { version="1", optional=true }
 

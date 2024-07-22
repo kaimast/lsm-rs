@@ -5,9 +5,6 @@ use crate::data_blocks::{DataBlock, DataBlocks, DataEntry};
 use crate::index_blocks::IndexBlock;
 use crate::{Error, Params};
 
-#[cfg(feature = "wisckey")]
-use crate::values::ValueId;
-
 mod iterator;
 pub use iterator::{InternalIterator, TableIterator};
 
@@ -25,7 +22,6 @@ pub type Value = Vec<u8>;
 /// These tables contain an ordered set of key/value-pairs
 ///
 /// Except for level 0, sorted tables do not overlap others on the same level
-#[derive(Debug)]
 pub struct SortedTable {
     identifier: TableId,
     /// The index of the table; it holds all relevant metadata
@@ -36,14 +32,6 @@ pub struct SortedTable {
     /// The number of seek operations on this table before compaction is triggered
     /// This improves read performance for heavily queried keys
     allowed_seeks: AtomicI32,
-}
-
-#[cfg(feature = "wisckey")]
-#[derive(Debug, PartialEq, Eq)]
-pub enum ValueResult<'a> {
-    Reference(ValueId),
-    Value(&'a [u8]),
-    NoValue,
 }
 
 impl SortedTable {
@@ -118,7 +106,7 @@ impl SortedTable {
         let block_id = self.index.binary_search(key)?;
         let block = self.data_blocks.get_block(&block_id).await;
 
-        DataBlock::get(&block, key)
+        DataBlock::get_by_key(&block, key)
     }
 
     #[inline]

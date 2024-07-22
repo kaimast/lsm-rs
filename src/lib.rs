@@ -2,10 +2,9 @@
 #![feature(get_mut_unchecked)]
 #![feature(let_chains)]
 #![feature(const_option)]
+#![feature(trivial_bounds)]
 // Temporary workaround for the io_uring code
 #![allow(clippy::arc_with_non_send_sync)]
-
-use bincode::Options;
 
 pub mod iterate;
 
@@ -28,6 +27,7 @@ pub mod tasks;
 
 pub mod logic;
 use logic::DbLogic;
+pub use logic::EntryRef;
 
 pub mod manifest;
 
@@ -40,14 +40,28 @@ mod wal;
 
 pub use database::Database;
 
-/// Keys and values must be (de-)serializable
-pub trait KvTrait = Send
-    + serde::Serialize
-    + serde::de::DeserializeOwned
-    + 'static
-    + Unpin
-    + Clone
-    + std::fmt::Debug;
+/// How many bytes do we align by?
+const WORD_SIZE: usize = 8;
+
+fn pad_offset(offset: usize) -> usize {
+    offset + compute_padding(offset)
+}
+
+fn compute_padding(offset: usize) -> usize {
+    let remainder = offset % WORD_SIZE;
+    if remainder == 0 {
+        0
+    } else {
+        WORD_SIZE - remainder
+    }
+}
+
+fn add_padding(data: &mut Vec<u8>) {
+    let padding = compute_padding(data.len());
+    if padding > 0 {
+        data.resize(data.len() + padding, 0u8);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -80,18 +94,6 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<bincode::ErrorKind> for Error {
-    fn from(inner: bincode::ErrorKind) -> Self {
-        Self::Serialization(inner.to_string())
-    }
-}
-
-impl From<Box<bincode::ErrorKind>> for Error {
-    fn from(inner: Box<bincode::ErrorKind>) -> Self {
-        Self::Serialization((*inner).to_string())
-    }
-}
-
 /// Allow specifying how the datastore behaves during startup
 #[derive(Debug, Clone)]
 pub enum StartMode {
@@ -101,10 +103,4 @@ pub enum StartMode {
     Open,
     /// Create a new, or override an existing, database
     CreateOrOverride,
-}
-
-pub fn get_encoder(
-) -> bincode::config::WithOtherEndian<bincode::DefaultOptions, bincode::config::BigEndian> {
-    // Use BigEndian to make integers sortable properly
-    bincode::options().with_big_endian()
 }

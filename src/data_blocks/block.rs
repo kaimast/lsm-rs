@@ -1,20 +1,17 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use cfg_if::cfg_if;
-
 use crate::sorted_table::Key;
 
 use super::{DataEntry, SearchResult};
+
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[cfg(feature = "bloom-filters")]
 use bloomfilter::Bloom;
 
 #[cfg(feature = "wisckey")]
-use super::ENTRY_LENGTH;
-
-#[cfg(not(feature = "wisckey"))]
-use super::DataLen;
+use crate::values::{ValueBatchId, ValueOffset};
 
 #[cfg(feature = "bloom-filters")]
 //TODO change the size of this depending on max_key_block_length
@@ -23,36 +20,67 @@ pub(super) const BLOOM_LENGTH: usize = 1024;
 #[cfg(feature = "bloom-filters")]
 pub(super) const BLOOM_KEY_NUM: usize = 1024;
 
-#[cfg(feature = "bloom-filters")]
-pub(super) const SIP_KEYS_LENGTH: usize = 4 * std::mem::size_of::<u64>();
-
 /**
- * Data Layout
+ * Layout of a data block on disk
+ *
  * 1. 4 bytes marking where the restart list starts
  * 2. 4 bytes indicating the number of entries in this block
  * 3. 1024+32 bytes for the bloom filter (if enabled)
- * 4. Sequence of variable-length entries, where each entry is structured as listed below
+ * 4. Sequence of variable-length entries
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
+ */
+#[derive(AsBytes, FromBytes, FromZeroes)]
+#[repr(C)]
+pub(super) struct DataBlockHeader {
+    pub(super) restart_list_start: u32,
+    pub(super) number_of_entries: u32,
+    #[cfg(feature = "bloom-filters")]
+    pub(super) bloom_filter: [u8; 1024],
+    #[cfg(feature = "bloom-filters")]
+    pub(super) bloom_filter_keys: [u64; 4],
+}
+
+/**
+ * For WiscKey an entry contains:
  *
- * For WiscKey the layout of an entry is the following:
+ * Header:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
- *  - Variable length key suffix
- *  - Fixed size value reference, with
- *    - seq_number (8 bytes)
- *    - entry type (1 byte)
- *    - value block id
- *    - offset
+ *  - Seq_number (8 bytes)
+ *  - Entry type (1 byte)
+ *  - Value reference (batch id and offset)
  *
- * Otherwise:
+ * Content (not part of the header):
+ *  - Variable length key suffix
+ *
+ * When not using WiscKey an entry is variable length and contains the following
+ *
+ * Header:
  *  - Key prefix len (4 bytes)
  *  - Key suffix len (4 bytes)
- *  - Variable length key suffix
  *  - Value length (8 bytes)
  *  - Entry Type (1 byte)
  *  - Sequence number (8 bytes)
+ *
+ * Content (not part of the header):
+ *  - Variable length key suffix
  *  - Variable length value
  */
+#[derive(AsBytes, FromBytes, FromZeroes)]
+#[repr(packed)]
+pub(super) struct EntryHeader {
+    pub(super) prefix_len: u32,
+    pub(super) suffix_len: u32,
+    pub(super) entry_type: u8,
+    pub(super) seq_number: u64,
+    #[cfg(feature = "wisckey")]
+    pub(super) value_batch: ValueBatchId,
+    #[cfg(feature = "wisckey")]
+    pub(super) value_offset: ValueOffset,
+    #[cfg(not(feature = "wisckey"))]
+    pub(super) value_length: u64,
+}
+
 //TODO support data block layouts without prefixed keys
 pub struct DataBlock {
     pub(super) restart_list_start: usize,
@@ -67,34 +95,31 @@ impl DataBlock {
     pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
         assert!(!data.is_empty(), "No data?");
 
-        let rls_len = std::mem::size_of::<u32>();
-        let len_len = std::mem::size_of::<u32>();
-        let restart_list_start = u32::from_le_bytes(data[..rls_len].try_into().unwrap()) as usize;
-        let num_entries = u32::from_le_bytes(data[rls_len..rls_len + len_len].try_into().unwrap());
+        let header = DataBlockHeader::ref_from(&data[..Self::header_length()]).unwrap();
 
         #[cfg(feature = "bloom-filters")]
         let bloom_filter = {
-            let filter = &data[rls_len + len_len..rls_len + len_len + BLOOM_LENGTH];
-            let keys: [(u64, u64); 2] = bincode::deserialize(
-                &data[rls_len + len_len + BLOOM_LENGTH..Self::header_length()],
-            )
-            .unwrap();
+            // Work around zerocopy not liking tuples
+            let mut filter_keys = [(0u64, 0u64); 2];
+            for (idx, item) in filter_keys.iter_mut().enumerate() {
+                item.0 = header.bloom_filter_keys[idx * 2];
+                item.1 = header.bloom_filter_keys[idx * 2 + 1];
+            }
 
             Bloom::from_existing(
-                filter,
+                header.bloom_filter.as_slice(),
                 (BLOOM_LENGTH * 8) as u64,
                 BLOOM_KEY_NUM as u32,
-                keys,
+                filter_keys,
             )
         };
 
-        assert!(restart_list_start <= data.len(), "Data corrupted?");
         log::trace!("Created new data block from existing data");
 
         Self {
+            num_entries: header.number_of_entries,
+            restart_list_start: header.restart_list_start as usize,
             data,
-            num_entries,
-            restart_list_start,
             restart_interval,
             #[cfg(feature = "bloom-filters")]
             bloom_filter,
@@ -102,71 +127,53 @@ impl DataBlock {
     }
 
     fn header_length() -> usize {
-        let rl_len_len = std::mem::size_of::<u32>();
-        let len_len = std::mem::size_of::<u32>();
-
-        cfg_if! {
-            if #[cfg(feature="bloom-filters")] {
-                len_len + rl_len_len + BLOOM_LENGTH + SIP_KEYS_LENGTH
-            } else {
-                len_len + rl_len_len
-            }
-        }
+        std::mem::size_of::<DataBlockHeader>()
     }
 
     /// Get the key and entry at the specified offset in bytes (must be valid!)
-    /// The third entry in this result is the new offset after (or before) the entry
+    /// The third entry in this result is the new offset after the entry
     #[tracing::instrument(skip(self_ptr, previous_key))]
     pub fn get_entry_at_offset(
         self_ptr: Arc<DataBlock>,
         offset: u32,
         previous_key: &[u8],
-    ) -> (Key, DataEntry, u32) {
+    ) -> (Key, DataEntry) {
         let mut offset = (offset as usize) + Self::header_length();
-        let len_len = std::mem::size_of::<u32>();
 
-        assert!(offset < self_ptr.restart_list_start);
+        let header_len = std::mem::size_of::<EntryHeader>();
 
-        let pkey_len =
-            u32::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-        offset += len_len;
+        if offset + header_len > self_ptr.restart_list_start {
+            panic!("Invalid offset {offset}");
+        }
 
-        let skey_len =
-            u32::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-        offset += len_len;
+        let header = EntryHeader::ref_from(&self_ptr.data[offset..offset + header_len])
+            .expect("Failed to read entry header");
+        let entry_offset = offset;
+
+        offset += std::mem::size_of::<EntryHeader>();
 
         let kdata = [
-            &previous_key[..pkey_len as usize],
-            &self_ptr.data[offset..offset + (skey_len as usize)],
+            &previous_key[..(header.prefix_len as usize)],
+            &self_ptr.data[offset..offset + (header.suffix_len as usize)],
         ]
         .concat();
-        offset += skey_len as usize;
+        offset += header.suffix_len as usize;
 
+        // Move offset to after the entry
         #[cfg(not(feature = "wisckey"))]
-        let entry_len = {
-            let len_len = std::mem::size_of::<DataLen>();
-            let elen =
-                DataLen::from_le_bytes(self_ptr.data[offset..offset + len_len].try_into().unwrap());
-            offset += len_len;
+        {
+            offset += header.value_length as usize;
+        }
 
-            elen as usize
-        };
-
-        // WiscKey has constant-size entries
-        #[cfg(feature = "wisckey")]
-        let entry_len = ENTRY_LENGTH;
+        let next_offset = offset - Self::header_length();
 
         let entry = DataEntry {
             block: self_ptr,
-            offset,
-            #[cfg(not(feature = "wisckey"))]
-            length: entry_len,
+            offset: entry_offset,
+            next_offset: next_offset as u32,
         };
 
-        offset += entry_len;
-        offset -= Self::header_length();
-
-        (kdata, entry, offset as u32)
+        (kdata, entry)
     }
 
     /// How many entries are in this data block?
@@ -177,19 +184,18 @@ impl DataBlock {
     /// Get they entry at the specified index
     /// (the index is in entries not bytes)
     #[tracing::instrument(skip(self_ptr))]
-    pub fn get_entry_at_index(self_ptr: Arc<DataBlock>, index: u32) -> (Key, DataEntry) {
+    pub fn get_entry_at_index(self_ptr: &Arc<Self>, index: u32) -> (Key, DataEntry) {
         // First, get the closest restart offset
         let restart_pos = index / self_ptr.restart_interval;
 
         let restart_offset = self_ptr.get_restart_offset(restart_pos);
-        let (mut key, mut entry, mut next_offset) =
-            Self::get_entry_at_offset(self_ptr.clone(), restart_offset, &[]);
+        let (mut key, mut entry) = Self::get_entry_at_offset(self_ptr.clone(), restart_offset, &[]);
 
         let mut current_idx = restart_pos * self_ptr.restart_interval;
 
         while current_idx < index {
-            (key, entry, next_offset) =
-                Self::get_entry_at_offset(self_ptr.clone(), next_offset, &key);
+            (key, entry) =
+                Self::get_entry_at_offset(self_ptr.clone(), entry.get_next_offset(), &key);
             current_idx += 1;
         }
 
@@ -223,7 +229,7 @@ impl DataBlock {
     }
 
     #[tracing::instrument(skip(self_ptr, key))]
-    fn binary_search(self_ptr: &Arc<DataBlock>, key: &[u8]) -> SearchResult {
+    fn binary_search(self_ptr: &Arc<Self>, key: &[u8]) -> SearchResult {
         let rl_len = self_ptr.restart_list_len();
 
         let mut start: u32 = 0;
@@ -235,7 +241,7 @@ impl DataBlock {
 
             // We always perform the search at the restart positions for efficiency
             let offset = self_ptr.get_restart_offset(mid);
-            let (this_key, entry, _) = Self::get_entry_at_offset(self_ptr.clone(), offset, &[]);
+            let (this_key, entry) = Self::get_entry_at_offset(self_ptr.clone(), offset, &[]);
 
             match this_key.as_slice().cmp(key) {
                 Ordering::Equal => {
@@ -267,7 +273,7 @@ impl DataBlock {
     /// Get the entry for the specified key
     /// Will return None if no such entry exists
     #[tracing::instrument(skip(self_ptr, key))]
-    pub fn get(self_ptr: &Arc<DataBlock>, key: &[u8]) -> Option<DataEntry> {
+    pub fn get_by_key(self_ptr: &Arc<Self>, key: &[u8]) -> Option<DataEntry> {
         #[cfg(feature = "bloom-filters")]
         if !self_ptr.bloom_filter.check(key) {
             return None;
@@ -284,14 +290,13 @@ impl DataBlock {
 
         let mut last_key = vec![];
         while pos < end {
-            let (this_key, entry, new_pos) =
-                Self::get_entry_at_offset(self_ptr.clone(), pos, &last_key);
+            let (this_key, entry) = Self::get_entry_at_offset(self_ptr.clone(), pos, &last_key);
 
             if key == this_key {
                 return Some(entry);
             }
 
-            pos = new_pos;
+            pos = entry.get_next_offset();
             last_key = this_key;
         }
 

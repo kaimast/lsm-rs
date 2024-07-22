@@ -1,8 +1,4 @@
-use std::marker::PhantomData;
-
-use crate::{get_encoder, Key, KvTrait, Value};
-
-use bincode::Options;
+use crate::{Key, Value};
 
 #[derive(Debug)]
 pub enum WriteOp {
@@ -14,8 +10,7 @@ pub enum WriteOp {
 ///
 /// Note: The batch will not be applied to the database until it is passed to `Database::write`
 #[derive(Debug)]
-pub struct WriteBatch<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
+pub struct WriteBatch {
     pub(crate) writes: Vec<WriteOp>,
 }
 
@@ -52,32 +47,23 @@ impl WriteOp {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> WriteBatch<K, V> {
+impl WriteBatch {
     pub fn new() -> Self {
-        Self {
-            writes: Vec::new(),
-            _marker: PhantomData,
-        }
+        Self { writes: Vec::new() }
     }
 
     /// Record a put operation in the write batch
     /// Will not be applied to the Database until the WriteBatch is written
-    pub fn put(&mut self, key: &K, value: &V) {
-        let enc = get_encoder();
-        self.writes.push(WriteOp::Put(
-            enc.serialize(key).unwrap(),
-            enc.serialize(value).unwrap(),
-        ));
+    pub fn put(&mut self, key: Key, value: Value) {
+        self.writes.push(WriteOp::Put(key, value));
     }
 
-    pub fn delete(&mut self, key: &K) {
-        let enc = get_encoder();
-        self.writes
-            .push(WriteOp::Delete(enc.serialize(key).unwrap()));
+    pub fn delete(&mut self, key: Key) {
+        self.writes.push(WriteOp::Delete(key));
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Default for WriteBatch<K, V> {
+impl Default for WriteBatch {
     fn default() -> Self {
         Self::new()
     }

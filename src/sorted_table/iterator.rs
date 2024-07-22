@@ -5,27 +5,28 @@ use async_trait::async_trait;
 
 use crate::data_blocks::{DataBlock, DataEntry, DataEntryType};
 use crate::manifest::SeqNumber;
-use crate::{Key, KvTrait};
+use crate::{EntryRef, Key};
 
 use super::SortedTable;
 
 #[cfg(feature = "wisckey")]
-use super::ValueResult;
+use crate::values::{ValueId, ValueLog};
 
 #[cfg_attr(feature="async-io", async_trait(?Send))]
 #[cfg_attr(not(feature = "async-io"), async_trait)]
 pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
-    fn get_key(&self) -> &Key;
+
+    /// Returns None if this refers to a deletion
+    #[cfg(feature = "wisckey")]
+    async fn get_entry(&self, value_log: &ValueLog) -> Option<EntryRef>;
+    #[cfg(not(feature = "wisckey"))]
+    fn get_entry(&self) -> Option<EntryRef>;
+
+    fn get_key(&self) -> &[u8];
     fn get_seq_number(&self) -> SeqNumber;
     fn get_entry_type(&self) -> DataEntryType;
-
-    #[cfg(feature = "wisckey")]
-    fn get_value(&self) -> ValueResult;
-
-    #[cfg(not(feature = "wisckey"))]
-    fn get_value(&self) -> Option<&[u8]>;
 }
 
 /// Returns the entries within a table in order
@@ -51,7 +52,7 @@ impl TableIterator {
 
             let len = first_block.get_num_entries();
             assert!(len > 0);
-            let (key, entry) = DataBlock::get_entry_at_index(first_block, len - 1);
+            let (key, entry) = DataBlock::get_entry_at_index(&first_block, len - 1);
 
             // Are we already at the end of the first block?
             let (block_pos, block_offset) = if len == 1 {
@@ -81,13 +82,15 @@ impl TableIterator {
             let block_id = table.index.get_block_id(0);
             let first_block = table.data_blocks.get_block(&block_id).await;
             let byte_len = first_block.byte_len();
-            let (key, entry, entry_len) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+            let (key, entry) = DataBlock::get_entry_at_offset(first_block, 0, &last_key);
+
+            let next_offset = entry.get_next_offset();
 
             // Are we already at the end of the first block?
-            let (block_pos, block_offset) = if byte_len == entry_len {
+            let (block_pos, block_offset) = if byte_len == next_offset {
                 (1, 0)
             } else {
-                (0, entry_len)
+                (0, next_offset)
             };
 
             Self {
@@ -99,6 +102,11 @@ impl TableIterator {
                 reverse,
             }
         }
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub fn get_value_id(&self) -> Option<ValueId> {
+        self.entry.get_value_id()
     }
 }
 
@@ -113,7 +121,7 @@ impl InternalIterator for TableIterator {
         }
     }
 
-    fn get_key(&self) -> &Key {
+    fn get_key(&self) -> &[u8] {
         &self.key
     }
 
@@ -121,26 +129,32 @@ impl InternalIterator for TableIterator {
         self.entry.get_sequence_number()
     }
 
-    fn get_entry_type(&self) -> DataEntryType {
-        self.entry.get_type()
-    }
-
     #[cfg(feature = "wisckey")]
-    fn get_value(&self) -> ValueResult {
-        if let Some(value_ref) = self.entry.get_value_ref() {
-            ValueResult::Reference(value_ref)
-        } else {
-            ValueResult::NoValue
+    async fn get_entry(&self, value_log: &ValueLog) -> Option<EntryRef> {
+        match self.entry.get_type() {
+            DataEntryType::Put => Some(EntryRef::SortedTable {
+                value_ref: value_log
+                    .get_ref(self.entry.get_value_id().unwrap())
+                    .await
+                    .expect("No such value?"),
+                entry: self.entry.clone(),
+            }),
+            DataEntryType::Delete => None,
         }
     }
 
     #[cfg(not(feature = "wisckey"))]
-    fn get_value(&self) -> Option<&[u8]> {
-        if let Some(value) = &self.entry.get_value() {
-            Some(value)
-        } else {
-            None
+    fn get_entry(&self) -> Option<EntryRef> {
+        match self.entry.get_type() {
+            DataEntryType::Put => Some(EntryRef::SortedTable {
+                entry: self.entry.clone(),
+            }),
+            DataEntryType::Delete => None,
         }
+    }
+
+    fn get_entry_type(&self) -> DataEntryType {
+        self.entry.get_type()
     }
 
     #[tracing::instrument(skip(self))]
@@ -155,8 +169,7 @@ impl InternalIterator for TableIterator {
                     let block_id = self.table.index.get_block_id(self.block_pos as usize);
                     let block = self.table.data_blocks.get_block(&block_id).await;
 
-                    let (key, entry) =
-                        DataBlock::get_entry_at_index(block.clone(), self.block_offset);
+                    let (key, entry) = DataBlock::get_entry_at_index(&block, self.block_offset);
 
                     self.key = key;
                     self.entry = entry;
@@ -192,17 +205,20 @@ impl InternalIterator for TableIterator {
                     let block = self.table.data_blocks.get_block(&block_id).await;
                     let byte_len = block.byte_len();
 
-                    let (key, entry, new_offset) =
+                    let (key, entry) =
                         DataBlock::get_entry_at_offset(block, self.block_offset, &self.key);
+
+                    let next_offset = entry.get_next_offset();
+
                     self.key = key;
                     self.entry = entry;
 
                     // At the end of the block?
-                    if new_offset >= byte_len {
+                    if next_offset >= byte_len {
                         self.block_pos += 1;
                         self.block_offset = 0;
                     } else {
-                        self.block_offset = new_offset;
+                        self.block_offset = next_offset;
                     }
                 }
             }
