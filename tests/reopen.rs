@@ -143,7 +143,8 @@ async fn get_put_large() {
         let expected_value = format!("value_{pos}").repeat(SIZE).into_bytes();
 
         assert_eq!(expected_key, key);
-        assert_eq!(expected_value, value.get_value());
+        // Value is very long, so don't print
+        assert!(expected_value == value.get_value());
 
         pos += 1;
     }

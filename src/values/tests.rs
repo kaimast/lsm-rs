@@ -42,19 +42,15 @@ async fn delete_value() {
 
     let batch_id = builder.finish().await.unwrap();
 
-    assert_eq!(
-        values.get_active_values_in_batch(batch_id).await.unwrap(),
-        2
-    );
-    assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
+    let batch = values.get_batch(batch_id).await.unwrap();
+    assert_eq!(batch.num_active_values(), 2);
+    assert_eq!(batch.total_num_values(), 2);
 
     values.mark_value_deleted(vid2).await.unwrap();
+    let batch = values.get_batch(batch_id).await.unwrap();
 
-    assert_eq!(
-        values.get_active_values_in_batch(batch_id).await.unwrap(),
-        1
-    );
-    assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 2);
+    assert_eq!(batch.num_active_values(), 1);
+    assert_eq!(batch.total_num_values(), 2);
 }
 
 #[async_test]
@@ -70,12 +66,10 @@ async fn delete_batch() {
     let vid = builder.add_value(data).await;
 
     let batch_id = builder.finish().await.unwrap();
+    let batch = values.get_batch(batch_id).await.unwrap();
 
-    assert_eq!(
-        values.get_active_values_in_batch(batch_id).await.unwrap(),
-        1
-    );
-    assert_eq!(values.get_total_values_in_batch(batch_id).await.unwrap(), 1);
+    assert_eq!(batch.num_active_values(), 1);
+    assert_eq!(batch.total_num_values(), 1);
 
     values.mark_value_deleted(vid).await.unwrap();
 
@@ -125,11 +119,9 @@ async fn fold() {
         values.mark_value_deleted(*value_id).await.unwrap();
     }
 
-    assert!(values.is_batch_folded(batch_id).await.unwrap());
-    assert_eq!(
-        values.get_active_values_in_batch(batch_id).await.unwrap(),
-        3
-    );
+    let batch = values.get_batch(batch_id).await.unwrap();
+    assert!(batch.is_folded());
+    assert_eq!(batch.num_active_values(), 3);
 
     for pos in [0u32, 1u32, 19u32] {
         let vid = vids[pos as usize];
@@ -154,5 +146,5 @@ async fn get_put_large_value() {
 
     builder.finish().await.unwrap();
 
-    assert_eq!(values.get_ref(vid).await.unwrap().get_value(), data);
+    assert!(values.get_ref(vid).await.unwrap().get_value() == data);
 }
