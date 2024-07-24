@@ -1,4 +1,5 @@
-use std::mem::size_of;
+/// Data blocks hold the actual contents of storted table
+/// (In the case of WiscKey the content is only the key and the value reference)
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,7 +8,9 @@ use parking_lot::Mutex;
 
 use lru::LruCache;
 
-use crate::manifest::{Manifest, SeqNumber};
+use zerocopy::FromBytes;
+
+use crate::manifest::Manifest;
 use crate::Params;
 use crate::{disk, WriteOp};
 
@@ -17,8 +20,10 @@ pub use builder::DataBlockBuilder;
 mod block;
 pub use block::DataBlock;
 
+use block::EntryHeader;
+
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueBatchId, ValueId, ValueOffset};
+use crate::values::ValueId;
 
 pub type DataBlockId = u64;
 const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -40,9 +45,6 @@ impl PrefixedKey {
 
 type BlockShard = LruCache<DataBlockId, Arc<DataBlock>>;
 
-#[cfg(not(feature = "wisckey"))]
-type DataLen = u64;
-
 pub enum DataEntryType {
     Put,
     Delete,
@@ -50,11 +52,14 @@ pub enum DataEntryType {
 
 #[derive(Clone)]
 pub struct DataEntry {
+    /// The block containing th
     block: Arc<DataBlock>,
+
+    /// The of this entry in the block's buffer
     offset: usize,
 
-    #[cfg(not(feature = "wisckey"))]
-    length: usize,
+    /// The end of this entry
+    next_offset: u32,
 }
 
 enum SearchResult {
@@ -62,39 +67,28 @@ enum SearchResult {
     Range(u32, u32),
 }
 
-#[cfg(feature = "wisckey")]
-pub const ENTRY_LENGTH: usize =
-    size_of::<SeqNumber>() + size_of::<u8>() + size_of::<ValueBatchId>() + size_of::<ValueOffset>();
-
 impl DataEntry {
-    #[inline(always)]
-    fn get_length(&self) -> usize {
-        cfg_if::cfg_if! {
-            if #[cfg(feature="wisckey")] {
-                ENTRY_LENGTH
-            } else {
-                self.length
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn data(&self) -> &[u8] {
-        &self.block.data[self.offset..self.offset + self.get_length()]
+    fn get_header(&self) -> &EntryHeader {
+        let header_len = std::mem::size_of::<EntryHeader>();
+        let header_data = &self.block.data[self.offset..self.offset + header_len];
+        EntryHeader::ref_from(header_data).expect("Failed to read entry header")
     }
 
     pub fn get_sequence_number(&self) -> u64 {
-        let seq_len = size_of::<SeqNumber>();
-        u64::from_le_bytes(self.data()[0..seq_len].try_into().unwrap())
+        self.get_header().seq_number
+    }
+
+    /// The offset of the next entry
+    pub fn get_next_offset(&self) -> u32 {
+        self.next_offset
     }
 
     pub fn get_type(&self) -> DataEntryType {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let type_data = self.data()[seq_len];
+        let header = self.get_header();
 
-        if type_data == WriteOp::PUT_OP {
+        if header.entry_type == WriteOp::PUT_OP {
             DataEntryType::Put
-        } else if type_data == WriteOp::DELETE_OP {
+        } else if header.entry_type == WriteOp::DELETE_OP {
             DataEntryType::Delete
         } else {
             panic!("Unknown data entry type");
@@ -103,14 +97,14 @@ impl DataEntry {
 
     #[cfg(not(feature = "wisckey"))]
     pub fn get_value(&self) -> Option<&[u8]> {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let type_data = self.data()[seq_len];
+        let header = self.get_header();
+        let value_offset =
+            self.offset + std::mem::size_of::<EntryHeader>() + (header.suffix_len as usize);
 
-        let header_len = seq_len + 1;
-
-        if type_data == WriteOp::PUT_OP {
-            Some(&self.data()[header_len..])
-        } else if type_data == WriteOp::DELETE_OP {
+        if header.entry_type == WriteOp::PUT_OP {
+            let end = value_offset + (header.value_length as usize);
+            Some(&self.block.data[value_offset..end])
+        } else if header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -118,27 +112,12 @@ impl DataEntry {
     }
 
     #[cfg(feature = "wisckey")]
-    pub fn get_value_ref(&self) -> Option<ValueId> {
-        let seq_len = std::mem::size_of::<SeqNumber>();
-        let batch_id_len = std::mem::size_of::<ValueBatchId>();
-        let offset_len = std::mem::size_of::<ValueOffset>();
+    pub fn get_value_id(&self) -> Option<ValueId> {
+        let header = self.get_header();
 
-        let type_data = self.data()[seq_len];
-
-        if type_data == WriteOp::PUT_OP {
-            let offset = seq_len + 1;
-            let batch_id = ValueBatchId::from_le_bytes(
-                self.data()[offset..offset + batch_id_len]
-                    .try_into()
-                    .unwrap(),
-            );
-            let offset = offset + batch_id_len;
-            let value_offset = ValueOffset::from_le_bytes(
-                self.data()[offset..offset + offset_len].try_into().unwrap(),
-            );
-
-            Some((batch_id, value_offset))
-        } else if type_data == WriteOp::DELETE_OP {
+        if header.entry_type == WriteOp::PUT_OP {
+            Some((header.value_batch, header.value_offset))
+        } else if header.entry_type == WriteOp::DELETE_OP {
             None
         } else {
             panic!("Unknown write op");
@@ -147,7 +126,6 @@ impl DataEntry {
 }
 
 /// Keeps track of all in-memory data blocks
-#[derive(Debug)]
 pub struct DataBlocks {
     params: Arc<Params>,
     block_caches: Vec<Mutex<BlockShard>>,
@@ -185,7 +163,8 @@ impl DataBlocks {
         self.params.db_path.join(Path::new(&fname))
     }
 
-    #[tracing::instrument]
+    /// Start creation of a new block
+    #[tracing::instrument(skip(self_ptr))]
     pub fn build_block(self_ptr: Arc<DataBlocks>) -> DataBlockBuilder {
         DataBlockBuilder::new(self_ptr)
     }
@@ -205,9 +184,9 @@ impl DataBlocks {
         // Worst case this means we load the same block multiple times...
         let fpath = self.get_file_path(id);
         log::trace!("Loading data block from disk at {fpath:?}");
-        let data = disk::read(&fpath, 0)
-            .await
-            .expect("Failed to load data block from disk at {fpath:?}");
+        let data = disk::read(&fpath, 0).await.unwrap_or_else(|err| {
+            panic!("Failed to load data block from disk at {fpath:?}: {err}")
+        });
         let block = Arc::new(DataBlock::new_from_data(
             data,
             self.params.block_restart_interval,
@@ -225,7 +204,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[cfg(feature = "async-io")]
-    use tokio_uring::test as async_test;
+    use tokio_uring_executor::test as async_test;
 
     #[cfg(not(feature = "async-io"))]
     use tokio::test as async_test;
@@ -234,10 +213,11 @@ mod tests {
     #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
-        let mut params = Params::default();
-        params.db_path = dir.path().to_path_buf();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
 
-        let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
@@ -267,26 +247,28 @@ mod tests {
         ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
-        assert_eq!(entry.get_value_ref(), Some(val1));
+        assert_eq!(entry.get_value_id(), Some(val1));
 
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
+        let (key, entry) =
+            DataBlock::get_entry_at_offset(data_block2.clone(), entry.get_next_offset(), &key);
 
         assert_eq!(key, vec![5, 2]);
-        assert_eq!(entry.get_value_ref(), Some(val2));
-        assert_eq!(pos, data_block2.byte_len());
+        assert_eq!(entry.get_value_id(), Some(val2));
+        assert_eq!(entry.get_next_offset(), data_block2.byte_len());
     }
 
     #[cfg(not(feature = "wisckey"))]
     #[async_test]
     async fn store_and_load() {
         let dir = tempdir().unwrap();
-        let mut params = Params::default();
-        params.db_path = dir.path().to_path_buf();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
 
-        let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest));
@@ -312,19 +294,20 @@ mod tests {
         let data_block1 = data_blocks.get_block(&id).await;
         let data_block2 = Arc::new(DataBlock::new_from_data(
             data_block1.data.clone(),
-            params.block_restart_interval as u32,
+            params.block_restart_interval,
         ));
 
         let prev_key = vec![];
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
+        let (key, entry) = DataBlock::get_entry_at_offset(data_block2.clone(), 0, &prev_key);
 
         assert_eq!(key, vec![5]);
         assert_eq!(entry.get_value(), Some(&val1[..]));
 
-        let (key, entry, pos) = DataBlock::get_entry_at_offset(data_block2.clone(), pos, &key);
+        let (key, entry) =
+            DataBlock::get_entry_at_offset(data_block2.clone(), entry.get_next_offset(), &key);
 
         assert_eq!(key, vec![5, 2]);
         assert_eq!(entry.get_value(), Some(&val2[..]));
-        assert_eq!(pos, data_block2.byte_len());
+        assert_eq!(entry.get_next_offset(), data_block2.byte_len());
     }
 }

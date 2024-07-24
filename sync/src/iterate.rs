@@ -1,25 +1,17 @@
 #[cfg(feature = "wisckey")]
 use lsm::values::ValueLog;
 
-#[cfg(feature = "wisckey")]
-use lsm::sorted_table::ValueResult;
-
 use lsm::memtable::MemtableIterator;
 use lsm::sorted_table::{InternalIterator, Key, TableIterator};
-use lsm::KvTrait;
-
-use bincode::Options;
+use lsm::EntryRef;
 
 use std::cmp::Ordering;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use cfg_if::cfg_if;
 
 /// Allows iterating over a consistent snapshot of the database
-pub struct DbIterator<K: KvTrait, V: KvTrait> {
-    _marker: PhantomData<fn(K, V)>,
-
+pub struct DbIterator {
     last_key: Option<Vec<u8>>,
     iterators: Vec<Box<dyn InternalIterator>>,
 
@@ -36,7 +28,7 @@ pub struct DbIterator<K: KvTrait, V: KvTrait> {
 
 type NextKV = Option<(lsm::manifest::SeqNumber, usize)>;
 
-impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
+impl DbIterator {
     pub(crate) fn new(
         mem_iters: Vec<MemtableIterator>,
         table_iters: Vec<TableIterator>,
@@ -57,7 +49,6 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
         }
 
         Self {
-            _marker: PhantomData,
             last_key: None,
             iterators,
             tokio_rt,
@@ -79,20 +70,20 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     ) -> (bool, NextKV) {
         if self.reverse {
             // This iterator might be "behind" other iterators
-            if let Some(last_key) = &last_key {
-                while !iter.at_end() && iter.get_key() >= last_key {
+            if let Some(last_key) = last_key {
+                while !iter.at_end() && iter.get_key() >= last_key.as_slice() {
                     iter.step().await;
                 }
             }
 
             // Don't pick a key that is greater than the maximum
             if let Some(max_key) = &self.max_key {
-                while !iter.at_end() && iter.get_key() > max_key {
+                while !iter.at_end() && iter.get_key() > max_key.as_slice() {
                     iter.step().await;
                 }
 
                 // There might be no key in this iterator that is <=max_key
-                if iter.at_end() || iter.get_key() > max_key {
+                if iter.at_end() || iter.get_key() > max_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -105,7 +96,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
 
             // Don't pick a key that is less or equal to the minimum
             if let Some(min_key) = &self.min_key {
-                if iter.get_key().as_slice() <= min_key.as_slice() {
+                if iter.get_key() <= min_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -131,20 +122,20 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
             }
         } else {
             // This iterator might be "behind" other iterators
-            if let Some(last_key) = &last_key {
-                while !iter.at_end() && iter.get_key() <= last_key {
+            if let Some(last_key) = last_key {
+                while !iter.at_end() && iter.get_key() <= last_key.as_slice() {
                     iter.step().await;
                 }
             }
 
             // Don't pick a key that is smaller than the minimum
             if let Some(min_key) = &self.min_key {
-                while !iter.at_end() && iter.get_key() < min_key {
+                while !iter.at_end() && iter.get_key() < min_key.as_slice() {
                     iter.step().await;
                 }
 
                 // There might be no key in this iterator that is >=min_key
-                if iter.at_end() || iter.get_key() < min_key {
+                if iter.at_end() || iter.get_key() < min_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -157,7 +148,7 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
 
             // Don't pick a key that is greater or equal to the maximum
             if let Some(max_key) = &self.max_key {
-                if iter.get_key().as_slice() >= max_key.as_slice() {
+                if iter.get_key() >= max_key.as_slice() {
                     return (false, next_kv);
                 }
             }
@@ -185,8 +176,8 @@ impl<K: KvTrait, V: KvTrait> DbIterator<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
-    type Item = (K, V);
+impl Iterator for DbIterator {
+    type Item = (Key, EntryRef);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut iterators = std::mem::take(&mut self.iterators);
@@ -222,41 +213,18 @@ impl<K: KvTrait, V: KvTrait> Iterator for DbIterator<K, V> {
                 }
 
                 let result = if let Some((_, pos)) = next_kv.take() {
-                    let encoder = lsm::get_encoder();
                     #[allow(clippy::explicit_auto_deref)]
                     let iter: &dyn InternalIterator = &*iterators[pos];
 
-                    let res_key = encoder.deserialize(iter.get_key()).unwrap();
-                    last_key = Some(iter.get_key().clone());
+                    let res_key = iter.get_key().to_vec();
+                    last_key = Some(res_key.clone());
 
                     cfg_if! {
                         if #[ cfg(feature="wisckey") ] {
-                            match iter.get_value() {
-                                ValueResult::Value(value) => {
-                                    let encoder = lsm::get_encoder();
-                                    Some(Some((res_key, encoder.deserialize(value).unwrap())))
-                                }
-                                ValueResult::Reference(value_ref) => {
-                                    let res_val = self.value_log.get(value_ref).await.unwrap();
-                                    Some(Some((res_key, res_val)))
-                                }
-                                ValueResult::NoValue => {
-                                    // this is a deletion... skip
-                                    None
-                                }
-                            }
+                            iter.get_entry(&self.value_log).await
+                                .map(|entry| Some((res_key, entry)))
                         } else {
-                            match iter.get_value() {
-                                Some(value) => {
-                                    let encoder = lsm::get_encoder();
-                                    let res_val = encoder.deserialize(value).unwrap();
-                                    Some(Some((res_key, res_val)))
-                                }
-                                None => {
-                                    // this is a deletion... skip
-                                    None
-                                }
-                            }
+                            iter.get_entry().map(|entry|Some((res_key, entry)))
                         }
                     }
                 } else {

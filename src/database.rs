@@ -1,21 +1,19 @@
 use crate::iterate::DbIterator;
-use crate::logic::DbLogic;
+use crate::logic::{DbLogic, EntryRef};
 use crate::tasks::{TaskManager, TaskType};
-use crate::{get_encoder, Error, KvTrait, Params, StartMode, WriteBatch, WriteOptions};
+use crate::{Error, Key, Params, StartMode, Value, WriteBatch, WriteOptions};
 
 use std::sync::Arc;
-
-use bincode::Options;
 
 /// The main database structure
 /// This struct can be accessed concurrently and you should
 /// never instantiate it more than once for the same on-disk files
-pub struct Database<K: KvTrait, V: KvTrait> {
-    inner: Arc<DbLogic<K, V>>,
+pub struct Database {
+    inner: Arc<DbLogic>,
     tasks: Arc<TaskManager>,
 }
 
-impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
+impl Database {
     /// Create a new database instance with default parameters
     pub async fn new(mode: StartMode) -> Result<Self, Error> {
         let params = Params::default();
@@ -34,10 +32,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Will deserialize V from the raw data (avoids an additional data copy)
     #[tracing::instrument(skip(self, key))]
-    pub async fn get(&self, key: &K) -> Result<Option<V>, Error> {
-        let key_data = get_encoder().serialize(key)?;
-
-        match self.inner.get(&key_data).await {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<EntryRef>, Error> {
+        match self.inner.get(key).await {
             Ok((needs_compaction, data)) => {
                 if needs_compaction {
                     self.tasks.wake_up(&TaskType::LevelCompaction);
@@ -52,8 +48,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Delete an existing entry
     /// For efficiency, the datastore does not check whether the key actually existed
     /// Instead, it will just mark the most recent version (which could be the first one) as deleted
-    #[tracing::instrument(skip(self))]
-    pub async fn delete(&self, key: &K) -> Result<(), Error> {
+    #[tracing::instrument(skip(self, key))]
+    pub async fn delete(&self, key: Key) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
 
@@ -67,28 +63,28 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Delete an existing entry (with additional options)
-    pub async fn delete_opts(&self, key: &K, opts: &WriteOptions) -> Result<(), Error> {
+    pub async fn delete_opts(&self, key: Key, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.delete(key);
         self.write_opts(batch, opts).await
     }
 
     /// Insert or update a single entry
-    pub async fn put(&self, key: &K, value: &V) -> Result<(), Error> {
+    pub async fn put(&self, key: Key, value: Value) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.put_opts(key, value, &OPTS).await
     }
 
     /// Insert or update a single entry (with additional options)
     #[tracing::instrument(skip(self))]
-    pub async fn put_opts(&self, key: &K, value: &V, opts: &WriteOptions) -> Result<(), Error> {
+    pub async fn put_opts(&self, key: Key, value: Value, opts: &WriteOptions) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         batch.put(key, value);
         self.write_opts(batch, opts).await
     }
 
     /// Iterate over all entries in the database
-    pub async fn iter(&self) -> DbIterator<K, V> {
+    pub async fn iter(&self) -> DbIterator {
         let (mem_iters, table_iters, min_key, max_key) = self.inner.prepare_iter(None, None).await;
 
         DbIterator::new(
@@ -103,7 +99,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 
     /// Like iter(), but will only include entries with keys in [min_key;max_key)
-    pub async fn range_iter(&self, min_key: &K, max_key: &K) -> DbIterator<K, V> {
+    pub async fn range_iter(&self, min_key: &[u8], max_key: &[u8]) -> DbIterator {
         let (mem_iters, table_iters, min_key, max_key) =
             self.inner.prepare_iter(Some(min_key), Some(max_key)).await;
 
@@ -120,7 +116,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
 
     /// Like range_iter(), but in reverse.
     /// It will only include entries with keys in (min_key;max_key]
-    pub async fn reverse_range_iter(&self, max_key: &K, min_key: &K) -> DbIterator<K, V> {
+    pub async fn reverse_range_iter(&self, max_key: &[u8], min_key: &[u8]) -> DbIterator {
         let (mem_iters, table_iters, min_key, max_key) = self
             .inner
             .prepare_reverse_iter(Some(max_key), Some(min_key))
@@ -129,8 +125,8 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
         DbIterator::new(
             mem_iters,
             table_iters,
-            min_key,
-            max_key,
+            min_key.map(|k| k.to_vec()),
+            max_key.map(|k| k.to_vec()),
             true,
             #[cfg(feature = "wisckey")]
             self.inner.get_value_log(),
@@ -140,7 +136,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     /// Write a batch of updates to the database
     ///
     /// If you only want to write to a single key, use `Database::put` instead
-    pub async fn write(&self, write_batch: WriteBatch<K, V>) -> Result<(), Error> {
+    pub async fn write(&self, write_batch: WriteBatch) -> Result<(), Error> {
         const OPTS: WriteOptions = WriteOptions::new();
         self.write_opts(write_batch, &OPTS).await
     }
@@ -150,7 +146,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     #[tracing::instrument(skip(self, write_batch, opts))]
     pub async fn write_opts(
         &self,
-        write_batch: WriteBatch<K, V>,
+        write_batch: WriteBatch,
         opts: &WriteOptions,
     ) -> Result<(), Error> {
         let needs_compaction = self.inner.write_opts(write_batch, opts).await?;
@@ -168,7 +164,7 @@ impl<K: 'static + KvTrait, V: 'static + KvTrait> Database<K, V> {
     }
 }
 
-impl<K: KvTrait, V: KvTrait> Drop for Database<K, V> {
+impl Drop for Database {
     fn drop(&mut self) {
         self.tasks.terminate();
     }

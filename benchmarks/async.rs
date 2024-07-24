@@ -5,7 +5,7 @@ use tempfile::{Builder, TempDir};
 use tracing_subscriber::prelude::*;
 use tracing_tracy::TracyLayer;
 
-use lsm::{Database, KvTrait, Params, StartMode, WriteOptions};
+use lsm::{Database, Params, StartMode, WriteOptions};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -18,7 +18,7 @@ struct Args {
     num_entries: usize,
 }
 
-async fn bench_init<K: KvTrait, V: KvTrait>(args: &Args) -> (TempDir, Database<K, V>) {
+async fn bench_init(args: &Args) -> (TempDir, Database) {
     if args.enable_tracing {
         tracing_subscriber::registry()
             .with(TracyLayer::default())
@@ -55,23 +55,25 @@ async fn main_inner() {
 
     log::info!("Starting read/write benchmark");
 
-    let mut options = WriteOptions::default();
-    options.sync = false;
+    let options = WriteOptions { sync: false };
 
     log::debug!("Writing {} entries", args.num_entries);
 
     for pos in 0..args.num_entries {
-        let key = pos;
-        let value = format!("some_string_{pos}");
-        database.put_opts(&key, &value, &options).await.unwrap();
+        let key = format!("{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
     }
 
     log::debug!("Reading {} entries", args.num_entries);
 
     for pos in 0..args.num_entries {
+        let key = format!("{pos}").into_bytes();
+        let expected = format!("some_string_{pos}").into_bytes();
+
         assert_eq!(
-            database.get(&pos).await.unwrap(),
-            Some(format!("some_string_{pos}"))
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            expected,
         );
     }
 
