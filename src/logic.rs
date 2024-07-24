@@ -701,11 +701,7 @@ impl DbLogic {
             let mut all_parent_tables = level.get_tables().await;
             let mut all_child_tables = child_level.get_tables().await;
 
-            log::debug!(
-                "Moving table from level {} to level {}",
-                level_pos,
-                level_pos + 1
-            );
+            assert_eq!(parent_tables[0].get_id(), table_id);
 
             // Remove table entry from parent level
             let table = {
@@ -713,12 +709,20 @@ impl DbLogic {
 
                 loop {
                     let (pos, other_table) = iter.next().expect("Entry for parent table not found");
-                    if other_table.get_id() == parent_tables[0].get_id() {
+                    if other_table.get_id() == table_id {
                         break all_parent_tables.remove(pos);
                     }
                 }
             };
 
+            log::debug!(
+                "Moving table #{} from level {} to level {}",
+                table_id,
+                level_pos,
+                level_pos + 1
+            );
+
+            // Figure out where to place the table on the child lavel
             let mut new_pos = 0;
             for (pos, other_table) in all_child_tables.iter().enumerate() {
                 if other_table.get_min() > table.get_min() {
@@ -727,9 +731,7 @@ impl DbLogic {
                 }
             }
 
-            let add_set = vec![(level_pos + 1, table.get_id())];
-            let remove_set = vec![(level_pos, table.get_id())];
-
+            // Add table to child level
             all_child_tables.insert(new_pos, table.clone());
             child_level.remove_table_placeholder(table_id).await;
 
@@ -740,19 +742,24 @@ impl DbLogic {
                 }
             }
 
+            // Update manifest
+            let add_set = vec![(level_pos + 1, table.get_id())];
+            let remove_set = vec![(level_pos, table.get_id())];
+            self.manifest.update_table_set(add_set, remove_set).await;
+
             if let Some(logger) = &self.level_logger {
                 logger.compaction(level_pos, 1, 1);
             }
 
-            self.manifest.update_table_set(add_set, remove_set).await;
+            // Unlock table
             table.finish_fast_compaction();
 
-            log::trace!("Done moving table");
+            log::trace!("Done moving table #{table_id}");
             return Ok(CompactResult::DidWork);
         }
 
         log::debug!(
-            "Compacting {} table(s) in level {} with {} table(s) in level {}",
+            "Compacting {} table(s) in level {} with {} table(s) in level {} into table #{table_id}",
             parent_tables.len(),
             level_pos,
             child_tables.len(),
