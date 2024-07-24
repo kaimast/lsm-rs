@@ -27,10 +27,11 @@ pub const FIRST_TABLE_ID: TableId = 1;
 
 /// The metadata for the database as a whole
 #[derive(AsBytes, Default, FromBytes, FromZeroes)]
-#[repr(packed)]
+#[repr(C,align(8))]
 struct DatabaseMetadata {
     next_table_id: TableId,
-    num_levels: u16,
+    num_levels: u32,
+    _padding: u32,
     seq_number_offset: SeqNumber,
     log_offset: u64,
     next_data_block_id: DataBlockId,
@@ -156,7 +157,8 @@ impl Manifest {
     pub async fn new(params: Arc<Params>) -> Self {
         let meta = DatabaseMetadata {
             next_table_id: FIRST_TABLE_ID,
-            num_levels: params.num_levels as u16,
+            num_levels: params.num_levels as u32,
+            _padding: 0,
             seq_number_offset: 1,
             log_offset: 0,
             next_data_block_id: 1,
@@ -233,7 +235,7 @@ impl Manifest {
         let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
         let meta = DatabaseMetadata::ref_from(&data[..]).unwrap();
-        if meta.num_levels != params.num_levels as u16 {
+        if meta.num_levels != params.num_levels as u32 {
             panic!("Number of levels is incompatible");
         }
 
@@ -340,11 +342,15 @@ impl Manifest {
         meta.seq_number_offset
     }
 
+    /// Set the current sequence nu
     pub async fn set_seq_number_offset(&self, offset: SeqNumber) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
 
-        assert!(meta.seq_number_offset < offset);
+        if offset <= meta.seq_number_offset {
+            panic!("Sequence number must montonically increase. Old value ({}) was >= than new value {offset}", meta.seq_number_offset);
+        }
+
         meta.seq_number_offset = offset;
 
         mmap.flush().unwrap();
@@ -401,8 +407,10 @@ impl Manifest {
                 .get_mut(level as usize)
                 .expect("No such level")
                 .insert(id);
-
-            assert!(was_new);
+ 
+            if !was_new {
+                panic!("Table with id={id} already existed on level #{level}");
+            }
             affected.insert(level);
         }
 
@@ -411,8 +419,10 @@ impl Manifest {
                 .get_mut(level as usize)
                 .expect("No such level")
                 .remove(&id);
-
-            assert!(existed);
+     
+            if !existed {
+                panic!("No table with id={id} existed on level #{level}");
+            }
             affected.insert(level);
         }
 

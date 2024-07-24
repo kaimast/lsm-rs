@@ -153,6 +153,8 @@ impl Level {
         result
     }
 
+    /// Checks if any compaction can be done, and if so returns a list of tables to
+    /// be compacted
     #[tracing::instrument(skip(self))]
     pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
         log::trace!("Checking if we should compact level");

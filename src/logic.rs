@@ -645,6 +645,7 @@ impl DbLogic {
         Ok(was_locked)
     }
 
+    /// Compact the specified leve
     #[tracing::instrument(skip(self, level))]
     async fn compact_level(
         &self,
@@ -865,7 +866,7 @@ impl DbLogic {
         let mut all_parent_tables = parent_level.get_tables().await;
         let mut all_child_tables = child_level.get_tables().await;
 
-        // iterate backwards to ensure oldest entries are removed first
+        // Iterate backwards to ensure oldest entries are removed first
         for table in child_tables.iter() {
             let mut found = false;
             for (pos, other_table) in all_child_tables.iter().enumerate() {
@@ -894,7 +895,7 @@ impl DbLogic {
             let mut found = false;
             for (pos, other_table) in all_parent_tables.iter().enumerate() {
                 if other_table.get_id() == table.get_id() {
-                    remove_set.push((level_pos + 1_u32, table.get_id()));
+                    remove_set.push((level_pos, table.get_id()));
                     all_parent_tables.remove(pos);
                     found = true;
                     break;
@@ -916,5 +917,80 @@ impl DbLogic {
 
         log::trace!("Done compacting tables");
         Ok(CompactResult::DidWork)
+    }
+}
+
+#[cfg(all(test, not(feature="wisckey")))]
+mod tests {
+    use tempfile::tempdir;
+
+    #[cfg(feature = "async-io")]
+    use tokio_uring_executor::test as async_test;
+
+    #[cfg(not(feature = "async-io"))]
+    use tokio::test as async_test;
+
+    use crate::StartMode;
+    use crate::params::Params;
+
+    use super::DbLogic;
+
+    // Test that compaction works as expected
+    //
+    // Note: This test makes some assumptions about the inner workings of
+    // DbLogic and might need to be adjusted with future changes
+    #[async_test]
+    async fn compaction() {
+        let dir = tempdir().unwrap();
+        let params = Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let logic = DbLogic::new(StartMode::CreateOrOverride, params).await.unwrap();
+        let num_tables = 5;
+
+        // Create five tables with the exact same key entries
+        for _ in 0..num_tables {
+            let l0 = logic.levels.first().unwrap();
+            let table_id = logic.manifest.next_table_id().await;
+
+            let min_key = "0".to_string().into_bytes();
+            let max_key = "100".to_string().into_bytes();
+
+            let mut table_builder = l0.build_table(table_id, min_key, max_key);
+            let mut seq_offset = 1;
+
+            for num in 0..=100 {
+                let key = format!("{num:03}").into_bytes();
+                let value = format!("somevalue").into_bytes();
+                let seq_number = seq_offset;
+                seq_offset += 1;
+
+                table_builder.add_value(
+                    &key,
+                    seq_number,
+                    &value
+                ).await.unwrap();
+            }
+
+            let table = table_builder.finish().await.unwrap();
+            let table_id = table.get_id();
+            l0.add_l0_table(table).await;
+
+            // Then update manifest and flush WAL
+            logic.manifest
+                .update_table_set(vec![(0, table_id)], vec![])
+                .await;
+        } 
+
+        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
+        assert!(logic.manifest.get_tables().await[1].is_empty());
+
+        let did_work = logic.do_level_compaction().await.unwrap();
+        assert!(did_work);
+
+        assert!(logic.manifest.get_tables().await[0].is_empty());
+        assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
     }
 }
