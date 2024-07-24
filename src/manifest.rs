@@ -421,3 +421,48 @@ impl Manifest {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    #[cfg(feature = "async-io")]
+    use tokio_uring_executor::test as async_test;
+
+    #[cfg(not(feature = "async-io"))]
+    use tokio::test as async_test;
+
+    use crate::params::Params;
+
+    use super::Manifest;
+
+    #[async_test]
+    async fn update_table_set() {
+        let dir = tempdir().unwrap();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+
+        let manifest = Manifest::new(params).await;
+
+        assert!(manifest.get_tables().await[0].is_empty());
+        assert!(manifest.get_tables().await[1].is_empty());
+
+        manifest
+            .update_table_set(vec![(0, 1), (0, 2)], vec![])
+            .await;
+
+        assert_eq!(manifest.get_tables().await[0], vec![1, 2]);
+        assert!(manifest.get_tables().await[1].is_empty());
+
+        manifest
+            .update_table_set(vec![(1, 3)], vec![(0, 1), (0, 2)])
+            .await;
+
+        assert!(manifest.get_tables().await[0].is_empty());
+        assert_eq!(manifest.get_tables().await[1], vec![3]);
+    }
+}

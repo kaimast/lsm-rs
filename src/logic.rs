@@ -870,7 +870,7 @@ impl DbLogic {
             let mut found = false;
             for (pos, other_table) in all_child_tables.iter().enumerate() {
                 if other_table.get_id() == table.get_id() {
-                    remove_set.push((level_pos + 1_u32, table.get_id()));
+                    remove_set.push((level_pos, table.get_id()));
                     all_child_tables.remove(pos);
                     found = true;
                     break;
