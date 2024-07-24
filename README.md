@@ -38,9 +38,48 @@ This crate exposes an async API intended to be used with Tokio or a similar runt
 Alternatively, you can use the lsm-sync crate included in this repo, which internally uses Tokio but expose a synchronous API.
 
 ## Sort Order
-This crate uses [bincode](https://github.com/bincode-org/bincode) to serialize keys and values.
-Keys are sorted by comparing their binary representation and ordering those [lexographically](https://doc.rust-lang.org/std/cmp/trait.Ord.html#lexicographical-comparison).
-We plan to add custom order and serialization mechanisms in the future.
+You need to serialize your data in a way that its byte representation maintains the same ordering as the unserialized data.
+For example, you may want to use [big endian](https://en.wikipedia.org/wiki/Endianness) encoding so that numerical values are ordered correctly.
+
+## Usage
+
+You can create or open a new databse instance as shown below.
+```rust
+use lsm::{Database, Params};
+
+// Set options here, such as the location of the database files
+let params = Params {
+    db_path,
+    ..Default::default()
+};
+
+// Instantiate database
+let database = Database::new_with_params(SM, params)
+    .await
+    .expect("Failed to create database instance");
+```
+
+To write to the database use the `get` call. Note that the crate only supports
+writing byte vectors. (De-)serialization is supposed to happen at another layer.
+```
+let key = String::from("mykey").into_bytes();
+let value = String::from("hello world").into_bytes();
+
+database.put(key, value).await.expect("Writing to database failed");
+```
+
+When reading, LSM will return a reference to the data to avoid copying.
+```
+let value_ref = database.get(&key).await.expect("Reading failed");
+
+// Returns a slice to the data
+let data: &[u8] = value_ref.get_value();
+
+// Assuming the put from above workd, this will print "hello world"
+println!("{}", std::str::from_utf(data).unwrap());
+```
+
+Please refer to the tests for more examples to how to use the crate.
 
 ## Tests
 This library ships with several tests. We provide a [justfile](https://github.com/casey/just) for convenience:
@@ -53,6 +92,8 @@ just lint #runs cargo clippy
 ## Notes on io-uring
 Currently, the io-uring feature relies on [tokio-uring-executor](https://github.com/kaimast/tokio-uring-executor), a simplistic multi-threaded wrapper around `tokio-uring`.
 Eventually `tokio-uring` will [support multiple threads natively](https://github.com/tokio-rs/tokio-uring/issues/258) and this workaround will be removed.
+
+I would also like to add support for more mature io_uring runtimes such as [gloomio](https://github.com/DataDog/glommio) but only have limited time to work on this crate. Help is very welcome.
 
 ## Similar Crates
 This is an incomplete list of crates that provide similar functionality. Please reach out if you know of others to add.
