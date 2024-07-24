@@ -645,14 +645,19 @@ impl DbLogic {
         Ok(was_locked)
     }
 
-    /// Compact the specified leve
+    /// Compact the specified level
+    ///
+    /// This has three possible behaviors:
+    ///    1. A "fast" compaction where a table simply gets moved down one level
+    ///    2. Regular compaction where one or multiple tables get merged with a table on a level below
+    ///    3. Abort due to concurrency
     #[tracing::instrument(skip(self, level))]
     async fn compact_level(
         &self,
         level_pos: LevelId,
         level: &Level,
     ) -> Result<CompactResult, Error> {
-        let mut parent_tables = match level.maybe_start_compaction().await {
+        let parent_tables = match level.maybe_start_compaction().await {
             Ok(Some(result)) => result,
             Ok(None) => return Ok(CompactResult::NothingToDo),
             Err(()) => return Ok(CompactResult::Locked),
@@ -701,7 +706,18 @@ impl DbLogic {
                 level_pos,
                 level_pos + 1
             );
-            let table = parent_tables.remove(0);
+
+            // Remove table entry from parent level
+            let table = {
+                let mut iter = all_parent_tables.iter().enumerate();
+
+                loop {
+                    let (pos, other_table) = iter.next().expect("Entry for parent table not found");
+                    if other_table.get_id() == parent_tables[0].get_id() {
+                        break all_parent_tables.remove(pos);
+                    }
+                }
+            };
 
             let mut new_pos = 0;
             for (pos, other_table) in all_child_tables.iter().enumerate() {
@@ -729,7 +745,7 @@ impl DbLogic {
             }
 
             self.manifest.update_table_set(add_set, remove_set).await;
-            table.finish_compaction();
+            table.finish_fast_compaction();
 
             log::trace!("Done moving table");
             return Ok(CompactResult::DidWork);
@@ -888,9 +904,11 @@ impl DbLogic {
             }
         }
 
+        // Add new table to child level
         all_child_tables.insert(new_pos, Arc::new(new_table));
         child_level.remove_table_placeholder(table_id).await;
 
+        // Remove table entries from parent level
         for table in parent_tables.iter() {
             let mut found = false;
             for (pos, other_table) in all_parent_tables.iter().enumerate() {
@@ -957,7 +975,7 @@ mod tests {
             let l0 = logic.levels.first().unwrap();
             let table_id = logic.manifest.next_table_id().await;
 
-            let min_key = "0".to_string().into_bytes();
+            let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
 
             let mut table_builder = l0.build_table(table_id, min_key, max_key);
@@ -986,13 +1004,92 @@ mod tests {
                 .await;
         }
 
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
         assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
         assert!(logic.manifest.get_tables().await[1].is_empty());
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
+        assert!(logic.levels[0].get_tables_ro().await.is_empty());
         assert!(logic.manifest.get_tables().await[0].is_empty());
+        assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
         assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+    }
+
+    // Test that fast compaction (simply moving a table down) works as expected
+    //
+    // Note: This test makes some assumptions about the inner workings of
+    // DbLogic and might need to be adjusted with future changes
+    #[async_test]
+    async fn fast_compaction() {
+        let dir = tempdir().unwrap();
+        let params = Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let logic = DbLogic::new(StartMode::CreateOrOverride, params)
+            .await
+            .unwrap();
+        let num_tables = 10;
+
+        // Create five tables with the exact same key entries
+        for idx in 0..num_tables {
+            let l0 = logic.levels.first().unwrap();
+            let table_id = logic.manifest.next_table_id().await;
+
+            let pos = idx * 100;
+            let next_pos = (idx + 1) * 100 - 1;
+
+            let min_key = format!("{pos:04}").into_bytes();
+            let max_key = format!("{next_pos:04}").into_bytes();
+
+            let mut table_builder = l0.build_table(table_id, min_key, max_key);
+            let mut seq_offset = 1;
+
+            for num in pos..next_pos {
+                let key = format!("{num:04}").into_bytes();
+                let value = format!("somevalue").into_bytes();
+                let seq_number = seq_offset;
+                seq_offset += 1;
+
+                table_builder
+                    .add_value(&key, seq_number, &value)
+                    .await
+                    .unwrap();
+            }
+
+            let table = table_builder.finish().await.unwrap();
+            let table_id = table.get_id();
+            l0.add_l0_table(table).await;
+
+            // Then update manifest and flush WAL
+            logic
+                .manifest
+                .update_table_set(vec![(0, table_id)], vec![])
+                .await;
+        }
+
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
+        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
+        assert!(logic.manifest.get_tables().await[1].is_empty());
+
+        let did_work = logic.do_level_compaction().await.unwrap();
+        assert!(did_work);
+
+        // One table should have moved down
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 1);
+        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 1);
+        assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
+        assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+
+        let did_work = logic.do_level_compaction().await.unwrap();
+        assert!(did_work);
+
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 2);
+        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 2);
+        assert_eq!(logic.levels[1].get_tables_ro().await.len(), 2);
+        assert_eq!(logic.manifest.get_tables().await[1].len(), 2);
     }
 }

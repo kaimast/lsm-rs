@@ -254,6 +254,17 @@ impl Level {
         Ok(Some(tables))
     }
 
+    /// This is called on the target level at the beginning of compaction and does three things
+    ///
+    /// 1. It checks for any tables that overlap and need to be compacted as well
+    /// 2. It will place a marker(lock) to prevent any concurrent compaction on the same range
+    /// 3. It checks for placeholders and aborts compaction if any are found
+    ///
+    /// On success this returns the TableId of the placeholder
+    /// This id then must be used to creat on the lower level
+    ///
+    /// Note, if fast_path is set, and no overlaps exist, the supplied id will be used for the
+    /// placeholder
     #[tracing::instrument(skip(self))]
     pub async fn get_overlaps(
         &self,
@@ -272,7 +283,7 @@ impl Level {
                 if !table.maybe_start_compaction() {
                     // Abort
                     for table in overlaps.into_iter() {
-                        table.finish_compaction();
+                        table.abort_compaction();
                     }
                     return None;
                 }
@@ -284,8 +295,8 @@ impl Level {
         }
 
         // set placeholder to avoid race conditions
+        // and abort if one exists
         let mut placeholders = self.table_placeholders.write().await;
-
         for placeholder in placeholders.iter() {
             if placeholder.overlaps(min, max) {
                 return None;

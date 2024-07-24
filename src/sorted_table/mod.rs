@@ -71,7 +71,16 @@ impl SortedTable {
         result.is_ok()
     }
 
-    pub fn finish_compaction(&self) {
+    /// Compaction has failed, e.g., due to lock contention
+    /// Remove the compaction flag
+    pub fn abort_compaction(&self) {
+        let prev = self.compaction_flag.swap(false, AtomicOrdering::SeqCst);
+        assert!(prev, "Compaction flag was not set!");
+    }
+
+    /// The table has moved to a new level during compaction and will be
+    /// reused. Remove the compaction marker.
+    pub fn finish_fast_compaction(&self) {
         let prev = self.compaction_flag.swap(false, AtomicOrdering::SeqCst);
         assert!(prev, "Compaction flag was not set!");
     }
