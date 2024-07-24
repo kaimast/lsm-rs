@@ -27,7 +27,7 @@ pub const FIRST_TABLE_ID: TableId = 1;
 
 /// The metadata for the database as a whole
 #[derive(AsBytes, Default, FromBytes, FromZeroes)]
-#[repr(C,align(8))]
+#[repr(C, align(8))]
 struct DatabaseMetadata {
     next_table_id: TableId,
     num_levels: u32,
@@ -407,7 +407,7 @@ impl Manifest {
                 .get_mut(level as usize)
                 .expect("No such level")
                 .insert(id);
- 
+
             if !was_new {
                 panic!("Table with id={id} already existed on level #{level}");
             }
@@ -419,7 +419,7 @@ impl Manifest {
                 .get_mut(level as usize)
                 .expect("No such level")
                 .remove(&id);
-     
+
             if !existed {
                 panic!("No table with id={id} existed on level #{level}");
             }

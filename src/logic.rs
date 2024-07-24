@@ -920,7 +920,7 @@ impl DbLogic {
     }
 }
 
-#[cfg(all(test, not(feature="wisckey")))]
+#[cfg(all(test, not(feature = "wisckey")))]
 mod tests {
     use tempfile::tempdir;
 
@@ -930,8 +930,8 @@ mod tests {
     #[cfg(not(feature = "async-io"))]
     use tokio::test as async_test;
 
-    use crate::StartMode;
     use crate::params::Params;
+    use crate::StartMode;
 
     use super::DbLogic;
 
@@ -947,7 +947,9 @@ mod tests {
             ..Default::default()
         };
 
-        let logic = DbLogic::new(StartMode::CreateOrOverride, params).await.unwrap();
+        let logic = DbLogic::new(StartMode::CreateOrOverride, params)
+            .await
+            .unwrap();
         let num_tables = 5;
 
         // Create five tables with the exact same key entries
@@ -967,11 +969,10 @@ mod tests {
                 let seq_number = seq_offset;
                 seq_offset += 1;
 
-                table_builder.add_value(
-                    &key,
-                    seq_number,
-                    &value
-                ).await.unwrap();
+                table_builder
+                    .add_value(&key, seq_number, &value)
+                    .await
+                    .unwrap();
             }
 
             let table = table_builder.finish().await.unwrap();
@@ -979,10 +980,11 @@ mod tests {
             l0.add_l0_table(table).await;
 
             // Then update manifest and flush WAL
-            logic.manifest
+            logic
+                .manifest
                 .update_table_set(vec![(0, table_id)], vec![])
                 .await;
-        } 
+        }
 
         assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
         assert!(logic.manifest.get_tables().await[1].is_empty());
