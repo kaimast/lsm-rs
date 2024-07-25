@@ -60,6 +60,12 @@ impl Level {
         }
     }
 
+    /// Set where to (try to) compact next
+    /// (only used for testing)
+    pub fn set_next_compaction_offset(&self, offset: usize) {
+        *self.next_compaction_offset.lock() = offset;
+    }
+
     pub async fn remove_table_placeholder(&self, id: TableId) {
         let mut placeholders = self.table_placeholders.write().await;
         for (pos, placeholder) in placeholders.iter().enumerate() {
@@ -92,7 +98,12 @@ impl Level {
         )
     }
 
+    pub fn get_index(&self) -> u32 {
+        self.index
+    }
+
     pub async fn add_l0_table(&self, table: SortedTable) {
+        assert_eq!(self.index, 0);
         let mut tables = self.tables.write().await;
         tables.push(Arc::new(table));
     }
@@ -158,7 +169,7 @@ impl Level {
     #[tracing::instrument(skip(self))]
     pub async fn maybe_start_compaction(&self) -> Result<Option<Vec<Arc<SortedTable>>>, ()> {
         log::trace!("Checking if we should compact level");
-        let all_tables = self.tables.write().await;
+        let all_tables = self.tables.read().await;
 
         let (table, offset) = 'choice: {
             let mut next_offset = self.next_compaction_offset.lock();
@@ -238,14 +249,22 @@ impl Level {
                         continue;
                     }
 
-                    if table.overlaps(&min, &max) && table.maybe_start_compaction() {
-                        min = std::cmp::min(&min[..], table.get_min()).to_vec();
-                        max = std::cmp::max(&max[..], table.get_max()).to_vec();
+                    if table.overlaps(&min, &max) {
+                        if table.maybe_start_compaction() {
+                            min = std::cmp::min(&min[..], table.get_min()).to_vec();
+                            max = std::cmp::max(&max[..], table.get_max()).to_vec();
 
-                        offsets.push(pos);
-                        tables.push(table.clone());
-                        change = true;
-                        break;
+                            offsets.push(pos);
+                            tables.push(table.clone());
+                            change = true;
+                            break;
+                        } else {
+                            // Lock contention!
+                            for table in tables {
+                                table.abort_compaction();
+                            }
+                            return Err(());
+                        }
                     }
                 }
             }
