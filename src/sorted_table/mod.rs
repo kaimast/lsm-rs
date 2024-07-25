@@ -57,6 +57,7 @@ impl SortedTable {
         })
     }
 
+    /// Checks if seek-based compaction should be triggered for this table
     pub fn has_maximum_seeks(&self) -> bool {
         self.allowed_seeks.load(AtomicOrdering::SeqCst) <= 0
     }
@@ -85,23 +86,21 @@ impl SortedTable {
         assert!(prev, "Compaction flag was not set!");
     }
 
-    #[inline]
     pub fn get_id(&self) -> TableId {
         self.identifier
     }
 
-    // Get the size of this table (in bytes)
-    #[inline]
+    /// Get the size of this table (in bytes)
     pub fn get_size(&self) -> usize {
         self.index.get_size()
     }
 
-    #[inline]
+    /// Get the minimum key of this table
     pub fn get_min(&self) -> &[u8] {
         self.index.get_min()
     }
 
-    #[inline]
+    /// Get the maximum key of this table
     pub fn get_max(&self) -> &[u8] {
         self.index.get_max()
     }
@@ -118,7 +117,10 @@ impl SortedTable {
         DataBlock::get_by_key(&block, key)
     }
 
-    #[inline]
+    /// Check if this table overlaps with the specified range
+    ///
+    /// min and max are both inclusive
+    #[inline(always)]
     pub fn overlaps(&self, min: &[u8], max: &[u8]) -> bool {
         self.get_max() >= min && self.get_min() <= max
     }

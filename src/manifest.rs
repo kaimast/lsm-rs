@@ -56,7 +56,7 @@ struct LevelMetadata {
 }
 
 impl LevelMetadata {
-    pub fn get_tables(&self) -> &[TableId] {
+    pub fn get_table_ids(&self) -> &[TableId] {
         let header = LevelMetadataHeader::ref_from_prefix(&self.data[..]).unwrap();
 
         let start = size_of::<LevelMetadataHeader>();
@@ -67,7 +67,7 @@ impl LevelMetadata {
 
     /// Returns false if the entry already existed
     pub fn insert(&mut self, id: TableId) -> bool {
-        let tables = self.get_tables();
+        let tables = self.get_table_ids();
 
         let pos = match tables.binary_search(&id) {
             Ok(_) => return false,
@@ -114,7 +114,7 @@ impl LevelMetadata {
 
     /// Returns false if no such entry existed
     pub fn remove(&mut self, id: &TableId) -> bool {
-        let tables = self.get_tables();
+        let tables = self.get_table_ids();
 
         let pos = match tables.binary_search(id) {
             Ok(pos) => pos,
@@ -342,7 +342,7 @@ impl Manifest {
         meta.seq_number_offset
     }
 
-    /// Set the current sequence nu
+    /// Set the current sequence number
     pub async fn set_seq_number_offset(&self, offset: SeqNumber) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
@@ -379,11 +379,11 @@ impl Manifest {
 
     /// Get the identifier of all tables on all levels
     /// Only used during recovery
-    pub async fn get_tables(&self) -> Vec<Vec<TableId>> {
+    pub async fn get_table_ids(&self) -> Vec<Vec<TableId>> {
         let mut result = Vec::with_capacity(self.params.num_levels);
 
         for level in self.levels.read().await.iter() {
-            result.push(level.get_tables().to_vec());
+            result.push(level.get_table_ids().to_vec());
         }
 
         result
@@ -458,21 +458,21 @@ mod tests {
 
         let manifest = Manifest::new(params).await;
 
-        assert!(manifest.get_tables().await[0].is_empty());
-        assert!(manifest.get_tables().await[1].is_empty());
+        assert!(manifest.get_table_ids().await[0].is_empty());
+        assert!(manifest.get_table_ids().await[1].is_empty());
 
         manifest
             .update_table_set(vec![(0, 1), (0, 2)], vec![])
             .await;
 
-        assert_eq!(manifest.get_tables().await[0], vec![1, 2]);
-        assert!(manifest.get_tables().await[1].is_empty());
+        assert_eq!(manifest.get_table_ids().await[0], vec![1, 2]);
+        assert!(manifest.get_table_ids().await[1].is_empty());
 
         manifest
             .update_table_set(vec![(1, 3)], vec![(0, 1), (0, 2)])
             .await;
 
-        assert!(manifest.get_tables().await[0].is_empty());
-        assert_eq!(manifest.get_tables().await[1], vec![3]);
+        assert!(manifest.get_table_ids().await[0].is_empty());
+        assert_eq!(manifest.get_table_ids().await[1], vec![3]);
     }
 }

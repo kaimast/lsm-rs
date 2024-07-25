@@ -66,6 +66,7 @@ impl Level {
         *self.next_compaction_offset.lock() = offset;
     }
 
+    /// Table placeholder must be removed once compaction is done
     pub async fn remove_table_placeholder(&self, id: TableId) {
         let mut placeholders = self.table_placeholders.write().await;
         for (pos, placeholder) in placeholders.iter().enumerate() {
@@ -219,7 +220,8 @@ impl Level {
             }
         };
 
-        // Abort due to concurrency?
+        // Try to set the compaction flag
+        // otherwise, we abort (due to concurrency)
         if !table.maybe_start_compaction() {
             return Err(());
         }
@@ -291,7 +293,7 @@ impl Level {
         max: &[u8],
         fast_path: Option<TableId>,
     ) -> Option<(TableId, Vec<Arc<SortedTable>>)> {
-        let mut overlaps: Vec<Arc<SortedTable>> = Vec::new();
+        let mut tables_to_compact: Vec<Arc<SortedTable>> = Vec::new();
         let tables = self.tables.read().await;
 
         let mut min = min;
@@ -301,13 +303,13 @@ impl Level {
             if table.overlaps(min, max) {
                 if !table.maybe_start_compaction() {
                     // Abort
-                    for table in overlaps.into_iter() {
+                    for table in tables_to_compact.into_iter() {
                         table.abort_compaction();
                     }
                     return None;
                 }
 
-                overlaps.push(table.clone());
+                tables_to_compact.push(table.clone());
                 min = table.get_min().min(min);
                 max = table.get_max().max(max);
             }
@@ -318,12 +320,15 @@ impl Level {
         let mut placeholders = self.table_placeholders.write().await;
         for placeholder in placeholders.iter() {
             if placeholder.overlaps(min, max) {
+                for table in tables_to_compact {
+                    table.abort_compaction();
+                }
                 return None;
             }
         }
 
         let table_id = if let Some(table_id) = fast_path
-            && overlaps.is_empty()
+            && tables_to_compact.is_empty()
         {
             table_id
         } else {
@@ -336,12 +341,12 @@ impl Level {
             max: max.to_vec(),
         });
 
-        Some((table_id, overlaps))
+        Some((table_id, tables_to_compact))
     }
 
     /// Get a reference to all tables with an exclusive/write lock
     #[inline]
-    pub async fn get_tables(&self) -> tokio::sync::RwLockWriteGuard<'_, TableVec> {
+    pub async fn get_tables_rw(&self) -> tokio::sync::RwLockWriteGuard<'_, TableVec> {
         self.tables.write().await
     }
 

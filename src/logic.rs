@@ -194,7 +194,7 @@ impl DbLogic {
         }
 
         if !create {
-            for (level_id, tables) in manifest.get_tables().await.iter().enumerate() {
+            for (level_id, tables) in manifest.get_table_ids().await.iter().enumerate() {
                 for table_id in tables {
                     levels[level_id].load_table(*table_id).await?;
                 }
@@ -664,77 +664,83 @@ impl DbLogic {
         parent_level: &Level,
         child_level: &Level,
     ) -> Result<CompactResult, Error> {
-        assert_eq!(parent_level.get_index()+1, child_level.get_index());
+        assert_eq!(parent_level.get_index() + 1, child_level.get_index());
 
-        let parent_tables = match parent_level.maybe_start_compaction().await {
+        let parent_tbls_to_compact = match parent_level.maybe_start_compaction().await {
             Ok(Some(result)) => result,
             Ok(None) => return Ok(CompactResult::NothingToDo),
             Err(()) => return Ok(CompactResult::Locked),
         };
-        assert!(!parent_tables.is_empty());
+        assert!(!parent_tbls_to_compact.is_empty());
 
         log::trace!("Starting compaction on level {}", parent_level.get_index());
 
-        let mut min = parent_tables[0].get_min();
-        let mut max = parent_tables[0].get_max();
+        let mut min_key = parent_tbls_to_compact[0].get_min();
+        let mut max_key = parent_tbls_to_compact[0].get_max();
 
-        if parent_tables.len() > 1 {
-            for table in parent_tables[1..].iter() {
-                min = std::cmp::min(min, table.get_min());
-                max = std::cmp::max(max, table.get_max());
+        if parent_tbls_to_compact.len() > 1 {
+            for table in parent_tbls_to_compact[1..].iter() {
+                min_key = min_key.min(table.get_min());
+                max_key = max_key.max(table.get_max());
             }
         }
 
-        let overlap_result = if parent_tables.len() == 1 {
+        let overlap_result = if parent_tbls_to_compact.len() == 1 {
             child_level
-                .get_overlaps(min, max, Some(parent_tables[0].get_id()))
+                .get_overlaps(min_key, max_key, Some(parent_tbls_to_compact[0].get_id()))
                 .await
         } else {
-            child_level.get_overlaps(min, max, None).await
+            child_level.get_overlaps(min_key, max_key, None).await
         };
 
         // Abort due to concurrency?
-        let (table_id, child_tables) = match overlap_result {
+        let (table_id, child_tbls_to_compact) = match overlap_result {
             Some(res) => res,
             None => {
                 log::trace!("Aborting compaction due to concurrency");
+                for parent_table in parent_tbls_to_compact {
+                    parent_table.abort_compaction();
+                }
                 return Ok(CompactResult::NothingToDo);
             }
         };
 
         // Fast path
-        if parent_tables.len() == 1 && child_tables.is_empty() {
-            assert_eq!(parent_tables[0].get_id(), table_id);
+        if parent_tbls_to_compact.len() == 1 && child_tbls_to_compact.is_empty() {
+            assert_eq!(parent_tbls_to_compact[0].get_id(), table_id);
             self.fast_compaction(parent_level, child_level, table_id)
                 .await;
             return Ok(CompactResult::DidWork);
         }
 
+        // At this point, the compaction flag/lock has been set on all affected tables
+        // and a placeholder was created on the child level
+
         log::debug!(
             "Compacting {} table(s) in level {} with {} table(s) in level {} into table #{table_id}",
-            parent_tables.len(),
+            parent_tbls_to_compact.len(),
             parent_level.get_index(),
-            child_tables.len(),
+            child_tbls_to_compact.len(),
             child_level.get_index(),
         );
 
-        for table in child_tables.iter() {
-            min = std::cmp::min(min, table.get_min());
-            max = std::cmp::max(max, table.get_max());
+        for table in child_tbls_to_compact.iter() {
+            min_key = min_key.min(table.get_min());
+            max_key = max_key.max(table.get_max());
         }
 
         // Table can potentially contain a single entry
-        assert!(min <= max);
+        assert!(min_key <= max_key);
 
-        let min = min.to_vec();
-        let max = max.to_vec();
+        let min_key = min_key.to_vec();
+        let max_key = max_key.to_vec();
 
         let mut table_iters = Vec::new();
-        for table in parent_tables.iter() {
+        for table in parent_tbls_to_compact.iter() {
             table_iters.push(TableIterator::new(table.clone(), false).await);
         }
 
-        for child in child_tables.iter() {
+        for child in child_tbls_to_compact.iter() {
             table_iters.push(TableIterator::new(child.clone(), false).await);
         }
 
@@ -743,7 +749,7 @@ impl DbLogic {
         #[cfg(feature = "wisckey")]
         let mut deleted_values = vec![];
 
-        let mut table_builder = child_level.build_table(table_id, min, max);
+        let mut table_builder = child_level.build_table(table_id, min_key, max_key);
 
         loop {
             log::trace!("Starting compaction for next key");
@@ -837,16 +843,16 @@ impl DbLogic {
         let add_set = vec![(child_level.get_index(), new_table.get_id())];
         let mut remove_set = vec![];
 
-        // Install new tables atomically
-        let mut all_parent_tables = parent_level.get_tables().await;
-        let mut all_child_tables = child_level.get_tables().await;
+        // Update tables atomically
+        let mut all_parent_tables = parent_level.get_tables_rw().await;
+        let mut all_child_tables = child_level.get_tables_rw().await;
 
-        // Iterate backwards to ensure oldest entries are removed first
-        for table in child_tables.iter() {
+        // Remove all previous child tables
+        for table in child_tbls_to_compact.iter() {
             let mut found = false;
             for (pos, other_table) in all_child_tables.iter().enumerate() {
                 if other_table.get_id() == table.get_id() {
-                    remove_set.push((parent_level.get_index(), table.get_id()));
+                    remove_set.push((child_level.get_index(), table.get_id()));
                     all_child_tables.remove(pos);
                     found = true;
                     break;
@@ -869,7 +875,7 @@ impl DbLogic {
         child_level.remove_table_placeholder(table_id).await;
 
         // Remove table entries from parent level
-        for table in parent_tables.iter() {
+        for table in parent_tbls_to_compact.iter() {
             let mut found = false;
             for (pos, other_table) in all_parent_tables.iter().enumerate() {
                 if other_table.get_id() == table.get_id() {
@@ -902,8 +908,8 @@ impl DbLogic {
     }
 
     async fn fast_compaction(&self, parent_level: &Level, child_level: &Level, table_id: TableId) {
-        let mut all_parent_tables = parent_level.get_tables().await;
-        let mut all_child_tables = child_level.get_tables().await;
+        let mut all_parent_tables = parent_level.get_tables_rw().await;
+        let mut all_child_tables = child_level.get_tables_rw().await;
 
         // Remove table entry from parent level
         let table = {
@@ -962,6 +968,8 @@ impl DbLogic {
 
 #[cfg(all(test, not(feature = "wisckey")))]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::TempDir;
 
     #[cfg(feature = "async-io")]
@@ -1002,12 +1010,81 @@ mod tests {
         drop(tmpdir);
     }
 
-    // Test that compaction works as expected
-    //
-    // Note: This test makes some assumptions about the inner workings of
-    // DbLogic and might need to be adjusted with future changes
+    /// Here we create overlapping tables on both level 0 and 1
+    /// This checks if compaction also works if there is a cross-level overlap   
     #[async_test]
-    async fn compaction() {
+    async fn compact_with_child_level() {
+        let (tempdir, logic) = test_init().await;
+        let num_tables = 6;
+
+        // Create five tables with the exact same key entries
+        for idx in 0..num_tables {
+            let level = if idx < num_tables - 1 {
+                &logic.levels[0]
+            } else {
+                &logic.levels[1]
+            };
+
+            let table_id = logic.manifest.next_table_id().await;
+
+            let min_key = "000".to_string().into_bytes();
+            let max_key = "100".to_string().into_bytes();
+
+            let mut table_builder = level.build_table(table_id, min_key, max_key);
+            let mut seq_offset = 1;
+
+            for num in 0..=100 {
+                let key = format!("{num:03}").into_bytes();
+                let value = "somevalue".to_string().into_bytes();
+                let seq_number = seq_offset;
+                seq_offset += 1;
+
+                table_builder
+                    .add_value(&key, seq_number, &value)
+                    .await
+                    .unwrap();
+            }
+
+            let table = table_builder.finish().await.unwrap();
+            let table_id = table.get_id();
+
+            level.get_tables_rw().await.push(Arc::new(table));
+
+            logic
+                .manifest
+                .update_table_set(vec![(level.get_index(), table_id)], vec![])
+                .await;
+        }
+
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 1);
+        assert_eq!(
+            logic.manifest.get_table_ids().await[0].len(),
+            num_tables - 1
+        );
+        assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 1);
+
+        let old_table_id = logic.levels[1].get_tables_ro().await[0].get_id();
+
+        let did_work = logic.do_level_compaction().await.unwrap();
+        assert!(did_work);
+
+        assert!(logic.levels[0].get_tables_ro().await.is_empty());
+        assert!(logic.manifest.get_table_ids().await[0].is_empty());
+        assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 1);
+
+        // Ensure a new table was created
+        let new_table_id = logic.levels[1].get_tables_ro().await[0].get_id();
+        assert_ne!(old_table_id, new_table_id);
+
+        test_cleanup(tempdir, logic).await;
+    }
+
+    /// This adds multiple overlapping tables to L0 and expects them to be
+    /// merged into one table in L1
+    #[async_test]
+    async fn l0_compaction() {
         let (tempdir, logic) = test_init().await;
 
         let num_tables = 5;
@@ -1037,34 +1114,36 @@ mod tests {
 
             let table = table_builder.finish().await.unwrap();
             let table_id = table.get_id();
+
             l0.add_l0_table(table).await;
 
             // Then update manifest and flush WAL
             logic
                 .manifest
-                .update_table_set(vec![(0, table_id)], vec![])
+                .update_table_set(vec![(l0.get_index(), table_id)], vec![])
                 .await;
         }
 
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
-        assert!(logic.manifest.get_tables().await[1].is_empty());
+        assert_eq!(logic.manifest.get_table_ids().await[0].len(), num_tables);
+        assert!(logic.levels[1].get_tables_ro().await.is_empty());
+        assert!(logic.manifest.get_table_ids().await[1].is_empty());
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
         assert!(logic.levels[0].get_tables_ro().await.is_empty());
-        assert!(logic.manifest.get_tables().await[0].is_empty());
+        assert!(logic.manifest.get_table_ids().await[0].is_empty());
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
-        assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 1);
 
         test_cleanup(tempdir, logic).await;
     }
 
-    // Test that fast compaction (simply moving a table down) works as expected
-    //
-    // Note: This test makes some assumptions about the inner workings of
-    // DbLogic and might need to be adjusted with future changes
+    /// Test that fast compaction (simply moving a table down) works as expected
+    ///
+    /// Note: This test makes some assumptions about the inner workings of
+    /// DbLogic and might need to be adjusted with future changes
     #[async_test]
     async fn fast_compaction() {
         let (tempdir, logic) = test_init().await;
@@ -1109,24 +1188,30 @@ mod tests {
         }
 
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
-        assert!(logic.manifest.get_tables().await[1].is_empty());
+        assert_eq!(logic.manifest.get_table_ids().await[0].len(), num_tables);
+        assert!(logic.manifest.get_table_ids().await[1].is_empty());
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
         // One table should have moved down
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 1);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 1);
+        assert_eq!(
+            logic.manifest.get_table_ids().await[0].len(),
+            num_tables - 1
+        );
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
-        assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 1);
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 2);
+        assert_eq!(
+            logic.manifest.get_table_ids().await[0].len(),
+            num_tables - 2
+        );
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 2);
-        assert_eq!(logic.manifest.get_tables().await[1].len(), 2);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 2);
 
         // Ensure no tables exist on both levels
         for table0 in logic.levels[0].get_tables_ro().await.iter() {
@@ -1138,7 +1223,7 @@ mod tests {
         test_cleanup(tempdir, logic).await;
     }
 
-    // Test that no compaction happens if tables are already marked with a compaction flag
+    /// Test that no compaction happens if tables are already marked with a compaction flag
     #[async_test]
     async fn compaction_flag() {
         let (tempdir, logic) = test_init().await;
@@ -1184,10 +1269,13 @@ mod tests {
         }
 
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
-        assert!(logic.manifest.get_tables().await[1].is_empty());
+        assert_eq!(logic.manifest.get_table_ids().await[0].len(), num_tables);
+        assert!(logic.manifest.get_table_ids().await[1].is_empty());
 
-        let result = logic.compact_level(&logic.levels[0], &logic.levels[1]).await.unwrap();
+        let result = logic
+            .compact_level(&logic.levels[0], &logic.levels[1])
+            .await
+            .unwrap();
         assert_eq!(result, CompactResult::Locked);
 
         test_cleanup(tempdir, logic).await;
@@ -1240,24 +1328,30 @@ mod tests {
         logic.levels[0].set_next_compaction_offset(3);
 
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
-        assert!(logic.manifest.get_tables().await[1].is_empty());
+        assert_eq!(logic.manifest.get_table_ids().await[0].len(), num_tables);
+        assert!(logic.manifest.get_table_ids().await[1].is_empty());
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
         // One table should have moved down
         assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 1);
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 1);
+        assert_eq!(
+            logic.manifest.get_table_ids().await[0].len(),
+            num_tables - 1
+        );
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
-        assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 1);
 
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
-        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 2);
+        assert_eq!(
+            logic.manifest.get_table_ids().await[0].len(),
+            num_tables - 2
+        );
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 2);
-        assert_eq!(logic.manifest.get_tables().await[1].len(), 2);
+        assert_eq!(logic.manifest.get_table_ids().await[1].len(), 2);
 
         // Ensure no tables exist on both levels
         for table0 in logic.levels[0].get_tables_ro().await.iter() {
