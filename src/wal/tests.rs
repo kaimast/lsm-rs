@@ -1,4 +1,7 @@
-use tempfile::tempdir;
+use log;
+
+/// Tests for the write-ahead log, especially its behavior during recovery
+use tempfile::TempDir;
 
 use super::*;
 
@@ -8,29 +11,49 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
-#[async_test]
-async fn empty_sync() {
-    let dir = tempdir().unwrap();
+async fn test_init() -> (TempDir, Arc<Params>, WriteAheadLog) {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("lsm-wal-test-")
+        .tempdir()
+        .expect("Failed to create temporary directory");
+
+    log::debug!("Created tempdir at {:?}", tempdir.path());
+
     let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
+        db_path: tempdir.path().to_path_buf(),
         ..Default::default()
     });
 
-    let wal = WriteAheadLog::new(params).await.unwrap();
+    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    (tempdir, params, wal)
+}
+
+async fn test_cleanup(tempdir: TempDir, wal: WriteAheadLog) {
+    // Finish all writes before we stop the tests
+    wal.stop().await.expect("WAL sync failed");
+
+    // Ensure that the tempdir is dropped last
+    drop(wal);
+
+    log::trace!("Removing tempdir at {:?}", tempdir.path());
+    drop(tempdir);
+}
+
+#[async_test]
+async fn empty_sync() {
+    let (tempdir, _, wal) = test_init().await;
 
     assert_eq!(wal.inner.status.read().sync_pos, 0);
     assert_eq!(wal.inner.status.read().write_pos, 0);
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn write_and_sync() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params).await.unwrap();
+    let (tempdir, _, wal) = test_init().await;
 
     let key = vec![1, 2];
     let value = vec![2, 3];
@@ -39,17 +62,13 @@ async fn write_and_sync() {
 
     assert_eq!(wal.inner.status.read().sync_pos, 21);
     assert_eq!(wal.inner.status.read().write_pos, 21);
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn write_large_value() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params).await.unwrap();
+    let (tempdir, _, wal) = test_init().await;
 
     let key = vec![1, 2];
     let value = vec![1; 2 * (PAGE_SIZE as usize)];
@@ -58,17 +77,13 @@ async fn write_large_value() {
 
     assert_eq!(wal.inner.status.read().sync_pos, 8211);
     assert_eq!(wal.inner.status.read().write_pos, 8211);
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key = vec![1, 2];
     let value = vec![2, 3];
@@ -79,25 +94,19 @@ async fn reopen() {
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 0, &mut memtable)
-        .await
-        .unwrap();
+    let wal = WriteAheadLog::open(params, 0, &mut memtable).await.unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 21);
     assert_eq!(wal.inner.status.read().write_pos, 21);
 
     let entry = memtable.get(&key).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen_with_offset1() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
@@ -109,10 +118,11 @@ async fn reopen_with_offset1() {
         .await
         .unwrap();
     wal.sync().await.unwrap();
+
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 21, &mut memtable)
+    let wal = WriteAheadLog::open(params, 21, &mut memtable)
         .await
         .unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 43);
@@ -121,18 +131,13 @@ async fn reopen_with_offset1() {
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen_with_offset_and_cleanup1() {
-    let dir = tempdir().unwrap();
-
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
@@ -149,7 +154,7 @@ async fn reopen_with_offset_and_cleanup1() {
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 21, &mut memtable)
+    let wal = WriteAheadLog::open(params, 21, &mut memtable)
         .await
         .unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 43);
@@ -158,17 +163,13 @@ async fn reopen_with_offset_and_cleanup1() {
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen_with_offset_and_cleanup2() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
@@ -188,7 +189,7 @@ async fn reopen_with_offset_and_cleanup2() {
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 8211, &mut memtable)
+    let wal = WriteAheadLog::open(params, 8211, &mut memtable)
         .await
         .unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
@@ -197,17 +198,13 @@ async fn reopen_with_offset_and_cleanup2() {
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value2).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen_with_offset2() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
@@ -225,7 +222,7 @@ async fn reopen_with_offset2() {
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 8211, &mut memtable)
+    let wal = WriteAheadLog::open(params, 8211, &mut memtable)
         .await
         .unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
@@ -234,17 +231,13 @@ async fn reopen_with_offset2() {
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
     assert_eq!(entry.get_value(), Some(value2).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }
 
 #[async_test]
 async fn reopen_large_file() {
-    let dir = tempdir().unwrap();
-    let params = Arc::new(Params {
-        db_path: dir.path().to_path_buf(),
-        ..Default::default()
-    });
-
-    let wal = WriteAheadLog::new(params.clone()).await.unwrap();
+    let (tempdir, params, wal) = test_init().await;
 
     let key = vec![1, 2];
     let value = vec![2; 2 * (PAGE_SIZE as usize)];
@@ -252,15 +245,16 @@ async fn reopen_large_file() {
         .await
         .unwrap();
     wal.sync().await.unwrap();
+
     drop(wal);
 
     let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params.clone(), 0, &mut memtable)
-        .await
-        .unwrap();
+    let wal = WriteAheadLog::open(params, 0, &mut memtable).await.unwrap();
     assert_eq!(wal.inner.status.read().sync_pos, 8211);
     assert_eq!(wal.inner.status.read().write_pos, 8211);
 
     let entry = memtable.get(&key).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
+
+    test_cleanup(tempdir, wal).await;
 }

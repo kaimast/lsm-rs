@@ -160,6 +160,7 @@ impl Database {
 
     /// Stop all background tasks gracefully
     pub async fn stop(&self) -> Result<(), Error> {
+        self.inner.stop().await?;
         self.tasks.stop_all().await
     }
 }

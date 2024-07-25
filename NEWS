@@ -1,11 +1,15 @@
-0.4:
+0.4.1:
+    - Fix an error during compaction
+    - Ensure everything has been written to the write-ahead log before shutting down
+
+0.4.0:
     - Move sync API into a separate lsm-sync crate
     - Removed KvTrait. The crate now only accept and returns bytes
     - Get operations now return a reference to the data without copying
     - Leverage zerocopy wherever possible to reduce serialization cost
     - Update tokio-uring and kioto-uring-executor dependencies
 
-0.3:
+0.3.0:
     - Write-Ahead logging moved to a dedicated thread (or async task)
     - Support for io_uring
     - Allow iterating in reverse order
@@ -13,7 +17,7 @@
     - Various performance improvements
     - Use tokio-condvar in more places
 
-0.2:
+0.2.0:
     - Support for tracing to benchmark the library
     - Removed custom Condition Variable implementation
     - Databases can be reopened
@@ -22,5 +26,5 @@
     - Implemented proper garbage collection for the value log
     - The Write-Ahead-Log is properly truncated after writes are flushed to L0
 
-0.1:
+0.1.0:
     - Basic key-value store functionality

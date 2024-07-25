@@ -27,10 +27,11 @@ pub const FIRST_TABLE_ID: TableId = 1;
 
 /// The metadata for the database as a whole
 #[derive(AsBytes, Default, FromBytes, FromZeroes)]
-#[repr(packed)]
+#[repr(C, align(8))]
 struct DatabaseMetadata {
     next_table_id: TableId,
-    num_levels: u16,
+    num_levels: u32,
+    _padding: u32,
     seq_number_offset: SeqNumber,
     log_offset: u64,
     next_data_block_id: DataBlockId,
@@ -55,7 +56,7 @@ struct LevelMetadata {
 }
 
 impl LevelMetadata {
-    pub fn get_tables(&self) -> &[TableId] {
+    pub fn get_table_ids(&self) -> &[TableId] {
         let header = LevelMetadataHeader::ref_from_prefix(&self.data[..]).unwrap();
 
         let start = size_of::<LevelMetadataHeader>();
@@ -66,7 +67,7 @@ impl LevelMetadata {
 
     /// Returns false if the entry already existed
     pub fn insert(&mut self, id: TableId) -> bool {
-        let tables = self.get_tables();
+        let tables = self.get_table_ids();
 
         let pos = match tables.binary_search(&id) {
             Ok(_) => return false,
@@ -113,7 +114,7 @@ impl LevelMetadata {
 
     /// Returns false if no such entry existed
     pub fn remove(&mut self, id: &TableId) -> bool {
-        let tables = self.get_tables();
+        let tables = self.get_table_ids();
 
         let pos = match tables.binary_search(id) {
             Ok(pos) => pos,
@@ -156,7 +157,8 @@ impl Manifest {
     pub async fn new(params: Arc<Params>) -> Self {
         let meta = DatabaseMetadata {
             next_table_id: FIRST_TABLE_ID,
-            num_levels: params.num_levels as u16,
+            num_levels: params.num_levels as u32,
+            _padding: 0,
             seq_number_offset: 1,
             log_offset: 0,
             next_data_block_id: 1,
@@ -233,7 +235,7 @@ impl Manifest {
         let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
         let meta = DatabaseMetadata::ref_from(&data[..]).unwrap();
-        if meta.num_levels != params.num_levels as u16 {
+        if meta.num_levels != params.num_levels as u32 {
             panic!("Number of levels is incompatible");
         }
 
@@ -340,11 +342,15 @@ impl Manifest {
         meta.seq_number_offset
     }
 
+    /// Set the current sequence number
     pub async fn set_seq_number_offset(&self, offset: SeqNumber) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
 
-        assert!(meta.seq_number_offset < offset);
+        if offset <= meta.seq_number_offset {
+            panic!("Sequence number must montonically increase. Old value ({}) was >= than new value {offset}", meta.seq_number_offset);
+        }
+
         meta.seq_number_offset = offset;
 
         mmap.flush().unwrap();
@@ -373,11 +379,11 @@ impl Manifest {
 
     /// Get the identifier of all tables on all levels
     /// Only used during recovery
-    pub async fn get_tables(&self) -> Vec<Vec<TableId>> {
+    pub async fn get_table_ids(&self) -> Vec<Vec<TableId>> {
         let mut result = Vec::with_capacity(self.params.num_levels);
 
         for level in self.levels.read().await.iter() {
-            result.push(level.get_tables().to_vec());
+            result.push(level.get_table_ids().to_vec());
         }
 
         result
@@ -402,7 +408,9 @@ impl Manifest {
                 .expect("No such level")
                 .insert(id);
 
-            assert!(was_new);
+            if !was_new {
+                panic!("Table with id={id} already existed on level #{level}");
+            }
             affected.insert(level);
         }
 
@@ -412,12 +420,59 @@ impl Manifest {
                 .expect("No such level")
                 .remove(&id);
 
-            assert!(existed);
+            if !existed {
+                panic!("No table with id={id} existed on level #{level}");
+            }
             affected.insert(level);
         }
 
         for level_id in affected.into_iter() {
             levels[level_id as usize].flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    #[cfg(feature = "async-io")]
+    use tokio_uring_executor::test as async_test;
+
+    #[cfg(not(feature = "async-io"))]
+    use tokio::test as async_test;
+
+    use crate::params::Params;
+
+    use super::Manifest;
+
+    #[async_test]
+    async fn update_table_set() {
+        let dir = tempdir().unwrap();
+        let params = Arc::new(Params {
+            db_path: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+
+        let manifest = Manifest::new(params).await;
+
+        assert!(manifest.get_table_ids().await[0].is_empty());
+        assert!(manifest.get_table_ids().await[1].is_empty());
+
+        manifest
+            .update_table_set(vec![(0, 1), (0, 2)], vec![])
+            .await;
+
+        assert_eq!(manifest.get_table_ids().await[0], vec![1, 2]);
+        assert!(manifest.get_table_ids().await[1].is_empty());
+
+        manifest
+            .update_table_set(vec![(1, 3)], vec![(0, 1), (0, 2)])
+            .await;
+
+        assert!(manifest.get_table_ids().await[0].is_empty());
+        assert_eq!(manifest.get_table_ids().await[1], vec![3]);
     }
 }
