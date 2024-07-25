@@ -1,5 +1,6 @@
 0.4.1:
     - Fix an error during compaction
+    - Ensure everything has been written to the write-ahead log before shutting down
 
 0.4.0:
     - Move sync API into a separate lsm-sync crate

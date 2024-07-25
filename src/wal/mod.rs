@@ -1,13 +1,15 @@
 #![allow(clippy::await_holding_lock)]
 
-use crate::memtable::Memtable;
-use crate::Params;
-use crate::WriteOp;
+#[cfg(not(feature = "async-io"))]
+use std::fs::{File, OpenOptions};
+
+#[cfg(not(feature = "async-io"))]
+use std::io::{Read, Seek};
 
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Notify};
 
 #[cfg(feature = "async-io")]
 use tokio_uring_executor as executor;
@@ -15,13 +17,10 @@ use tokio_uring_executor as executor;
 #[cfg(feature = "async-io")]
 use tokio_uring::fs::{File, OpenOptions};
 
-#[cfg(not(feature = "async-io"))]
-use std::fs::{File, OpenOptions};
-
-#[cfg(not(feature = "async-io"))]
-use std::io::{Read, Seek};
-
 use cfg_if::cfg_if;
+
+use crate::memtable::Memtable;
+use crate::{Error, Params, WriteOp};
 
 mod writer;
 use writer::WalWriter;
@@ -58,6 +57,9 @@ struct LogStatus {
 
     /// How much has actually been flushed? (cleaned up)
     flush_pos: u64,
+
+    /// Indicates the log should shut down
+    stop_flag: bool,
 }
 
 struct LogInner {
@@ -70,6 +72,8 @@ struct LogInner {
 /// It can be used to recover from crashes
 pub struct WriteAheadLog {
     inner: Arc<LogInner>,
+    // Allows to wait for the write to shut down
+    finish_receiver: parking_lot::Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl WriteAheadLog {
@@ -81,6 +85,7 @@ impl WriteAheadLog {
             flush_pos: 0,
             offset_pos: 0,
             queue: vec![],
+            stop_flag: false,
             sync_flag: false,
         };
 
@@ -90,31 +95,50 @@ impl WriteAheadLog {
             write_cond: Default::default(),
         });
 
+        let finish_receiver = Self::start_writer(inner.clone(), params);
+
+        Ok(Self {
+            inner,
+            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
+        })
+    }
+
+    fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
+        let (finish_sender, finish_receiver) = oneshot::channel();
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "async-io")] {
                 unsafe {
-                    let inner = inner.clone();
                     executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::new(params).await;
                         loop {
-                            writer.update_log(&inner).await;
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
                         }
+
+                        let _ = finish_sender.send(());
                     });
                 }
             } else {
                 {
-                    let inner = inner.clone();
                     tokio::spawn(async move {
                         let mut writer = WalWriter::new(params).await;
                         loop {
-                            writer.update_log(&inner).await;
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
                         }
+
+                        let _ = finish_sender.send(());
                     });
                 }
             }
         }
 
-        Ok(Self { inner })
+        finish_receiver
     }
 
     /// Open an existing log
@@ -202,6 +226,7 @@ impl WriteAheadLog {
             offset_pos: start_position,
             queue: vec![],
             sync_flag: false,
+            stop_flag: false,
         };
 
         let inner = Arc::new(LogInner {
@@ -210,31 +235,52 @@ impl WriteAheadLog {
             write_cond: Default::default(),
         });
 
+        let finish_receiver = Self::continue_writer(inner.clone(), position, params);
+
+        Ok(Self {
+            inner,
+            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
+        })
+    }
+
+    fn continue_writer(
+        inner: Arc<LogInner>,
+        position: u64,
+        params: Arc<Params>,
+    ) -> oneshot::Receiver<()> {
+        let (finish_sender, finish_receiver) = oneshot::channel();
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "async-io")] {
                 unsafe {
-                    let inner = inner.clone();
                     executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::continue_from(position, params).await;
                         loop {
-                            writer.update_log(&inner).await;
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
                         }
+                        let _ = finish_sender.send(());
                     });
                 }
             } else {
                 {
-                    let inner = inner.clone();
-                    tokio::spawn(async  move {
+                    tokio::spawn(async move {
                         let mut writer = WalWriter::continue_from(position, params).await;
                         loop {
-                            writer.update_log(&inner).await;
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
                         }
+                        let _ = finish_sender.send(());
                     });
                 }
             }
         }
 
-        Ok(Self { inner })
+        finish_receiver
     }
 
     async fn read_from_log(
@@ -381,6 +427,23 @@ impl WriteAheadLog {
         Ok(end_pos)
     }
 
+    pub async fn stop(&self) -> Result<(), Error> {
+        log::trace!("Shutting down write-ahead log. Waiting for writer to terminate.");
+
+        self.inner.status.write().stop_flag = true;
+        self.inner.queue_cond.notify_waiters();
+
+        self.finish_receiver
+            .lock()
+            .take()
+            .expect("Already stopped?")
+            .await
+            .unwrap();
+
+        log::debug!("Write-ahead log shut down");
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self))]
     pub async fn sync(&self) -> Result<(), std::io::Error> {
         let last_pos = {
@@ -398,12 +461,6 @@ impl WriteAheadLog {
 
             lock.sync_pos
         };
-
-        /*
-        let mut status = self.inner.status.read();
-        while status.sync_pos <= last_pos {
-            status = self.inner.write_cond.rw_read_wait(status).await;
-        }*/
 
         loop {
             let fut = self.inner.write_cond.notified();

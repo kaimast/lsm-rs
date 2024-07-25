@@ -25,6 +25,7 @@ use crate::values::{ValueLog, ValueRef};
 
 use crate::data_blocks::DataEntry;
 
+#[derive(Debug, PartialEq, Eq)]
 enum CompactResult {
     NothingToDo,
     DidWork,
@@ -615,7 +616,10 @@ impl DbLogic {
     }
 
     /// Do compaction if necessary
-    /// Returns true if any work was done
+    ///
+    /// Returns true if we should try again. This can happen for two reasons:
+    ///     1. Compaction succeded and there might be more to compact
+    ///     2. Compaction failed due to locks and we should try to grab the locks again
     #[tracing::instrument(skip(self))]
     pub async fn do_level_compaction(&self) -> Result<bool, Error> {
         let mut was_locked = false;
@@ -943,11 +947,15 @@ impl DbLogic {
         log::trace!("Done compacting tables");
         Ok(CompactResult::DidWork)
     }
+
+    pub async fn stop(&self) -> Result<(), Error> {
+        self.wal.stop().await
+    }
 }
 
 #[cfg(all(test, not(feature = "wisckey")))]
 mod tests {
-    use tempfile::tempdir;
+    use tempfile::TempDir;
 
     #[cfg(feature = "async-io")]
     use tokio_uring_executor::test as async_test;
@@ -958,7 +966,34 @@ mod tests {
     use crate::params::Params;
     use crate::StartMode;
 
-    use super::DbLogic;
+    use super::{CompactResult, DbLogic};
+
+    async fn test_init() -> (TempDir, DbLogic) {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let tmpdir = tempfile::Builder::new()
+            .prefix("lsm-logic-test-")
+            .tempdir()
+            .unwrap();
+
+        let params = Params {
+            db_path: tmpdir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let logic = DbLogic::new(StartMode::CreateOrOverride, params)
+            .await
+            .unwrap();
+
+        (tmpdir, logic)
+    }
+
+    async fn test_cleanup(tmpdir: TempDir, logic: DbLogic) {
+        logic.stop().await.unwrap();
+
+        drop(logic);
+        drop(tmpdir);
+    }
 
     // Test that compaction works as expected
     //
@@ -966,15 +1001,8 @@ mod tests {
     // DbLogic and might need to be adjusted with future changes
     #[async_test]
     async fn compaction() {
-        let dir = tempdir().unwrap();
-        let params = Params {
-            db_path: dir.path().to_path_buf(),
-            ..Default::default()
-        };
+        let (tempdir, logic) = test_init().await;
 
-        let logic = DbLogic::new(StartMode::CreateOrOverride, params)
-            .await
-            .unwrap();
         let num_tables = 5;
 
         // Create five tables with the exact same key entries
@@ -990,7 +1018,7 @@ mod tests {
 
             for num in 0..=100 {
                 let key = format!("{num:03}").into_bytes();
-                let value = format!("somevalue").into_bytes();
+                let value = "somevalue".to_string().into_bytes();
                 let seq_number = seq_offset;
                 seq_offset += 1;
 
@@ -1022,6 +1050,8 @@ mod tests {
         assert!(logic.manifest.get_tables().await[0].is_empty());
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 1);
         assert_eq!(logic.manifest.get_tables().await[1].len(), 1);
+
+        test_cleanup(tempdir, logic).await;
     }
 
     // Test that fast compaction (simply moving a table down) works as expected
@@ -1030,15 +1060,8 @@ mod tests {
     // DbLogic and might need to be adjusted with future changes
     #[async_test]
     async fn fast_compaction() {
-        let dir = tempdir().unwrap();
-        let params = Params {
-            db_path: dir.path().to_path_buf(),
-            ..Default::default()
-        };
+        let (tempdir, logic) = test_init().await;
 
-        let logic = DbLogic::new(StartMode::CreateOrOverride, params)
-            .await
-            .unwrap();
         let num_tables = 10;
 
         // Create five tables with the exact same key entries
@@ -1057,7 +1080,7 @@ mod tests {
 
             for num in pos..next_pos {
                 let key = format!("{num:04}").into_bytes();
-                let value = format!("somevalue").into_bytes();
+                let value = "somevalue".to_string().into_bytes();
                 let seq_number = seq_offset;
                 seq_offset += 1;
 
@@ -1094,9 +1117,65 @@ mod tests {
         let did_work = logic.do_level_compaction().await.unwrap();
         assert!(did_work);
 
-        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables - 2);
         assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables - 2);
         assert_eq!(logic.levels[1].get_tables_ro().await.len(), 2);
         assert_eq!(logic.manifest.get_tables().await[1].len(), 2);
+
+        test_cleanup(tempdir, logic).await;
+    }
+
+    // Test that no compaction happens if tables are already marked with a compaction flag
+    #[async_test]
+    async fn compaction_flag() {
+        let (tempdir, logic) = test_init().await;
+
+        let num_tables = 5;
+
+        // Create five tables with the exact same key entries
+        for _ in 0..num_tables {
+            let l0 = logic.levels.first().unwrap();
+            let table_id = logic.manifest.next_table_id().await;
+
+            let min_key = "000".to_string().into_bytes();
+            let max_key = "100".to_string().into_bytes();
+
+            let mut table_builder = l0.build_table(table_id, min_key, max_key);
+            let mut seq_offset = 1;
+
+            for num in 0..=100 {
+                let key = format!("{num:03}").into_bytes();
+                let value = "somevalue".to_string().into_bytes();
+                let seq_number = seq_offset;
+                seq_offset += 1;
+
+                table_builder
+                    .add_value(&key, seq_number, &value)
+                    .await
+                    .unwrap();
+            }
+
+            let table = table_builder.finish().await.unwrap();
+            let table_id = table.get_id();
+
+            let could_set_flag = table.maybe_start_compaction();
+            assert!(could_set_flag);
+
+            l0.add_l0_table(table).await;
+
+            // Then update manifest and flush WAL
+            logic
+                .manifest
+                .update_table_set(vec![(0, table_id)], vec![])
+                .await;
+        }
+
+        assert_eq!(logic.levels[0].get_tables_ro().await.len(), num_tables);
+        assert_eq!(logic.manifest.get_tables().await[0].len(), num_tables);
+        assert!(logic.manifest.get_tables().await[1].is_empty());
+
+        let result = logic.compact_level(0, &logic.levels[0]).await.unwrap();
+        assert_eq!(result, CompactResult::Locked);
+
+        test_cleanup(tempdir, logic).await;
     }
 }

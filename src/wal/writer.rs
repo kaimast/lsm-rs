@@ -27,9 +27,12 @@ pub struct WalWriter {
 
 impl WalWriter {
     pub async fn new(params: Arc<Params>) -> Self {
-        let log_file = Self::create_file(&params, 0)
-            .await
-            .expect("Failed to create WAL file");
+        let log_file = Self::create_file(&params, 0).await.unwrap_or_else(|err| {
+            panic!(
+                "Failed to create WAL file in directory {:?}: {err}",
+                params.db_path
+            )
+        });
 
         Self {
             log_file,
@@ -46,11 +49,19 @@ impl WalWriter {
             // At the beginning of a new file
             Self::create_file(&params, fpos)
                 .await
-                .expect("Failed to create WAL file")
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Failed to create WAL file in directory {:?}: {err}",
+                        params.db_path
+                    )
+                })
         } else {
-            Self::open_file(&params, fpos)
-                .await
-                .expect("Failed to create WAL file")
+            Self::open_file(&params, fpos).await.unwrap_or_else(|err| {
+                panic!(
+                    "Failed to open WAL file in directory {:?}: {err}",
+                    params.db_path
+                )
+            })
         };
 
         Self {
@@ -60,8 +71,9 @@ impl WalWriter {
         }
     }
 
-    pub async fn update_log(&mut self, inner: &LogInner) {
-        let (to_write, sync_flag, sync_pos, new_offset) = loop {
+    /// Returns true if the writer is done and the associated task should terminate
+    pub async fn update_log(&mut self, inner: &LogInner) -> bool {
+        let (to_write, sync_flag, sync_pos, new_offset, stop_flag) = loop {
             // This works around the following bug:
             // https://github.com/rust-lang/rust/issues/63768
             let fut = inner.queue_cond.notified();
@@ -72,6 +84,7 @@ impl WalWriter {
                 let to_write = std::mem::take(&mut lock.queue);
                 let sync_flag = lock.sync_flag;
                 let sync_pos = lock.sync_pos;
+                let stop_flag = lock.stop_flag;
 
                 let new_offset = if lock.offset_pos > lock.flush_pos {
                     Some((lock.offset_pos, lock.flush_pos))
@@ -81,11 +94,11 @@ impl WalWriter {
                 };
 
                 // Check whether there is something to do
-                if !to_write.is_empty() || new_offset.is_some() || sync_flag {
+                if !to_write.is_empty() || new_offset.is_some() || sync_flag || stop_flag {
                     assert_eq!(self.position, lock.write_pos);
 
                     lock.sync_flag = false;
-                    break (to_write, sync_flag, sync_pos, new_offset);
+                    break (to_write, sync_flag, sync_pos, new_offset, stop_flag);
                 }
 
                 // wait for change to queue and retry
@@ -125,6 +138,12 @@ impl WalWriter {
 
             inner.write_cond.notify_waiters();
         }
+
+        if stop_flag {
+            log::debug!("WAL writer finished");
+        }
+
+        stop_flag
     }
 
     async fn set_offset(&mut self, new_offset: u64, old_offset: u64) {
@@ -209,6 +228,7 @@ impl WalWriter {
         Ok(())
     }
 
+    /// Create a new file that is part of the log
     pub async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
         let fpath = params
             .db_path
@@ -224,6 +244,7 @@ impl WalWriter {
         }
     }
 
+    /// Open an existing log file (used during recovery)
     pub async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
         let fpath = params
             .db_path

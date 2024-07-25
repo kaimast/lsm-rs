@@ -1,5 +1,5 @@
 use futures::stream::StreamExt;
-use tempfile::{Builder, TempDir};
+use tempfile::TempDir;
 
 use lsm::{Database, Params, StartMode, WriteBatch, WriteOptions};
 
@@ -12,8 +12,12 @@ use tokio_uring_executor::test as async_test;
 use tokio::test as async_test;
 
 async fn test_init() -> (TempDir, Database) {
-    let tmp_dir = Builder::new().prefix("lsm-async-test-").tempdir().unwrap();
     let _ = env_logger::builder().is_test(true).try_init();
+
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("lsm-async-test-")
+        .tempdir()
+        .unwrap();
 
     let mut db_path = tmp_dir.path().to_path_buf();
     db_path.push("storage.lsm");
