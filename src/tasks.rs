@@ -7,7 +7,8 @@ use parking_lot::{Mutex, RwLock};
 
 use tokio::sync::Notify;
 
-use crate::{DbLogic, Error};
+use crate::logic::DbLogic;
+use crate::Error;
 
 use async_trait::async_trait;
 
