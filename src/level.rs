@@ -62,6 +62,7 @@ impl Level {
 
     /// Set where to (try to) compact next
     /// (only used for testing)
+    #[allow(dead_code)]
     pub fn set_next_compaction_offset(&self, offset: usize) {
         *self.next_compaction_offset.lock() = offset;
     }

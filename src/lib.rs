@@ -26,7 +26,6 @@ pub mod memtable;
 pub mod tasks;
 
 pub mod logic;
-use logic::DbLogic;
 pub use logic::EntryRef;
 
 pub mod manifest;
