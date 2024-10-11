@@ -14,13 +14,14 @@ This implementation does *not* aim to reimplement LevelDB. The major differences
 * *io_uring-support*: For async file system access on Linux. Optional and still considered experimental.
 * *Bloom filters* for faster lookups
 
-## Supported Platfomrs and Architectures
+## Supported Platforms and Architectures
 Currently, the code is only tested with Linux on x86 machines, but it should run on most systems supported by the Rust compiler.
 
 ## On-Disk Format
-LSM stores data using [zerocopy](https://github.com/google/zerocopy) and (when possible) `mmap` to achieve high performance.
+LSM stores data using [zerocopy](https://github.com/google/zerocopy) to achieve high performance.
 The implementation does not account for endianness so on-disk formats are not portable.
-Replication across machines should be handled at a different layer of the system. However, we may add a converter tool in the future or an `endianess` feature flag if needed.
+Replication across machines should be handled at a different layer of the system.
+However, we may add a converter tool in the future or an `endianess` feature flag if needed.
 
 ## Planned Features
 * FLSM: Like [PebblesDB](https://github.com/utsaslab/pebblesdb) LSM-rs will fragment the keyspace to reduce write amplification and increase compaction speed
@@ -61,7 +62,7 @@ let database = Database::new_with_params(SM, params)
 
 To write to the database use the `get` call. Note that the crate only supports
 writing byte vectors. (De-)serialization is supposed to happen at another layer.
-```
+```rust
 let key = String::from("mykey").into_bytes();
 let value = String::from("hello world").into_bytes();
 
@@ -69,7 +70,7 @@ database.put(key, value).await.expect("Writing to database failed");
 ```
 
 When reading, LSM will return a reference to the data to avoid copying.
-```
+```rust
 let value_ref = database.get(&key).await.expect("Reading failed");
 
 // Returns a slice to the data
