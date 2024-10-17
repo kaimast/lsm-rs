@@ -71,7 +71,7 @@ impl DataEntry {
     fn get_header(&self) -> &EntryHeader {
         let header_len = std::mem::size_of::<EntryHeader>();
         let header_data = &self.block.data[self.offset..self.offset + header_len];
-        EntryHeader::ref_from(header_data).expect("Failed to read entry header")
+        EntryHeader::ref_from_bytes(header_data).expect("Failed to read entry header")
     }
 
     pub fn get_sequence_number(&self) -> u64 {

@@ -8,7 +8,7 @@ use byte_slice_cast::{AsByteSlice, AsSliceOf};
 
 use memmap2::MmapMut;
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use tokio::sync::RwLock;
 
@@ -26,7 +26,7 @@ pub const INVALID_TABLE_ID: TableId = 0;
 pub const FIRST_TABLE_ID: TableId = 1;
 
 /// The metadata for the database as a whole
-#[derive(AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Default, KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, align(8))]
 struct DatabaseMetadata {
     next_table_id: TableId,
@@ -43,7 +43,7 @@ struct DatabaseMetadata {
 
 /// For each level there is a file containing
 /// an ordered list of all table identifiers
-#[derive(AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Default, Immutable, FromBytes, KnownLayout)]
 #[repr(packed)]
 struct LevelMetadataHeader {
     num_tables: u64,
@@ -57,7 +57,7 @@ struct LevelMetadata {
 
 impl LevelMetadata {
     pub fn get_table_ids(&self) -> &[TableId] {
-        let header = LevelMetadataHeader::ref_from_prefix(&self.data[..]).unwrap();
+        let (header, _) = LevelMetadataHeader::ref_from_prefix(&self.data[..]).unwrap();
 
         let start = size_of::<LevelMetadataHeader>();
         let end = start + (header.num_tables as usize * size_of::<TableId>());
@@ -77,7 +77,7 @@ impl LevelMetadata {
         let mut tables = tables.to_vec();
         tables.insert(pos, id);
 
-        let header = LevelMetadataHeader::mut_from_prefix(&mut self.data[..]).unwrap();
+        let (header, _) = LevelMetadataHeader::mut_from_prefix(&mut self.data[..]).unwrap();
         header.num_tables = tables.len() as u64;
 
         let start = size_of::<LevelMetadataHeader>();
@@ -124,13 +124,12 @@ impl LevelMetadata {
         let mut tables = tables.to_vec();
         tables.remove(pos);
 
-        let header = LevelMetadataHeader::mut_from_prefix(&mut self.data[..]).unwrap();
+        let (header, next) = LevelMetadataHeader::mut_from_prefix(&mut self.data[..]).unwrap();
         header.num_tables = tables.len() as u64;
 
-        let start = size_of::<LevelMetadataHeader>();
         let new_data: &[u8] = tables.as_byte_slice();
+        next[..new_data.len()].copy_from_slice(new_data);
 
-        self.data[start..start + new_data.len()].copy_from_slice(new_data);
         true
     }
 
@@ -234,7 +233,7 @@ impl Manifest {
 
         let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
-        let meta = DatabaseMetadata::ref_from(&data[..]).unwrap();
+        let meta = DatabaseMetadata::ref_from_bytes(&data[..]).unwrap();
         if meta.num_levels != params.num_levels as u32 {
             panic!("Number of levels is incompatible");
         }
@@ -256,7 +255,7 @@ impl Manifest {
 
             let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
-            let header = LevelMetadataHeader::ref_from_prefix(&data[..]).unwrap();
+            let (header, _) = LevelMetadataHeader::ref_from_prefix(&data[..]).unwrap();
             table_count += header.num_tables;
 
             levels.push(LevelMetadata {
@@ -277,7 +276,7 @@ impl Manifest {
 
     pub async fn next_data_block_id(&self) -> DataBlockId {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         let id = meta.next_data_block_id;
         meta.next_data_block_id += 1;
@@ -289,7 +288,7 @@ impl Manifest {
 
     pub async fn next_table_id(&self) -> TableId {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         let id = meta.next_table_id;
         meta.next_table_id += 1;
@@ -301,14 +300,14 @@ impl Manifest {
 
     pub async fn get_log_offset(&self) -> u64 {
         let mmap = self.metadata.read().await;
-        let meta = DatabaseMetadata::ref_from(&mmap[..]).unwrap();
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
         meta.log_offset
     }
 
     pub async fn set_log_offset(&self, offset: u64) {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         assert!(meta.log_offset < offset);
         meta.log_offset = offset;
@@ -319,7 +318,7 @@ impl Manifest {
     #[cfg(feature = "wisckey")]
     pub async fn get_value_log_offset(&self) -> u64 {
         let mmap = self.metadata.read().await;
-        let meta = DatabaseMetadata::ref_from(&mmap[..]).unwrap();
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
         meta.value_log_offset
     }
@@ -327,7 +326,7 @@ impl Manifest {
     #[cfg(feature = "wisckey")]
     pub async fn set_value_log_offset(&self, offset: u64) {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         assert!(meta.value_log_offset < offset);
         meta.value_log_offset = offset;
@@ -337,7 +336,7 @@ impl Manifest {
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
         let mmap = self.metadata.read().await;
-        let meta = DatabaseMetadata::ref_from(&mmap[..]).unwrap();
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
         meta.seq_number_offset
     }
@@ -345,7 +344,7 @@ impl Manifest {
     /// Set the current sequence number
     pub async fn set_seq_number_offset(&self, offset: SeqNumber) {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         if offset <= meta.seq_number_offset {
             panic!("Sequence number must montonically increase. Old value ({}) was >= than new value {offset}", meta.seq_number_offset);
@@ -359,7 +358,7 @@ impl Manifest {
     #[cfg(feature = "wisckey")]
     pub async fn next_value_batch_id(&self) -> ValueBatchId {
         let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from(&mut mmap[..]).unwrap();
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         let id = meta.next_value_batch_id;
         meta.next_value_batch_id += 1;
@@ -372,7 +371,7 @@ impl Manifest {
     #[cfg(feature = "wisckey")]
     pub async fn most_recent_value_batch_id(&self) -> ValueBatchId {
         let mmap = self.metadata.read().await;
-        let meta = DatabaseMetadata::ref_from(&mmap[..]).unwrap();
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
         meta.next_value_batch_id - 1
     }

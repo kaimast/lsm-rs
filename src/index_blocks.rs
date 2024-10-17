@@ -7,9 +7,9 @@ use crate::sorted_table::TableId;
 use crate::{disk, Error};
 use crate::{Key, Params};
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, KnownLayout, Immutable, FromBytes)]
 #[repr(packed)]
 struct IndexBlockHeader {
     size: u64,
@@ -19,7 +19,7 @@ struct IndexBlockHeader {
     _padding: u32,
 }
 
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, KnownLayout, Immutable, FromBytes)]
 #[repr(packed)]
 struct IndexEntryHeader {
     block_id: DataBlockId,
@@ -109,7 +109,7 @@ impl IndexBlock {
     }
 
     fn get_header(&self) -> &IndexBlockHeader {
-        IndexBlockHeader::ref_from_prefix(&self.data[..]).unwrap()
+        IndexBlockHeader::ref_from_prefix(&self.data[..]).unwrap().0
     }
 
     fn get_entry_offset(&self, pos: usize) -> usize {
@@ -121,17 +121,17 @@ impl IndexBlock {
             + header.max_key_len as usize;
 
         let offset_offset = crate::pad_offset(offset) + pos * size_of::<u32>();
-
-        *u32::ref_from_prefix(&self.data[offset_offset..]).unwrap() as usize
+        *u32::ref_from_prefix(&self.data[offset_offset..]).unwrap().0 as usize
     }
 
     /// Get the unique id for the data block at the specified index
     pub fn get_block_id(&self, pos: usize) -> DataBlockId {
         let offset = self.get_entry_offset(pos);
 
-        let entry_header =
-            IndexEntryHeader::ref_from(&self.data[offset..offset + size_of::<IndexEntryHeader>()])
-                .unwrap();
+        let entry_header = IndexEntryHeader::ref_from_bytes(
+            &self.data[offset..offset + size_of::<IndexEntryHeader>()],
+        )
+        .unwrap();
 
         entry_header.block_id
     }
@@ -140,7 +140,7 @@ impl IndexBlock {
     pub fn get_block_key(&self, pos: usize) -> &[u8] {
         let offset = self.get_entry_offset(pos);
 
-        let entry_header = IndexEntryHeader::ref_from_prefix(&self.data[offset..]).unwrap();
+        let (entry_header, _) = IndexEntryHeader::ref_from_prefix(&self.data[offset..]).unwrap();
 
         let key_start = offset + size_of::<IndexEntryHeader>();
         &self.data[key_start..key_start + (entry_header.key_len as usize)]
