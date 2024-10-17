@@ -220,6 +220,10 @@ impl DbLogic {
         self.value_log.clone()
     }
 
+    /// Does the inital work to perform iteration across some range
+    ///
+    /// This will return the lists of memtable and sorted table iterators
+    /// and the minimum and maximum keys in this range
     pub async fn prepare_iter(
         &self,
         min_key: Option<&[u8]>,
