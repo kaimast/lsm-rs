@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::Error;
 
@@ -110,7 +110,7 @@ impl ValueLog {
             }
         }
 
-        let header = ValueBatchHeader::ref_from(&header_data).unwrap();
+        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
 
         let mut offset_pos = None;
         let offset_len = size_of::<u32>();
@@ -126,7 +126,7 @@ impl ValueLog {
                 if header.is_folded() {
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
+                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
                         if old_offset == &value_offset {
                             offset_pos = Some(pos);
@@ -135,7 +135,7 @@ impl ValueLog {
                 } else {
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
+                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
                         if offset == &value_offset {
                             offset_pos = Some(pos);
                             break;
@@ -154,17 +154,16 @@ impl ValueLog {
                 if header.is_folded() {
                      for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
+                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
                         if old_offset == &value_offset {
                             offset_pos = Some(pos);
                         }
                     }
                 } else {
-
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
+                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
                         if offset == &value_offset {
                             offset_pos = Some(pos);
                         }
@@ -229,7 +228,7 @@ impl ValueLog {
             }
         }
 
-        let header = ValueBatchHeader::ref_from(&header_data).unwrap();
+        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
 
         let olen = std::mem::size_of::<u32>();
         let mut offsets = vec![0u32; header.num_values as usize];
@@ -264,11 +263,11 @@ impl ValueLog {
 
         if header.is_folded() {
             for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * 2 * olen..]).unwrap();
+                offsets[idx] = *u32::ref_from_prefix(&buf[idx * 2 * olen..]).unwrap().0;
             }
         } else {
             for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap();
+                offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap().0;
             }
         }
 
@@ -336,7 +335,7 @@ impl ValueLog {
             let old_offset: u32 = offsets[pos];
             let data_start = old_offset as usize;
 
-            let entry_header =
+            let (entry_header, _) =
                 ValueEntryHeader::ref_from_prefix(&batch.get_value_data()[data_start..]).unwrap();
 
             let data_end =

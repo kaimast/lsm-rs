@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::manifest::SeqNumber;
 use crate::{disk, Error};
 
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 use super::block::{DataBlockHeader, EntryHeader};
 use super::{DataBlock, DataBlockId, DataBlocks, PrefixedKey};

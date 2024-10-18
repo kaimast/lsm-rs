@@ -5,7 +5,7 @@ use crate::sorted_table::Key;
 
 use super::{DataEntry, SearchResult};
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[cfg(feature = "bloom-filters")]
 use bloomfilter::Bloom;
@@ -29,7 +29,7 @@ pub(super) const BLOOM_KEY_NUM: usize = 1024;
  * 4. Sequence of variable-length entries
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
  */
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(C)]
 pub(super) struct DataBlockHeader {
     pub(super) restart_list_start: u32,
@@ -66,7 +66,7 @@ pub(super) struct DataBlockHeader {
  *  - Variable length key suffix
  *  - Variable length value
  */
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, FromBytes, KnownLayout)]
 #[repr(packed)]
 pub(super) struct EntryHeader {
     pub(super) prefix_len: u32,
@@ -95,7 +95,7 @@ impl DataBlock {
     pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
         assert!(!data.is_empty(), "No data?");
 
-        let header = DataBlockHeader::ref_from(&data[..Self::header_length()]).unwrap();
+        let header = DataBlockHeader::ref_from_bytes(&data[..Self::header_length()]).unwrap();
 
         #[cfg(feature = "bloom-filters")]
         let bloom_filter = {
@@ -146,7 +146,7 @@ impl DataBlock {
             panic!("Invalid offset {offset}");
         }
 
-        let header = EntryHeader::ref_from(&self_ptr.data[offset..offset + header_len])
+        let header = EntryHeader::ref_from_bytes(&self_ptr.data[offset..offset + header_len])
             .expect("Failed to read entry header");
         let entry_offset = offset;
 
