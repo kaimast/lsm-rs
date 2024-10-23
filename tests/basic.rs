@@ -563,6 +563,45 @@ async fn override_some() {
 }
 
 #[async_test]
+async fn override_one_random() {
+    const COUNT: u64 = 1_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    // Modify the value of one specific random key
+    let mut rng = rand::thread_rng();
+    let random_pos: u64 = rng.gen_range(0..1000);
+    let modify_key = format!("key_{random_pos}").into_bytes();
+    let new_value = format!("some_other_string_{random_pos}").into_bytes();
+    database.put_opts(modify_key.clone(), new_value.clone(), &options).await.unwrap();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = if pos == random_pos {
+            format!("some_other_string_{pos}").into_bytes()
+        } else {
+            format!("some_string_{pos}").into_bytes()
+        };
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn override_many() {
     const NCOUNT: u64 = 2_000;
     const COUNT: u64 = 501;
