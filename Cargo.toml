@@ -31,7 +31,7 @@ rand = "0.8.5"
 [dependencies.tokio]
 version="1"
 default-features=false
-features=["io-util", "sync", "macros", "tracing"]
+features=["io-util", "sync", "macros", "tracing", "time"]
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }

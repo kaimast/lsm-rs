@@ -11,6 +11,7 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
+use tokio::time::{sleep, Duration};  
 use rand::Rng;
 
 async fn test_init() -> (TempDir, Database) {
@@ -396,6 +397,35 @@ async fn get_put_many_random() {
     }
 
     for pos in 0..count {
+        let key = format!("key_{pos}").into_bytes();
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            format!("some_string_{pos}").into_bytes(),
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn get_put_many_delay() {
+    const COUNT: u64 = 1_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write with fsync to check persistence
+    let options = WriteOptions { sync: true };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    // Introduce a slight delay before reading back the values to test persistence
+    sleep(Duration::from_secs(1)).await;
+
+    for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         assert_eq!(
             database.get(&key).await.unwrap().unwrap().get_value(),
