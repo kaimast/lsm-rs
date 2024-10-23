@@ -725,3 +725,43 @@ async fn batched_write() {
 
     database.stop().await.unwrap();
 }
+
+#[async_test]
+async fn batched_overwrite() {
+    const COUNT: u64 = 1000;
+
+    let (_tmpdir, database) = test_init().await;
+    let mut batch = WriteBatch::new();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        batch.put(key, value);
+    }
+
+    database.write(batch).await.unwrap();
+
+    let mut batch_overwrite = WriteBatch::new();
+    
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let new_value = format!("some_other_string_{pos}").into_bytes();
+
+        batch_overwrite.put(key.clone(), new_value);
+    }
+
+    database.write(batch_overwrite).await.unwrap();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let expected_value = format!("some_other_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            expected_value
+        );
+    }
+
+    database.stop().await.unwrap();
+}
