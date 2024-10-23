@@ -136,7 +136,7 @@ async fn range_iterate() {
 }
 
 #[async_test]
-async fn random_range_iterate() {
+async fn range_iterate_random() {
     const COUNT: u64 = 25_000;
 
     let (_tmpdir, database) = test_init().await;
@@ -152,9 +152,9 @@ async fn random_range_iterate() {
     }
 
     // Generate random start and end values for iteration within range
-    let mut range = rand::thread_rng();
-    let range_start: u64 = range.gen_range(0..COUNT);
-    let range_end: u64 = range.gen_range(range_start..COUNT);
+    let mut rng = rand::thread_rng();
+    let range_start: u64 = rng.gen_range(0..COUNT);
+    let range_end: u64 = rng.gen_range(range_start..COUNT);
 
     let mut pos = range_start;
     let start = format!("key_{range_start:05}").into_bytes();
@@ -243,7 +243,7 @@ async fn range_iterate_empty() {
 }
 
 #[async_test]
-async fn range_overlap_iterate() {
+async fn range_iterate_overlap() {
     const COUNT: u64 = 25_000;
 
     let (_tmpdir, database) = test_init().await;
@@ -315,7 +315,7 @@ async fn range_overlap_iterate() {
 }
 
 #[async_test]
-async fn sparse_keys_range_iterate() {
+async fn range_iterate_sparse_keys() {
     const COUNT: u64 = 25_000;
 
     let (_tmpdir, database) = test_init().await;
