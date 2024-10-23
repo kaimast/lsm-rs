@@ -243,6 +243,78 @@ async fn range_iterate_empty() {
 }
 
 #[async_test]
+async fn range_overlap_iterate() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    // Define start and end values for overlapping ranges
+    let start1 = "key_02800".to_string().into_bytes();
+    let end1 = "key_04000".to_string().into_bytes();
+    let start2 = "key_03500".to_string().into_bytes();
+    let end2 = "key_05600".to_string().into_bytes();
+    let start3 = "key_05500".to_string().into_bytes();
+    let end3 = "key_07100".to_string().into_bytes();
+
+    let mut pos = 2800;
+    let mut iter1 = database.range_iter(&start1, &end1).await;
+
+    while let Some((key, val)) = iter1.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 4000);
+
+    pos = 3500;
+    let mut iter2 = database.range_iter(&start2, &end2).await;
+
+    while let Some((key, val)) = iter2.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 5600);
+
+    pos = 5500;
+    let mut iter3 = database.range_iter(&start3, &end3).await;
+
+    while let Some((key, val)) = iter3.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 7100);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn get_put_many() {
     const COUNT: u64 = 1_000;
 
