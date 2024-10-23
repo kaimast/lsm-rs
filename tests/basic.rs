@@ -378,6 +378,34 @@ async fn get_put_many() {
     database.stop().await.unwrap();
 }
 
+#[async_test]
+async fn get_put_many_random() {
+    // Generate a random count between 1 and 1000
+    let mut rng = rand::thread_rng();
+    let count: u64 = rng.gen_range(1..=1000);
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..count {
+        let key = format!("key_{pos}").into_bytes();
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            format!("some_string_{pos}").into_bytes(),
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
 // Use multi-threading to enable background compaction
 #[async_test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_large_entry() {
