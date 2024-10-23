@@ -11,6 +11,8 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
+use rand::Rng;
+
 async fn test_init() -> (TempDir, Database) {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -129,6 +131,48 @@ async fn range_iterate() {
     }
 
     assert_eq!(pos, 9850);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn random_range_iterate() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    // Generate random start and end values for iteration within range
+    let mut range = rand::thread_rng();
+    let range_start: u64 = range.gen_range(0..COUNT);
+    let range_end: u64 = range.gen_range(range_start..COUNT);
+
+    let mut pos = range_start;
+    let start = format!("key_{range_start:05}").into_bytes();
+    let end = format!("key_{range_end:05}").into_bytes();
+
+    let mut iter = database.range_iter(&start, &end).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, range_end);
 
     database.stop().await.unwrap();
 }
