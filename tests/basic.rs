@@ -315,6 +315,44 @@ async fn range_overlap_iterate() {
 }
 
 #[async_test]
+async fn sparse_keys_range_iterate() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    //Insert Sparse Key-Value pairs with a gap of 2500
+    for pos in (0..COUNT).step_by(2500) {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    let mut pos = 0;
+    let start = "key_00000".to_string().into_bytes();
+    let end = "key_20000".to_string().into_bytes();
+
+    let mut iter = database.range_iter(&start, &end).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 2500;
+    }
+
+    assert_eq!(pos, 20000);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn get_put_many() {
     const COUNT: u64 = 1_000;
 
