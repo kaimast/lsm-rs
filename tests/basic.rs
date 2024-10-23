@@ -470,6 +470,37 @@ async fn get_put_delete_large_entry() {
 }
 
 #[async_test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_put_delete_variable_entry() {
+    let (_tmpdir, database) = test_init().await;
+
+    let options = WriteOptions { sync: true };
+
+    // Test with variable sizes ranging from small to large
+    let sizes = vec![1, 500, 1000, 2000];
+    for size in sizes {
+        let key = format!("key_size_{}", size).into_bytes();
+        let mut value = Vec::new();
+        value.resize(size, b'a');
+
+        database
+            .put_opts(key.clone(), value.clone(), &options)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value
+        );
+
+        database.delete(key.clone()).await.unwrap();
+
+        assert!(database.get(&key).await.unwrap().is_none());
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_put_delete_many() {
     const COUNT: u64 = 1_003;
 
