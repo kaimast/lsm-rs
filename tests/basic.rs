@@ -649,6 +649,55 @@ async fn override_many() {
 }
 
 #[async_test]
+async fn override_many_random() {
+    const NCOUNT: u64 = 2_000;
+    
+    let mut rng = rand::thread_rng();
+    let random_count: u64 = rng.gen_range(0..2000);
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..NCOUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..random_count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..random_count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    for pos in random_count..NCOUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn batched_write() {
     const COUNT: u64 = 1000;
 
