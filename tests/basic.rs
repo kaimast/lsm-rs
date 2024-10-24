@@ -11,6 +11,9 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
+use rand::Rng;
+use tokio::time::{sleep, Duration};
+
 async fn test_init() -> (TempDir, Database) {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -134,6 +137,48 @@ async fn range_iterate() {
 }
 
 #[async_test]
+async fn range_iterate_random() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    // Generate random start and end values for iteration within range
+    let mut rng = rand::thread_rng();
+    let range_start: u64 = rng.gen_range(0..COUNT);
+    let range_end: u64 = rng.gen_range(range_start..COUNT);
+
+    let mut pos = range_start;
+    let start = format!("key_{range_start:05}").into_bytes();
+    let end = format!("key_{range_end:05}").into_bytes();
+
+    let mut iter = database.range_iter(&start, &end).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, range_end);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn range_iterate_reverse() {
     const COUNT: u64 = 25_000;
 
@@ -199,6 +244,116 @@ async fn range_iterate_empty() {
 }
 
 #[async_test]
+async fn range_iterate_overlap() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    // Define start and end values for overlapping ranges
+    let start1 = "key_02800".to_string().into_bytes();
+    let end1 = "key_04000".to_string().into_bytes();
+    let start2 = "key_03500".to_string().into_bytes();
+    let end2 = "key_05600".to_string().into_bytes();
+    let start3 = "key_05500".to_string().into_bytes();
+    let end3 = "key_07100".to_string().into_bytes();
+
+    let mut pos = 2800;
+    let mut iter1 = database.range_iter(&start1, &end1).await;
+
+    while let Some((key, val)) = iter1.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 4000);
+
+    pos = 3500;
+    let mut iter2 = database.range_iter(&start2, &end2).await;
+
+    while let Some((key, val)) = iter2.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 5600);
+
+    pos = 5500;
+    let mut iter3 = database.range_iter(&start3, &end3).await;
+
+    while let Some((key, val)) = iter3.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 1;
+    }
+
+    assert_eq!(pos, 7100);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn range_iterate_sparse_keys() {
+    const COUNT: u64 = 25_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    //Insert Sparse Key-Value pairs with a gap of 2500
+    for pos in (0..COUNT).step_by(2500) {
+        let key = format!("key_{pos:05}").into_bytes();
+        let val = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, val, &options).await.unwrap();
+    }
+
+    let mut pos = 0;
+    let start = "key_00000".to_string().into_bytes();
+    let end = "key_20000".to_string().into_bytes();
+
+    let mut iter = database.range_iter(&start, &end).await;
+
+    while let Some((key, val)) = iter.next().await {
+        let expected_key = format!("key_{pos:05}").into_bytes();
+        let expected_val = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(expected_key, key);
+        assert_eq!(expected_val, val.get_value());
+
+        pos += 2500;
+    }
+
+    assert_eq!(pos, 20000);
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn get_put_many() {
     const COUNT: u64 = 1_000;
 
@@ -212,6 +367,63 @@ async fn get_put_many() {
         let value = format!("some_string_{pos}").into_bytes();
         database.put_opts(key, value, &options).await.unwrap();
     }
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            format!("some_string_{pos}").into_bytes(),
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn get_put_many_random() {
+    // Generate a random count between 1 and 1000
+    let mut rng = rand::thread_rng();
+    let count: u64 = rng.gen_range(1..=1000);
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..count {
+        let key = format!("key_{pos}").into_bytes();
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            format!("some_string_{pos}").into_bytes(),
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn get_put_many_delay() {
+    const COUNT: u64 = 1_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write with fsync to check persistence
+    let options = WriteOptions { sync: true };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    // Introduce a slight delay before reading back the values to test persistence
+    sleep(Duration::from_secs(1)).await;
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
@@ -238,6 +450,37 @@ async fn get_put_delete_large_entry() {
 
         let mut value = Vec::new();
         value.resize(SIZE, b'a');
+
+        database
+            .put_opts(key.clone(), value.clone(), &options)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value
+        );
+
+        database.delete(key.clone()).await.unwrap();
+
+        assert!(database.get(&key).await.unwrap().is_none());
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_put_delete_variable_entry() {
+    let (_tmpdir, database) = test_init().await;
+
+    let options = WriteOptions { sync: true };
+
+    // Test with variable sizes ranging from small to large
+    let sizes = vec![1, 500, 1000, 2000];
+    for size in sizes {
+        let key = format!("key_size_{}", size).into_bytes();
+        let mut value = Vec::new();
+        value.resize(size, b'a');
 
         database
             .put_opts(key.clone(), value.clone(), &options)
@@ -320,6 +563,48 @@ async fn override_some() {
 }
 
 #[async_test]
+async fn override_one_random() {
+    const COUNT: u64 = 1_000;
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    // Modify the value of one specific random key
+    let mut rng = rand::thread_rng();
+    let random_pos: u64 = rng.gen_range(0..1000);
+    let modify_key = format!("key_{random_pos}").into_bytes();
+    let new_value = format!("some_other_string_{random_pos}").into_bytes();
+    database
+        .put_opts(modify_key.clone(), new_value.clone(), &options)
+        .await
+        .unwrap();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = if pos == random_pos {
+            format!("some_other_string_{pos}").into_bytes()
+        } else {
+            format!("some_string_{pos}").into_bytes()
+        };
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn override_many() {
     const NCOUNT: u64 = 2_000;
     const COUNT: u64 = 501;
@@ -367,6 +652,55 @@ async fn override_many() {
 }
 
 #[async_test]
+async fn override_many_random() {
+    const NCOUNT: u64 = 2_000;
+
+    let mut rng = rand::thread_rng();
+    let random_count: u64 = rng.gen_range(0..2000);
+
+    let (_tmpdir, database) = test_init().await;
+
+    // Write without fsync to speed up tests
+    let options = WriteOptions { sync: false };
+
+    for pos in 0..NCOUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..random_count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+
+        database.put_opts(key, value, &options).await.unwrap();
+    }
+
+    for pos in 0..random_count {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_other_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    for pos in random_count..NCOUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            value,
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
 async fn batched_write() {
     const COUNT: u64 = 1000;
 
@@ -392,5 +726,96 @@ async fn batched_write() {
         );
     }
 
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn batched_overwrite() {
+    const COUNT: u64 = 1000;
+
+    let (_tmpdir, database) = test_init().await;
+    let mut batch = WriteBatch::new();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        batch.put(key, value);
+    }
+
+    database.write(batch).await.unwrap();
+
+    let mut batch_overwrite = WriteBatch::new();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let new_value = format!("some_other_string_{pos}").into_bytes();
+
+        batch_overwrite.put(key.clone(), new_value);
+    }
+
+    database.write(batch_overwrite).await.unwrap();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let expected_value = format!("some_other_string_{pos}").into_bytes();
+
+        assert_eq!(
+            database.get(&key).await.unwrap().unwrap().get_value(),
+            expected_value
+        );
+    }
+
+    database.stop().await.unwrap();
+}
+
+#[async_test]
+async fn batched_overwrite_delete() {
+    const COUNT: u64 = 1000;
+
+    let (_tmpdir, database) = test_init().await;
+    let mut batch = WriteBatch::new();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+        let value = format!("some_string_{pos}").into_bytes();
+
+        batch.put(key, value);
+    }
+
+    database.write(batch).await.unwrap();
+
+    //Perform overwrite and delete in the same batch
+    let mut batch_overwrite_delete = WriteBatch::new();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+
+        // Delete every tenth key
+        if pos % 10 == 0 {
+            batch_overwrite_delete.delete(key.clone());
+        }
+        // Overwrite every other key
+        else {
+            let new_value = format!("some_other_string_{pos}").into_bytes();
+            batch_overwrite_delete.put(key.clone(), new_value);
+        }
+    }
+
+    database.write(batch_overwrite_delete).await.unwrap();
+
+    for pos in 0..COUNT {
+        let key = format!("key_{pos}").into_bytes();
+
+        if pos % 10 == 0 {
+            assert!(database.get(&key).await.unwrap().is_none());
+        } else {
+            let expected_value = format!("some_other_string_{pos}").into_bytes();
+            assert_eq!(
+                database.get(&key).await.unwrap().unwrap().get_value(),
+                expected_value
+            );
+        }
+    }
     database.stop().await.unwrap();
 }

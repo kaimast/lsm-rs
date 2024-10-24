@@ -586,6 +586,7 @@ dependencies = [
  "lru",
  "memmap2",
  "parking_lot",
+ "rand",
  "snap",
  "tempfile",
  "tokio",

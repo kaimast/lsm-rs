@@ -30,7 +30,7 @@ bloomfilter = { version="1", optional=true }
 [dependencies.tokio]
 version="1"
 default-features=false
-features=["io-util", "sync", "macros", "tracing"]
+features=["io-util", "sync", "macros", "tracing", "time"]
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
@@ -39,6 +39,7 @@ tempfile = "3"
 tracing-tracy = "0.11"
 tokio = { version="1", default-features=false, features=["rt-multi-thread"] }
 tracing-subscriber = { version="0.3", default-features=false }
+rand = "0.8.5"
 
 [lib]
 path = "src/lib.rs"
