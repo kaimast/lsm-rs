@@ -11,8 +11,8 @@ use tokio_uring_executor::test as async_test;
 #[cfg(not(feature = "async-io"))]
 use tokio::test as async_test;
 
-use tokio::time::{sleep, Duration};  
 use rand::Rng;
+use tokio::time::{sleep, Duration};
 
 async fn test_init() -> (TempDir, Database) {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -582,7 +582,10 @@ async fn override_one_random() {
     let random_pos: u64 = rng.gen_range(0..1000);
     let modify_key = format!("key_{random_pos}").into_bytes();
     let new_value = format!("some_other_string_{random_pos}").into_bytes();
-    database.put_opts(modify_key.clone(), new_value.clone(), &options).await.unwrap();
+    database
+        .put_opts(modify_key.clone(), new_value.clone(), &options)
+        .await
+        .unwrap();
 
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
@@ -651,7 +654,7 @@ async fn override_many() {
 #[async_test]
 async fn override_many_random() {
     const NCOUNT: u64 = 2_000;
-    
+
     let mut rng = rand::thread_rng();
     let random_count: u64 = rng.gen_range(0..2000);
 
@@ -743,7 +746,7 @@ async fn batched_overwrite() {
     database.write(batch).await.unwrap();
 
     let mut batch_overwrite = WriteBatch::new();
-    
+
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
         let new_value = format!("some_other_string_{pos}").into_bytes();
@@ -784,7 +787,7 @@ async fn batched_overwrite_delete() {
 
     //Perform overwrite and delete in the same batch
     let mut batch_overwrite_delete = WriteBatch::new();
-    
+
     for pos in 0..COUNT {
         let key = format!("key_{pos}").into_bytes();
 
@@ -806,13 +809,12 @@ async fn batched_overwrite_delete() {
 
         if pos % 10 == 0 {
             assert!(database.get(&key).await.unwrap().is_none());
-        } 
-        else {
-        let expected_value = format!("some_other_string_{pos}").into_bytes();
-        assert_eq!(
-            database.get(&key).await.unwrap().unwrap().get_value(),
-            expected_value
-        );
+        } else {
+            let expected_value = format!("some_other_string_{pos}").into_bytes();
+            assert_eq!(
+                database.get(&key).await.unwrap().unwrap().get_value(),
+                expected_value
+            );
         }
     }
     database.stop().await.unwrap();
