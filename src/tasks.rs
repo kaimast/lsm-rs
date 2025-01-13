@@ -1,14 +1,14 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
 
 use tokio::sync::Notify;
 
-use crate::logic::DbLogic;
 use crate::Error;
+use crate::logic::DbLogic;
 
 use async_trait::async_trait;
 

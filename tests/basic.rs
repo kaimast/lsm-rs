@@ -12,7 +12,7 @@ use tokio_uring_executor::test as async_test;
 use tokio::test as async_test;
 
 use rand::Rng;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 async fn test_init() -> (TempDir, Database) {
     let _ = env_logger::builder().is_test(true).try_init();

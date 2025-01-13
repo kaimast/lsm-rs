@@ -12,16 +12,16 @@ use crate::Error;
 use lru::LruCache;
 
 #[cfg(feature = "async-io")]
-use tokio_uring::fs::{remove_file, OpenOptions};
+use tokio_uring::fs::{OpenOptions, remove_file};
 
 #[cfg(not(feature = "async-io"))]
-use std::fs::{remove_file, OpenOptions};
+use std::fs::{OpenOptions, remove_file};
 #[cfg(not(feature = "async-io"))]
 use std::io::{Read, Seek, SeekFrom, Write};
 
+use crate::Params;
 use crate::disk;
 use crate::manifest::Manifest;
-use crate::Params;
 
 use cfg_if::cfg_if;
 

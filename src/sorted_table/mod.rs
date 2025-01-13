@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 
 use crate::data_blocks::{DataBlock, DataBlocks, DataEntry};
 use crate::index_blocks::IndexBlock;

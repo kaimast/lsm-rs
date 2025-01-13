@@ -34,14 +34,14 @@ pub struct ValueBatchBuilder<'a> {
 }
 
 #[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub(super) struct ValueBatchHeader {
     pub folded: u32, //boolean flag
     pub num_values: u32,
 }
 
 #[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub(super) struct ValueEntryHeader {
     pub length: u64,
 }

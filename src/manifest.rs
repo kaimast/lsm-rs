@@ -44,7 +44,7 @@ struct DatabaseMetadata {
 /// For each level there is a file containing
 /// an ordered list of all table identifiers
 #[derive(IntoBytes, Default, Immutable, FromBytes, KnownLayout)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct LevelMetadataHeader {
     num_tables: u64,
 }
@@ -347,7 +347,10 @@ impl Manifest {
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         if offset <= meta.seq_number_offset {
-            panic!("Sequence number must montonically increase. Old value ({}) was >= than new value {offset}", meta.seq_number_offset);
+            panic!(
+                "Sequence number must montonically increase. Old value ({}) was >= than new value {offset}",
+                meta.seq_number_offset
+            );
         }
 
         meta.seq_number_offset = offset;

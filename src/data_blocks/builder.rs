@@ -3,7 +3,7 @@ use cfg_if::cfg_if;
 use std::sync::Arc;
 
 use crate::manifest::SeqNumber;
-use crate::{disk, Error};
+use crate::{Error, disk};
 
 use zerocopy::IntoBytes;
 
@@ -14,7 +14,7 @@ use super::{DataBlock, DataBlockId, DataBlocks, PrefixedKey};
 use bloomfilter::Bloom;
 
 #[cfg(feature = "bloom-filters")]
-use super::block::{BLOOM_KEY_NUM, BLOOM_LENGTH};
+use super::block::{BLOOM_HEADER_SIZE, BLOOM_ITEM_COUNT, BLOOM_LENGTH};
 
 #[cfg(feature = "wisckey")]
 use crate::data_blocks::ValueId;
@@ -47,7 +47,8 @@ impl DataBlockBuilder {
             position: 0,
             restart_list: vec![],
             #[cfg(feature = "bloom-filters")]
-            bloom_filter: Bloom::new(BLOOM_LENGTH, BLOOM_KEY_NUM),
+            bloom_filter: Bloom::new(BLOOM_LENGTH, BLOOM_ITEM_COUNT)
+                .expect("Failed to create bloom filter"),
         }
     }
 
@@ -109,16 +110,12 @@ impl DataBlockBuilder {
         let identifier = self.data_blocks.manifest.next_data_block_id().await;
 
         #[cfg(feature = "bloom-filters")]
-        let bloom_filter_keys = {
-            let sip_keys = self.bloom_filter.sip_keys();
-            [sip_keys[0].0, sip_keys[0].1, sip_keys[1].0, sip_keys[1].1]
-        };
+        let bloom_filter: &[u8; BLOOM_LENGTH + BLOOM_HEADER_SIZE] =
+            self.bloom_filter.as_slice().try_into().unwrap();
 
         let header = DataBlockHeader {
             #[cfg(feature = "bloom-filters")]
-            bloom_filter: *<&[u8; 1024]>::try_from(self.bloom_filter.bitmap().as_slice()).unwrap(),
-            #[cfg(feature = "bloom-filters")]
-            bloom_filter_keys,
+            bloom_filter: *bloom_filter,
             number_of_entries: self.position,
             restart_list_start: self.data.len() as u32,
         };

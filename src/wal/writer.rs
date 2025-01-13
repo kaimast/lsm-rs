@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(not(feature = "async-io"))]
-use std::fs::{remove_file, File};
+use std::fs::{File, remove_file};
 
 #[cfg(not(feature = "async-io"))]
 use std::io::Write;
@@ -11,12 +11,12 @@ use std::io::Write;
 use tokio_uring::buf::BoundedBuf;
 
 #[cfg(feature = "async-io")]
-use tokio_uring::fs::{remove_file, File};
+use tokio_uring::fs::{File, remove_file};
 
 use cfg_if::cfg_if;
 
-use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
 use crate::Params;
+use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
 
 /// The task that actually writes the log to disk
 pub struct WalWriter {
@@ -186,7 +186,7 @@ impl WalWriter {
     }
 
     #[allow(unused_mut)]
-    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
+    async fn write_all(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut buf_pos = 0;
         while buf_pos < data.len() {
             let mut file_offset = self.position % PAGE_SIZE;

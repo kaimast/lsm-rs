@@ -10,9 +10,9 @@ use lru::LruCache;
 
 use zerocopy::FromBytes;
 
-use crate::manifest::Manifest;
 use crate::Params;
-use crate::{disk, WriteOp};
+use crate::manifest::Manifest;
+use crate::{WriteOp, disk};
 
 mod builder;
 pub use builder::DataBlockBuilder;
