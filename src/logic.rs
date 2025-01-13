@@ -982,8 +982,8 @@ mod tests {
     #[cfg(not(feature = "async-io"))]
     use tokio::test as async_test;
 
-    use crate::params::Params;
     use crate::StartMode;
+    use crate::params::Params;
 
     use super::{CompactResult, DbLogic};
 

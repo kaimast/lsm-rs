@@ -4,13 +4,13 @@ use std::path::Path;
 
 use crate::data_blocks::DataBlockId;
 use crate::sorted_table::TableId;
-use crate::{disk, Error};
+use crate::{Error, disk};
 use crate::{Key, Params};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[derive(Debug, IntoBytes, KnownLayout, Immutable, FromBytes)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct IndexBlockHeader {
     size: u64,
     min_key_len: u32,
@@ -20,7 +20,7 @@ struct IndexBlockHeader {
 }
 
 #[derive(IntoBytes, KnownLayout, Immutable, FromBytes)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct IndexEntryHeader {
     block_id: DataBlockId,
     key_len: u32,

@@ -9,7 +9,7 @@ use std::io::{Read, Seek};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{Notify, oneshot};
 
 #[cfg(feature = "async-io")]
 use tokio_uring_executor as executor;

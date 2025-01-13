@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32};
 
 use crate::data_blocks::{DataBlockBuilder, DataBlockId, DataBlocks, PrefixedKey};
 use crate::index_blocks::IndexBlock;
