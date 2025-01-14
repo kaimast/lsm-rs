@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "lsm-sync"
-version = "0.3.0"
+version = "0.4.1"
 dependencies = [
  "bincode",
  "cfg-if",

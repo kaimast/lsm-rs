@@ -43,6 +43,7 @@ clean:
 
 update-dependencies:
     cargo update
+    cd sync && cargo update
 
 udeps:
     cargo udeps --all-targets --release
