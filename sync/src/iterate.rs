@@ -1,9 +1,9 @@
 #[cfg(feature = "wisckey")]
 use lsm::values::ValueLog;
 
+use lsm::EntryRef;
 use lsm::memtable::MemtableIterator;
 use lsm::sorted_table::{InternalIterator, Key, TableIterator};
-use lsm::EntryRef;
 
 use std::cmp::Ordering;
 use std::sync::Arc;
