@@ -5,10 +5,13 @@ use lsm::{Database, Params, StartMode, WriteBatch, WriteOptions};
 
 const SM: StartMode = StartMode::CreateOrOverride;
 
-#[cfg(feature = "async-io")]
+#[cfg(feature = "tokio-uring")]
 use tokio_uring_executor::test as async_test;
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(feature="monoio")]
+use monoio::test as async_test;
+
+#[cfg(not(feature = "_async-io"))]
 use tokio::test as async_test;
 
 use rand::Rng;
@@ -437,7 +440,8 @@ async fn get_put_many_delay() {
 }
 
 // Use multi-threading to enable background compaction
-#[async_test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(feature="monoio", async_test)]
+#[cfg_attr(not(feature="monoio"), async_test(flavor = "multi_thread", worker_threads = 4))]
 async fn get_put_delete_large_entry() {
     const SIZE: usize = 1000;
 
@@ -469,7 +473,8 @@ async fn get_put_delete_large_entry() {
     database.stop().await.unwrap();
 }
 
-#[async_test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(feature="monoio", async_test)]
+#[cfg_attr(not(feature="monoio"), async_test(flavor = "multi_thread", worker_threads = 4))]
 async fn get_put_delete_variable_entry() {
     let (_tmpdir, database) = test_init().await;
 
@@ -500,7 +505,8 @@ async fn get_put_delete_variable_entry() {
     database.stop().await.unwrap();
 }
 
-#[async_test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(feature="monoio", async_test)]
+#[cfg_attr(not(feature="monoio"), async_test(flavor = "multi_thread", worker_threads = 4))]
 async fn get_put_delete_many() {
     const COUNT: u64 = 1_003;
 

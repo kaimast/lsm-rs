@@ -81,14 +81,14 @@ async fn main_inner() {
     log::info!("Done");
 }
 
-#[cfg(feature = "async-io")]
+#[cfg(feature = "tokio-uring")]
 fn main() {
     tokio_uring::start(async {
         main_inner().await;
     });
 }
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 #[tokio::main]
 async fn main() {
     main_inner().await;

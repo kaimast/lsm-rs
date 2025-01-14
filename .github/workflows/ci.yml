@@ -27,7 +27,7 @@ jobs:
       run: just async-tests
       timeout-minutes: 10
     - name: "Test: Async I/O"
-      run: just async-io-tests
+      run: just tokio-uring-tests
     - name: "Tests: Sync"
       run: just sync-tests
       timeout-minutes: 10
@@ -42,18 +42,18 @@ jobs:
     - name: "Tests: Sync Wisckey"
       run: just wisckey-sync-tests
       timeout-minutes: 10
-    - name: "Lint Checks: Async"
+    - name: "Lint Checks: Tokio (with sync FS)"
       run: just async-lint
-    - name: "Lint Checks: Async I/O"
-      run: just async-io-lint
-    - name: "Lint Checks: Sync"
+    - name: "Lint Checks: Tokio-Uring"
+      run: just tokio-uring-lint
+    - name: "Lint Checks: Synchronous API"
       run: just sync-lint
     - name: "Lint Checks: Wisckey"
       run: just wisckey-lint
     - name: "Lint Checks: Wisckey with no comrpession"
       run: just wisckey-lint
-    - name: "Lint Checks: Wisckey and Async I/O"
-      run: just async-io-wisckey-lint
+    - name: "Lint Checks: Wisckey and Tokio-Uring"
+      run: just tokio-uring-wisckey-lint
     - name: "Formatting Checks"
       run: just check-formatting
     # Does not work well as some dependencies only used by certain features

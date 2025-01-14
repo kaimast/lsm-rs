@@ -1,10 +1,10 @@
-#[cfg(feature = "async-io")]
+#[cfg(feature = "tokio-uring")]
 use tokio_uring::fs;
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::fs;
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::io::{Read, Seek, Write};
 
 use std::path::Path;
@@ -13,7 +13,7 @@ use cfg_if::cfg_if;
 
 /// Read from the offset to the end of the file
 /// Not supported by tokio-uring yet, so added as a helper function here
-#[cfg(feature = "async-io")]
+#[cfg(feature = "tokio-uring")]
 async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     let mut buffer = vec![0u8; 4096];
     let mut result = vec![];
@@ -38,7 +38,7 @@ async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::E
 #[tracing::instrument]
 pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     cfg_if! {
-        if #[ cfg(feature="async-io") ] {
+        if #[ cfg(feature="_async-io") ] {
             let file = fs::File::open(fpath).await?;
             let buf = read_to_end(&file, offset).await?;
         } else {
@@ -96,7 +96,7 @@ pub async fn write(fpath: &Path, data: &[u8]) -> Result<(), std::io::Error> {
 #[inline(always)]
 pub async fn write_uncompressed(fpath: &Path, data: Vec<u8>) -> Result<(), std::io::Error> {
     cfg_if! {
-        if #[ cfg(feature="async-io") ] {
+        if #[ cfg(feature="_async-io") ] {
             let file = fs::OpenOptions::new().create(true)
                 .truncate(true).write(true)
                 .open(fpath).await?;
