@@ -233,11 +233,13 @@ impl TaskManager {
                     let task = async move { hdl.work_loop().await };
 
                     cfg_if::cfg_if! {
-                        if #[cfg(feature="_async-io")] {
+                        if #[cfg(feature="tokio-uring")] {
                             unsafe {
                                 tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
                                 spawn_pos.advance();
                             }
+                        } else if #[cfg(feature="monoio")] {
+                            monoio::spawn(task);
                         } else {
                             tokio::spawn(task);
                         }

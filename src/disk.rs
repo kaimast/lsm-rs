@@ -16,7 +16,7 @@ use cfg_if::cfg_if;
 
 /// Read from the offset to the end of the file
 /// Not supported by tokio-uring yet, so added as a helper function here
-#[cfg(feature = "tokio-uring")]
+#[cfg(feature = "_async-io")]
 async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::Error> {
     let mut buffer = vec![0u8; 4096];
     let mut result = vec![];
