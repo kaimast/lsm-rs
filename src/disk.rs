@@ -1,6 +1,9 @@
 #[cfg(feature = "tokio-uring")]
 use tokio_uring::fs;
 
+#[cfg(feature = "monoio")]
+use monoio::fs;
+
 #[cfg(not(feature = "_async-io"))]
 use std::fs;
 
