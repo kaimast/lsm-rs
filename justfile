@@ -2,7 +2,10 @@ LOG_LEVEL := "debug"
 
 all: tests lint
 
-tests: sync-tests async-tests no-compression-tests tokio-uring-tests wisckey-tests wisckey-no-compression-tests wisckey-sync-tests
+tests: sync-tests async-tests no-compression-tests \
+       tokio-uring-tests wisckey-tests \
+       wisckey-no-compression-tests wisckey-sync-tests \
+       monoio-tests monoio-wisckey-tests
 
 sync-tests:
     cd sync && just default-tests
@@ -15,6 +18,9 @@ tokio-uring-tests:
 
 monoio-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=monoio,bloom-filters -- --test-threads=1
+
+monoio-wisckey-tests:
+    env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=monoio,wisckey,bloom-filters -- --test-threads=1
 
 tokio-uring-wisckey-tests:
     env RUST_BACKTRACE=1 RUST_LOG={{LOG_LEVEL}} cargo test --no-default-features --features=tokio-uring,wisckey,bloom-filters -- --test-threads=1
@@ -31,7 +37,9 @@ wisckey-no-compression-tests:
 wisckey-sync-tests:
     cd sync && just wisckey-tests
 
-lint: sync-lint async-lint wisckey-lint wisckey-no-compression-lint tokio-uring-lint tokio-uring-wisckey-lint monoio-lint
+lint: sync-lint async-lint wisckey-lint \
+      wisckey-no-compression-lint tokio-uring-lint \
+      tokio-uring-wisckey-lint monoio-lint monoio-wisckey-lint
 
 fix-formatting:
     cargo fmt
@@ -63,6 +71,9 @@ tokio-uring-lint:
 
 monoio-lint:
     cargo clippy --no-default-features --features=monoio,bloom-filters -- -D warnings
+
+monoio-wisckey-lint:
+    cargo clippy --no-default-features --features=monoio,wisckey,bloom-filters -- -D warnings
 
 wisckey-lint:
     cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings

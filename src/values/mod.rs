@@ -11,7 +11,11 @@ use crate::Error;
 
 use lru::LruCache;
 
-#[cfg(feature = "_async-io")]
+#[cfg(feature = "monoio")]
+use monoio::fs::OpenOptions;
+#[cfg(feature = "monoio")]
+use std::fs::remove_file;
+#[cfg(feature = "tokio-uring")]
 use tokio_uring::fs::{OpenOptions, remove_file};
 
 #[cfg(not(feature = "_async-io"))]
@@ -292,7 +296,7 @@ impl ValueLog {
             self.manifest.set_value_log_offset(vlog_offset + 1).await;
 
             cfg_if! {
-                if #[ cfg(feature="_async-io") ] {
+                if #[ cfg(feature="tokio-uring") ] {
                     remove_file(&fpath).await?;
                 } else {
                     remove_file(&fpath)?;
