@@ -1,7 +1,6 @@
 #![feature(trait_alias)]
 #![feature(get_mut_unchecked)]
 #![feature(let_chains)]
-#![feature(const_option)]
 #![feature(trivial_bounds)]
 // Temporary workaround for the io_uring code
 #![allow(clippy::arc_with_non_send_sync)]
@@ -26,7 +25,6 @@ pub mod memtable;
 pub mod tasks;
 
 pub mod logic;
-use logic::DbLogic;
 pub use logic::EntryRef;
 
 pub mod manifest;

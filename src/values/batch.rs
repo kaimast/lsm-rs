@@ -8,7 +8,7 @@ use crate::disk;
 use crate::values::{ValueBatchId, ValueId, ValueLog, ValueOffset, ValueRef};
 use crate::{Error, Value};
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /**
  * The layout is as follows:
@@ -33,15 +33,15 @@ pub struct ValueBatchBuilder<'a> {
     value_data: Vec<u8>,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
-#[repr(packed)]
+#[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
+#[repr(C, packed)]
 pub(super) struct ValueBatchHeader {
     pub folded: u32, //boolean flag
     pub num_values: u32,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
-#[repr(packed)]
+#[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
+#[repr(C, packed)]
 pub(super) struct ValueEntryHeader {
     pub length: u64,
 }
@@ -177,7 +177,8 @@ impl ValueBatch {
         };
 
         let mut offset = pos as usize;
-        let vheader = ValueEntryHeader::ref_from_prefix(&self_ptr.value_data[offset..]).unwrap();
+        let (vheader, _) =
+            ValueEntryHeader::ref_from_prefix(&self_ptr.value_data[offset..]).unwrap();
 
         offset += size_of::<ValueEntryHeader>();
 
@@ -194,7 +195,9 @@ impl ValueBatch {
     }
 
     fn get_header(&self) -> &ValueBatchHeader {
-        ValueBatchHeader::ref_from_prefix(&self.metadata[..]).unwrap()
+        ValueBatchHeader::ref_from_prefix(&self.metadata[..])
+            .unwrap()
+            .0
     }
 
     pub(super) fn get_delete_flags(&self) -> &[u8] {

@@ -91,8 +91,8 @@ impl MemtableIterator {
     }
 }
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 impl InternalIterator for MemtableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {
@@ -214,7 +214,7 @@ impl MemtableRef {
 
     /// This is only safe to call from the DbLogic while holding the memtable lock
     pub(crate) unsafe fn get_mut(&mut self) -> &mut Memtable {
-        Arc::get_mut_unchecked(&mut self.inner)
+        unsafe { Arc::get_mut_unchecked(&mut self.inner) }
     }
 }
 
@@ -293,13 +293,10 @@ impl Memtable {
 
         self.entries.insert(
             pos,
-            (
-                key,
-                MemtableEntry::Value {
-                    value,
-                    seq_number: self.next_seq_number,
-                },
-            ),
+            (key, MemtableEntry::Value {
+                value,
+                seq_number: self.next_seq_number,
+            }),
         );
 
         self.size += entry_len;
@@ -313,12 +310,9 @@ impl Memtable {
 
         self.entries.insert(
             pos,
-            (
-                key,
-                MemtableEntry::Deletion {
-                    seq_number: self.next_seq_number,
-                },
-            ),
+            (key, MemtableEntry::Deletion {
+                seq_number: self.next_seq_number,
+            }),
         );
 
         self.size += entry_len;

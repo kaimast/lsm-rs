@@ -1,22 +1,28 @@
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(not(feature = "async-io"))]
-use std::fs::{remove_file, File};
+#[cfg(not(feature = "_async-io"))]
+use std::fs::{File, remove_file};
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::io::Write;
 
-#[cfg(feature = "async-io")]
-use tokio_uring::buf::BoundedBuf;
+#[cfg(feature = "tokio-uring")]
+use tokio_uring::{
+    buf::BoundedBuf,
+    fs::{File, remove_file},
+};
 
-#[cfg(feature = "async-io")]
-use tokio_uring::fs::{remove_file, File};
+#[cfg(feature = "monoio")]
+use monoio::{buf::IoBuf, fs::File};
+
+#[cfg(feature = "monoio")]
+use std::fs::remove_file;
 
 use cfg_if::cfg_if;
 
-use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
 use crate::Params;
+use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
 
 /// The task that actually writes the log to disk
 pub struct WalWriter {
@@ -158,7 +164,7 @@ impl WalWriter {
             log::trace!("Removing file {fpath:?}");
 
             cfg_if! {
-                if #[cfg(feature="async-io") ] {
+                if #[cfg(feature="tokio-uring")] {
                     remove_file(&fpath).await
                         .unwrap_or_else(|err| {
                             panic!("Failed to remove log file {fpath:?}: {err}");
@@ -175,7 +181,7 @@ impl WalWriter {
 
     async fn sync(&mut self) {
         cfg_if! {
-            if #[cfg(feature="async-io") ] {
+            if #[cfg(feature="_async-io") ] {
                 self.log_file.sync_data().await
                     .expect("Data sync failed");
             } else {
@@ -186,7 +192,7 @@ impl WalWriter {
     }
 
     #[allow(unused_mut)]
-    async fn write_all<'a>(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
+    async fn write_all(&mut self, mut data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut buf_pos = 0;
         while buf_pos < data.len() {
             let mut file_offset = self.position % PAGE_SIZE;
@@ -200,13 +206,21 @@ impl WalWriter {
 
             assert!(write_len > 0);
             cfg_if! {
-                if #[cfg(feature = "async-io")] {
+                if #[cfg(feature="tokio-uring")] {
                     let to_write = data.slice(buf_pos..buf_pos + write_len);
                     let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
                     res.expect("Failed to write to log file");
 
                     data = buf.into_inner();
-                } else {
+                } else if #[cfg(feature="monoio")] {
+                    let to_write = data.slice(buf_pos..buf_pos + write_len);
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    res.expect("Failed to write to log file");
+
+                    data = buf.into_inner();
+
+
+                }else {
                     let to_write = &data[buf_pos..buf_pos + write_len];
                     self.log_file.write_all(to_write).expect("Failed to write log file");
                 }
@@ -236,7 +250,7 @@ impl WalWriter {
         log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 File::create(fpath).await
             } else {
                 File::create(fpath)
@@ -252,7 +266,7 @@ impl WalWriter {
         log::trace!("Opening file at {fpath:?}");
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let log_file = OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(fpath).await?;

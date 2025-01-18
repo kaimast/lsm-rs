@@ -1,21 +1,21 @@
 #![allow(clippy::await_holding_lock)]
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::fs::{File, OpenOptions};
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::io::{Read, Seek};
 
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{Notify, oneshot};
 
-#[cfg(feature = "async-io")]
-use tokio_uring_executor as executor;
-
-#[cfg(feature = "async-io")]
+#[cfg(feature = "tokio-uring")]
 use tokio_uring::fs::{File, OpenOptions};
+
+#[cfg(feature = "monoio")]
+use monoio::fs::{File, OpenOptions};
 
 use cfg_if::cfg_if;
 
@@ -107,9 +107,23 @@ impl WriteAheadLog {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
         cfg_if::cfg_if! {
-            if #[cfg(feature = "async-io")] {
+            if #[cfg(feature="monoio")] {
+                {
+                    monoio::spawn(async move {
+                        let mut writer = WalWriter::new(params).await;
+                        loop {
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
+                        }
+
+                        let _ = finish_sender.send(());
+                    });
+                }
+            } else if #[cfg(feature = "_async-io")] {
                 unsafe {
-                    executor::unsafe_spawn(async move {
+                    tokio_uring_executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::new(params).await;
                         loop {
                             let done = writer.update_log(&inner).await;
@@ -156,7 +170,7 @@ impl WriteAheadLog {
         let fpos = position / PAGE_SIZE;
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let mut log_file = WalWriter::open_file(&params, fpos).await?;
             } else {
                 let file_offset = position % PAGE_SIZE;
@@ -251,9 +265,22 @@ impl WriteAheadLog {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
         cfg_if::cfg_if! {
-            if #[cfg(feature = "async-io")] {
+            if #[cfg(feature = "tokio-uring")] {
                 unsafe {
-                    executor::unsafe_spawn(async move {
+                    tokio_uring_executor::unsafe_spawn(async move {
+                        let mut writer = WalWriter::continue_from(position, params).await;
+                        loop {
+                            let done = writer.update_log(&inner).await;
+                            if done {
+                                break;
+                            }
+                        }
+                        let _ = finish_sender.send(());
+                    });
+                }
+            } else if #[cfg(feature="monoio")] {
+                {
+                    monoio::spawn(async move {
                         let mut writer = WalWriter::continue_from(position, params).await;
                         loop {
                             let done = writer.update_log(&inner).await;
@@ -310,10 +337,12 @@ impl WriteAheadLog {
             let read_slice = &mut out[read_start..read_end];
 
             cfg_if! {
-                if #[cfg(feature="async-io")] {
+                if #[cfg(feature="_async-io")] {
                     let buf = vec![0u8; read_slice.len()];
                     let (read_result, buf) = log_file.read_exact_at(buf, file_offset).await;
-                    read_slice.copy_from_slice(&buf);
+                    if read_result.is_ok() {
+                        read_slice.copy_from_slice(&buf);
+                    }
                 } else {
                     let read_result = log_file.read_exact(read_slice);
                 }

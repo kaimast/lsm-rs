@@ -1,10 +1,10 @@
 use crate::data_blocks::{DataBlocks, DataEntry};
-use crate::manifest::{LevelId, Manifest, INVALID_TABLE_ID};
+use crate::manifest::{INVALID_TABLE_ID, LevelId, Manifest};
 use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
 use crate::{Error, Params};
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 
@@ -62,6 +62,7 @@ impl Level {
 
     /// Set where to (try to) compact next
     /// (only used for testing)
+    #[allow(dead_code)]
     pub fn set_next_compaction_offset(&self, offset: usize) {
         *self.next_compaction_offset.lock() = offset;
     }

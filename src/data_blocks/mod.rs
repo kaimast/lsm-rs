@@ -10,9 +10,9 @@ use lru::LruCache;
 
 use zerocopy::FromBytes;
 
-use crate::manifest::Manifest;
 use crate::Params;
-use crate::{disk, WriteOp};
+use crate::manifest::Manifest;
+use crate::{WriteOp, disk};
 
 mod builder;
 pub use builder::DataBlockBuilder;
@@ -71,7 +71,7 @@ impl DataEntry {
     fn get_header(&self) -> &EntryHeader {
         let header_len = std::mem::size_of::<EntryHeader>();
         let header_data = &self.block.data[self.offset..self.offset + header_len];
-        EntryHeader::ref_from(header_data).expect("Failed to read entry header")
+        EntryHeader::ref_from_bytes(header_data).expect("Failed to read entry header")
     }
 
     pub fn get_sequence_number(&self) -> u64 {
@@ -203,10 +203,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[cfg(feature = "async-io")]
+    #[cfg(feature = "tokio-uring")]
     use tokio_uring_executor::test as async_test;
 
-    #[cfg(not(feature = "async-io"))]
+    #[cfg(feature = "monoio")]
+    use monoio::test as async_test;
+
+    #[cfg(not(feature = "_async-io"))]
     use tokio::test as async_test;
 
     #[cfg(feature = "wisckey")]

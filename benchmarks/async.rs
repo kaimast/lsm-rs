@@ -48,7 +48,10 @@ async fn bench_init(args: &Args) -> (TempDir, Database) {
     (tmp_dir, database)
 }
 
-async fn main_inner() {
+#[cfg_attr(feature = "tokio-uring", tokio_uring_executor::main)]
+#[cfg_attr(feature = "monoio", monoio::main)]
+#[cfg_attr(not(feature = "_async-io"), tokio::main)]
+async fn main() {
     let args = Args::parse();
 
     let (_tmpdir, database) = bench_init(&args).await;
@@ -79,17 +82,4 @@ async fn main_inner() {
 
     database.stop().await.unwrap();
     log::info!("Done");
-}
-
-#[cfg(feature = "async-io")]
-fn main() {
-    tokio_uring::start(async {
-        main_inner().await;
-    });
-}
-
-#[cfg(not(feature = "async-io"))]
-#[tokio::main]
-async fn main() {
-    main_inner().await;
 }

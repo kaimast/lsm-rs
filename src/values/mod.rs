@@ -5,23 +5,23 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::Error;
 
 use lru::LruCache;
 
-#[cfg(feature = "async-io")]
-use tokio_uring::fs::{remove_file, OpenOptions};
+#[cfg(feature = "_async-io")]
+use tokio_uring::fs::{OpenOptions, remove_file};
 
-#[cfg(not(feature = "async-io"))]
-use std::fs::{remove_file, OpenOptions};
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
+use std::fs::{OpenOptions, remove_file};
+#[cfg(not(feature = "_async-io"))]
 use std::io::{Read, Seek, SeekFrom, Write};
 
+use crate::Params;
 use crate::disk;
 use crate::manifest::Manifest;
-use crate::Params;
 
 use cfg_if::cfg_if;
 
@@ -93,7 +93,7 @@ impl ValueLog {
         let mut header_data = vec![0u8; header_len];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(&meta_path).await?;
@@ -110,13 +110,13 @@ impl ValueLog {
             }
         }
 
-        let header = ValueBatchHeader::ref_from(&header_data).unwrap();
+        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
 
         let mut offset_pos = None;
         let offset_len = size_of::<u32>();
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 // Skip deletion markers
                 let pos = header_len + header.delete_markers_len();
                 let buf = vec![0u8; header.offsets_len()];
@@ -126,7 +126,7 @@ impl ValueLog {
                 if header.is_folded() {
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
+                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
                         if old_offset == &value_offset {
                             offset_pos = Some(pos);
@@ -135,7 +135,7 @@ impl ValueLog {
                 } else {
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
+                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
                         if offset == &value_offset {
                             offset_pos = Some(pos);
                             break;
@@ -154,17 +154,16 @@ impl ValueLog {
                 if header.is_folded() {
                      for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let old_offset = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
+                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
 
                         if old_offset == &value_offset {
                             offset_pos = Some(pos);
                         }
                     }
                 } else {
-
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
-                        let offset = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
+                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
                         if offset == &value_offset {
                             offset_pos = Some(pos);
                         }
@@ -212,7 +211,7 @@ impl ValueLog {
         let mut header_data = vec![0u8; header_len];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(&fpath).await?;
@@ -229,14 +228,14 @@ impl ValueLog {
             }
         }
 
-        let header = ValueBatchHeader::ref_from(&header_data).unwrap();
+        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
 
         let olen = std::mem::size_of::<u32>();
         let mut offsets = vec![0u32; header.num_values as usize];
         let mut delete_flags = vec![0u8; header.delete_markers_len()];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let (res, buf) = file.read_exact_at(delete_flags, header_len as u64).await;
                 res?;
                 delete_flags = buf;
@@ -252,7 +251,7 @@ impl ValueLog {
         };
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let pos = header_len + header.delete_markers_len();
                 let (res, data) = file.read_exact_at(buf, pos as u64).await;
                 res?;
@@ -264,11 +263,11 @@ impl ValueLog {
 
         if header.is_folded() {
             for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * 2 * olen..]).unwrap();
+                offsets[idx] = *u32::ref_from_prefix(&buf[idx * 2 * olen..]).unwrap().0;
             }
         } else {
             for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap();
+                offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap().0;
             }
         }
 
@@ -293,7 +292,7 @@ impl ValueLog {
             self.manifest.set_value_log_offset(vlog_offset + 1).await;
 
             cfg_if! {
-                if #[ cfg(feature="async-io") ] {
+                if #[ cfg(feature="_async-io") ] {
                     remove_file(&fpath).await?;
                 } else {
                     remove_file(&fpath)?;
@@ -336,7 +335,7 @@ impl ValueLog {
             let old_offset: u32 = offsets[pos];
             let data_start = old_offset as usize;
 
-            let entry_header =
+            let (entry_header, _) =
                 ValueEntryHeader::ref_from_prefix(&batch.get_value_data()[data_start..]).unwrap();
 
             let data_end =

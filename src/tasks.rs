@@ -1,23 +1,24 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
 
 use tokio::sync::Notify;
 
-use crate::{DbLogic, Error};
+use crate::Error;
+use crate::logic::DbLogic;
 
 use async_trait::async_trait;
 
-#[cfg(feature = "async-io")]
+#[cfg(feature = "_async-io")]
 #[async_trait(?Send)]
 pub trait Task {
     async fn run(&self) -> Result<bool, Error>;
 }
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 #[async_trait]
 pub trait Task: Sync + Send {
     async fn run(&self) -> Result<bool, Error>;
@@ -78,8 +79,8 @@ impl LevelCompactionTask {
     }
 }
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 impl Task for MemtableCompactionTask {
     async fn run(&self) -> Result<bool, Error> {
         let did_work = self.datastore.do_memtable_compaction().await?;
@@ -90,8 +91,8 @@ impl Task for MemtableCompactionTask {
     }
 }
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 impl Task for LevelCompactionTask {
     async fn run(&self) -> Result<bool, Error> {
         Ok(self.datastore.do_level_compaction().await?)
@@ -182,7 +183,7 @@ impl TaskManager {
 
         let level_update_cond = Arc::new(UpdateCond::new());
 
-        #[cfg(feature = "async-io")]
+        #[cfg(feature = "tokio-uring")]
         let mut spawn_pos = tokio_uring_executor::SpawnPos::default();
 
         {
@@ -198,11 +199,13 @@ impl TaskManager {
                 let task = async move { hdl.work_loop().await };
 
                 cfg_if::cfg_if! {
-                    if #[cfg(feature="async-io")] {
+                    if #[cfg(feature="tokio-uring")] {
                         unsafe {
                             tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
                             spawn_pos.advance();
                         }
+                    } else if #[cfg(feature="monoio")] {
+                        monoio::spawn(task);
                     } else {
                         tokio::spawn(task);
                     }
@@ -230,11 +233,13 @@ impl TaskManager {
                     let task = async move { hdl.work_loop().await };
 
                     cfg_if::cfg_if! {
-                        if #[cfg(feature="async-io")] {
+                        if #[cfg(feature="tokio-uring")] {
                             unsafe {
                                 tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
                                 spawn_pos.advance();
                             }
+                        } else if #[cfg(feature="monoio")] {
+                            monoio::spawn(task);
                         } else {
                             tokio::spawn(task);
                         }

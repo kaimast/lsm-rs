@@ -5,7 +5,7 @@ use crate::sorted_table::Key;
 
 use super::{DataEntry, SearchResult};
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[cfg(feature = "bloom-filters")]
 use bloomfilter::Bloom;
@@ -18,7 +18,11 @@ use crate::values::{ValueBatchId, ValueOffset};
 pub(super) const BLOOM_LENGTH: usize = 1024;
 
 #[cfg(feature = "bloom-filters")]
-pub(super) const BLOOM_KEY_NUM: usize = 1024;
+pub(super) const BLOOM_ITEM_COUNT: usize = 1024;
+
+#[cfg(feature = "bloom-filters")]
+/// Taken from https://github.com/jedisct1/rust-bloom-filter/blob/6b93b922be474998514b696dc84333d6c04ed991/src/bitmap.rs#L5
+pub(super) const BLOOM_HEADER_SIZE: usize = 1 + 8 + 4 + 32;
 
 /**
  * Layout of a data block on disk
@@ -29,15 +33,13 @@ pub(super) const BLOOM_KEY_NUM: usize = 1024;
  * 4. Sequence of variable-length entries
  * 5. Variable length restart list (each entry is 4bytes; so we don't need length information)
  */
-#[derive(AsBytes, FromBytes, FromZeroes)]
-#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[repr(C, packed)]
 pub(super) struct DataBlockHeader {
     pub(super) restart_list_start: u32,
     pub(super) number_of_entries: u32,
     #[cfg(feature = "bloom-filters")]
-    pub(super) bloom_filter: [u8; 1024],
-    #[cfg(feature = "bloom-filters")]
-    pub(super) bloom_filter_keys: [u64; 4],
+    pub(super) bloom_filter: [u8; BLOOM_LENGTH + BLOOM_HEADER_SIZE],
 }
 
 /**
@@ -66,8 +68,8 @@ pub(super) struct DataBlockHeader {
  *  - Variable length key suffix
  *  - Variable length value
  */
-#[derive(AsBytes, FromBytes, FromZeroes)]
-#[repr(packed)]
+#[derive(IntoBytes, Immutable, FromBytes, KnownLayout)]
+#[repr(C, packed)]
 pub(super) struct EntryHeader {
     pub(super) prefix_len: u32,
     pub(super) suffix_len: u32,
@@ -95,24 +97,11 @@ impl DataBlock {
     pub fn new_from_data(data: Vec<u8>, restart_interval: u32) -> Self {
         assert!(!data.is_empty(), "No data?");
 
-        let header = DataBlockHeader::ref_from(&data[..Self::header_length()]).unwrap();
+        let header = DataBlockHeader::ref_from_bytes(&data[..Self::header_length()]).unwrap();
 
         #[cfg(feature = "bloom-filters")]
-        let bloom_filter = {
-            // Work around zerocopy not liking tuples
-            let mut filter_keys = [(0u64, 0u64); 2];
-            for (idx, item) in filter_keys.iter_mut().enumerate() {
-                item.0 = header.bloom_filter_keys[idx * 2];
-                item.1 = header.bloom_filter_keys[idx * 2 + 1];
-            }
-
-            Bloom::from_existing(
-                header.bloom_filter.as_slice(),
-                (BLOOM_LENGTH * 8) as u64,
-                BLOOM_KEY_NUM as u32,
-                filter_keys,
-            )
-        };
+        let bloom_filter = Bloom::from_bytes(header.bloom_filter.as_slice().to_vec())
+            .expect("Failed to load bloom filter");
 
         log::trace!("Created new data block from existing data");
 
@@ -146,7 +135,7 @@ impl DataBlock {
             panic!("Invalid offset {offset}");
         }
 
-        let header = EntryHeader::ref_from(&self_ptr.data[offset..offset + header_len])
+        let header = EntryHeader::ref_from_bytes(&self_ptr.data[offset..offset + header_len])
             .expect("Failed to read entry header");
         let entry_offset = offset;
 
