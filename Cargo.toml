@@ -24,13 +24,20 @@ tracing = { version="0.1", default-features=false, features=["attributes"] }
 csv = "1"
 tokio-condvar = { version="0.3", features=["parking_lot"] }
 tokio-uring = { version="0.5", optional=true }
-tokio-uring-executor = { package="kioto-uring-executor", version="0.1", optional=true }
 bloomfilter = { version="3", optional=true }
+monoio = { version="0.2", optional=true, features=["sync"] }
 
 [dependencies.tokio]
 version="1"
 default-features=false
 features=["io-util", "sync", "macros", "tracing", "time"]
+
+[dependencies.tokio-uring-executor]
+package="kioto-uring-executor"
+git="https://github.com/kaimast/kioto-uring-executor.git"
+branch="shutdown"
+# version="0.1"
+optional=true
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
@@ -46,10 +53,12 @@ path = "src/lib.rs"
 
 [features]
 default = ["snappy-compression", "bloom-filters"]
+monoio = ["dep:monoio", "_async-io"]
 snappy-compression = ["dep:snap"]
 wisckey = []
 bloom-filters = ["dep:bloomfilter"]
-async-io = ["dep:tokio-uring", "dep:tokio-uring-executor"]
+tokio-uring = ["dep:tokio-uring", "dep:tokio-uring-executor", "_async-io"]
+_async-io = []
 
 [[test]]
 name = "basic"

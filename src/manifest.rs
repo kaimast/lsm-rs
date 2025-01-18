@@ -440,10 +440,13 @@ mod tests {
 
     use tempfile::tempdir;
 
-    #[cfg(feature = "async-io")]
+    #[cfg(feature = "tokio-uring")]
     use tokio_uring_executor::test as async_test;
 
-    #[cfg(not(feature = "async-io"))]
+    #[cfg(feature = "monoio")]
+    use monoio::test as async_test;
+
+    #[cfg(not(feature = "_async-io"))]
     use tokio::test as async_test;
 
     use crate::params::Params;

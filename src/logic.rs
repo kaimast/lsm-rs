@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::fs;
 
 use tokio::sync::RwLock;
@@ -114,7 +114,7 @@ impl DbLogic {
                     );
 
                     cfg_if! {
-                        if #[ cfg(feature="async-io") ] {
+                        if #[ cfg(feature="_async-io") ] {
                             // Not yet supported in tokio_uring
                             std::fs::remove_dir_all(&params.db_path)
                                 .expect("Failed to remove existing database");
@@ -136,7 +136,7 @@ impl DbLogic {
 
         if create {
             cfg_if! {
-                if #[ cfg(feature="async-io") ] {
+                if #[ cfg(feature="_async-io") ] {
                     // Not yet supported in tokio_uring
                     match std::fs::create_dir(&params.db_path) {
                         Ok(()) => {
@@ -147,7 +147,7 @@ impl DbLogic {
                         }
                     }
                 } else {
-                    #[ cfg(not(feature="async-io")) ]
+                    #[ cfg(not(feature="_async-io")) ]
                     match fs::create_dir(&params.db_path) {
                         Ok(()) => {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
@@ -976,10 +976,13 @@ mod tests {
 
     use tempfile::TempDir;
 
-    #[cfg(feature = "async-io")]
+    #[cfg(feature = "tokio-uring")]
     use tokio_uring_executor::test as async_test;
 
-    #[cfg(not(feature = "async-io"))]
+    #[cfg(feature = "monoio")]
+    use monoio::test as async_test;
+
+    #[cfg(not(feature = "_async-io"))]
     use tokio::test as async_test;
 
     use crate::StartMode;

@@ -11,12 +11,12 @@ use crate::Error;
 
 use lru::LruCache;
 
-#[cfg(feature = "async-io")]
+#[cfg(feature = "_async-io")]
 use tokio_uring::fs::{OpenOptions, remove_file};
 
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::fs::{OpenOptions, remove_file};
-#[cfg(not(feature = "async-io"))]
+#[cfg(not(feature = "_async-io"))]
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::Params;
@@ -93,7 +93,7 @@ impl ValueLog {
         let mut header_data = vec![0u8; header_len];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(&meta_path).await?;
@@ -116,7 +116,7 @@ impl ValueLog {
         let offset_len = size_of::<u32>();
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 // Skip deletion markers
                 let pos = header_len + header.delete_markers_len();
                 let buf = vec![0u8; header.offsets_len()];
@@ -211,7 +211,7 @@ impl ValueLog {
         let mut header_data = vec![0u8; header_len];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let file =  OpenOptions::new()
                     .read(true).write(true).create(false).truncate(false)
                     .open(&fpath).await?;
@@ -235,7 +235,7 @@ impl ValueLog {
         let mut delete_flags = vec![0u8; header.delete_markers_len()];
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let (res, buf) = file.read_exact_at(delete_flags, header_len as u64).await;
                 res?;
                 delete_flags = buf;
@@ -251,7 +251,7 @@ impl ValueLog {
         };
 
         cfg_if! {
-            if #[cfg(feature="async-io")] {
+            if #[cfg(feature="_async-io")] {
                 let pos = header_len + header.delete_markers_len();
                 let (res, data) = file.read_exact_at(buf, pos as u64).await;
                 res?;
@@ -292,7 +292,7 @@ impl ValueLog {
             self.manifest.set_value_log_offset(vlog_offset + 1).await;
 
             cfg_if! {
-                if #[ cfg(feature="async-io") ] {
+                if #[ cfg(feature="_async-io") ] {
                     remove_file(&fpath).await?;
                 } else {
                     remove_file(&fpath)?;

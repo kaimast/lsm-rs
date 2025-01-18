@@ -31,7 +31,8 @@ However, we may add a converter tool in the future or an `endianess` feature fla
 ## Feature Flags
 * `snappy-compression`: Use the [snappy format](https://docs.rs/snap/1.0.5/snap/) to compress data on disk *(enabled by default)*
 * `bloom-filters`: Add bloom filters to data blocks for more efficient searching. *(enabled by default)*
-* `async-io`: Use `tokio_uring` for I/O instead of that of the standard library. Note, that this only works recent version of the Linux kernel. *(disabled by default)*
+* `monoio`: Use `monoio` as async runtime I/O instead of `tokio. ` *(disabled by default)*
+* `async-io`: Use `tokio_uring` as async runtime instead of regular `tokio`. *(disabled by default)*
 * `wisckey`: Store keys and values separately. This usually results in higher throughput with slightly higher CPU-usage. *(disabled by default)*
 
 ## Synchronous API

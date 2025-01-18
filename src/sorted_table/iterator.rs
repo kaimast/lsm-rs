@@ -12,8 +12,8 @@ use super::SortedTable;
 #[cfg(feature = "wisckey")]
 use crate::values::{ValueId, ValueLog};
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 pub trait InternalIterator: Send {
     fn at_end(&self) -> bool;
     async fn step(&mut self);
@@ -110,8 +110,8 @@ impl TableIterator {
     }
 }
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 impl InternalIterator for TableIterator {
     fn at_end(&self) -> bool {
         if self.reverse {

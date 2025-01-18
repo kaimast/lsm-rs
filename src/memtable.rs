@@ -91,8 +91,8 @@ impl MemtableIterator {
     }
 }
 
-#[cfg_attr(feature="async-io", async_trait(?Send))]
-#[cfg_attr(not(feature = "async-io"), async_trait)]
+#[cfg_attr(feature="_async-io", async_trait(?Send))]
+#[cfg_attr(not(feature = "_async-io"), async_trait)]
 impl InternalIterator for MemtableIterator {
     #[tracing::instrument]
     async fn step(&mut self) {
