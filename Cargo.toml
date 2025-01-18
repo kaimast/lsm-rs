@@ -32,11 +32,10 @@ version="1"
 default-features=false
 features=["io-util", "sync", "macros", "tracing", "time"]
 
-[dependencies.tokio-uring-executor]
-package="kioto-uring-executor"
+[dependencies.kioto-uring-executor]
 git="https://github.com/kaimast/kioto-uring-executor.git"
-branch="shutdown"
-# version="0.1"
+branch="no-globals"
+version="0.2"
 optional=true
 
 [dev-dependencies]
@@ -57,7 +56,7 @@ monoio = ["dep:monoio", "_async-io"]
 snappy-compression = ["dep:snap"]
 wisckey = []
 bloom-filters = ["dep:bloomfilter"]
-tokio-uring = ["dep:tokio-uring", "dep:tokio-uring-executor", "_async-io"]
+tokio-uring = ["dep:tokio-uring", "dep:kioto-uring-executor", "_async-io"]
 _async-io = []
 
 [[test]]
