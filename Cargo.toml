@@ -26,7 +26,7 @@ tokio-condvar = { version="0.3", features=["parking_lot"] }
 tokio-uring = { version="0.5", optional=true }
 tokio-uring-executor = { package="kioto-uring-executor", version="0.1", optional=true }
 bloomfilter = { version="3", optional=true }
-monoio = { version="0.2", optional=true }
+monoio = { version="0.2", optional=true, features=["sync"] }
 
 [dependencies.tokio]
 version="1"

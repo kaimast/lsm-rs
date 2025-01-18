@@ -26,8 +26,10 @@ jobs:
     - name: "Test: Async"
       run: just async-tests
       timeout-minutes: 10
-    - name: "Test: Async I/O"
+    - name: "Test: Tokio-Uring"
       run: just tokio-uring-tests
+    - name: "Test: Monoio"
+      run: just monoio-tests
     - name: "Tests: Sync"
       run: just sync-tests
       timeout-minutes: 10
@@ -46,6 +48,8 @@ jobs:
       run: just async-lint
     - name: "Lint Checks: Tokio-Uring"
       run: just tokio-uring-lint
+    - name: "Lint Checks: Monoio "
+      run: just monoio-lint
     - name: "Lint Checks: Synchronous API"
       run: just sync-lint
     - name: "Lint Checks: Wisckey"

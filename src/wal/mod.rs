@@ -340,7 +340,9 @@ impl WriteAheadLog {
                 if #[cfg(feature="_async-io")] {
                     let buf = vec![0u8; read_slice.len()];
                     let (read_result, buf) = log_file.read_exact_at(buf, file_offset).await;
-                    read_slice.copy_from_slice(&buf);
+                    if read_result.is_ok() {
+                        read_slice.copy_from_slice(&buf);
+                    }
                 } else {
                     let read_result = log_file.read_exact(read_slice);
                 }
