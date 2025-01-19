@@ -5,7 +5,7 @@ use crate::manifest::Manifest;
 use tempfile::tempdir;
 
 #[cfg(feature = "tokio-uring")]
-use tokio_uring_executor::test as async_test;
+use kioto_uring_executor::test as async_test;
 
 #[cfg(feature = "monoio")]
 use monoio::test as async_test;

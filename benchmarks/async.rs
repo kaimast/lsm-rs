@@ -48,7 +48,7 @@ async fn bench_init(args: &Args) -> (TempDir, Database) {
     (tmp_dir, database)
 }
 
-#[cfg_attr(feature = "tokio-uring", tokio_uring_executor::main)]
+#[cfg_attr(feature = "tokio-uring", kioto_uring_executor::main)]
 #[cfg_attr(feature = "monoio", monoio::main)]
 #[cfg_attr(not(feature = "_async-io"), tokio::main)]
 async fn main() {

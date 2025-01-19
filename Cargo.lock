@@ -518,8 +518,9 @@ dependencies = [
 
 [[package]]
 name = "kioto-uring-executor"
-version = "0.1.0"
-source = "git+https://github.com/kaimast/kioto-uring-executor.git?branch=shutdown#5a60cd8e9822976481f2ee03a79431dac6412525"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f0e1ad51f133106beba9af4352bb385556764f15f975990235e6909efacd58f"
 dependencies = [
  "kioto-uring-executor-macros",
  "log",
@@ -531,8 +532,9 @@ dependencies = [
 
 [[package]]
 name = "kioto-uring-executor-macros"
-version = "0.1.0"
-source = "git+https://github.com/kaimast/kioto-uring-executor.git?branch=shutdown#5a60cd8e9822976481f2ee03a79431dac6412525"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beaf83aeb08c05292cfd5eb3ab635d35eea520ebd673bab24c27663a473781ab"
 dependencies = [
  "proc-macro2",
  "quote",

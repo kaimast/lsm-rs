@@ -123,7 +123,7 @@ impl WriteAheadLog {
                 }
             } else if #[cfg(feature = "_async-io")] {
                 unsafe {
-                    tokio_uring_executor::unsafe_spawn(async move {
+                    kioto_uring_executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::new(params).await;
                         loop {
                             let done = writer.update_log(&inner).await;
@@ -267,7 +267,7 @@ impl WriteAheadLog {
         cfg_if::cfg_if! {
             if #[cfg(feature = "tokio-uring")] {
                 unsafe {
-                    tokio_uring_executor::unsafe_spawn(async move {
+                    kioto_uring_executor::unsafe_spawn(async move {
                         let mut writer = WalWriter::continue_from(position, params).await;
                         loop {
                             let done = writer.update_log(&inner).await;

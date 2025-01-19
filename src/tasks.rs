@@ -184,7 +184,7 @@ impl TaskManager {
         let level_update_cond = Arc::new(UpdateCond::new());
 
         #[cfg(feature = "tokio-uring")]
-        let mut spawn_pos = tokio_uring_executor::SpawnPos::default();
+        let mut spawn_pos = kioto_uring_executor::new_spawn_ring();
 
         {
             let memtable_update_cond = Arc::new(UpdateCond::new());
@@ -201,7 +201,7 @@ impl TaskManager {
                 cfg_if::cfg_if! {
                     if #[cfg(feature="tokio-uring")] {
                         unsafe {
-                            tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
+                            kioto_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
                             spawn_pos.advance();
                         }
                     } else if #[cfg(feature="monoio")] {
@@ -235,7 +235,7 @@ impl TaskManager {
                     cfg_if::cfg_if! {
                         if #[cfg(feature="tokio-uring")] {
                             unsafe {
-                                tokio_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
+                                kioto_uring_executor::unsafe_spawn_at(spawn_pos.get(), task);
                                 spawn_pos.advance();
                             }
                         } else if #[cfg(feature="monoio")] {
