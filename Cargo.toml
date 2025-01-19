@@ -26,17 +26,12 @@ tokio-condvar = { version="0.3", features=["parking_lot"] }
 tokio-uring = { version="0.5", optional=true }
 bloomfilter = { version="3", optional=true }
 monoio = { version="0.2", optional=true, features=["sync"] }
+kioto-uring-executor = { version="0.2", optional=true }
 
 [dependencies.tokio]
 version="1"
 default-features=false
 features=["io-util", "sync", "macros", "tracing", "time"]
-
-[dependencies.kioto-uring-executor]
-git="https://github.com/kaimast/kioto-uring-executor.git"
-branch="no-globals"
-version="0.2"
-optional=true
 
 [dev-dependencies]
 clap = { version="4", features=["derive"] }
