@@ -73,13 +73,13 @@ monoio-lint:
     cargo clippy --no-default-features --features=monoio,bloom-filters -- -D warnings
 
 monoio-wisckey-lint:
-    cargo clippy --no-default-features --features=monoio,wisckey,bloom-filters -- -D warnings
+    cargo clippy --no-default-features --features=monoio,wisckey,bloom-filters --tests -- -D warnings
 
 wisckey-lint:
-    cargo clippy --no-default-features --features=snappy-compression,wisckey -- -D warnings
+    cargo clippy --no-default-features --features=snappy-compression,wisckey --tests -- -D warnings
 
 wisckey-no-compression-lint:
-    cargo clippy --no-default-features --features=wisckey
+    cargo clippy --tests --no-default-features --features=wisckey
 
 tokio-uring-wisckey-lint:
     cargo clippy --no-default-features --features=tokio-uring,snappy-compression,wisckey -- -D warnings

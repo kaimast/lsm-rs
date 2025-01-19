@@ -1,12 +1,8 @@
-use std::collections::HashMap;
-
 use std::sync::Arc;
 
-use byte_slice_cast::AsSliceOf;
-
+use crate::Error;
 use crate::disk;
 use crate::values::{ValueBatchId, ValueId, ValueLog, ValueOffset, ValueRef};
-use crate::{Error, Value};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -19,7 +15,6 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
  */
 #[derive(Debug)]
 pub(super) struct ValueBatch {
-    fold_table: Option<HashMap<ValueOffset, ValueOffset>>,
     metadata: Vec<u8>,
     value_data: Vec<u8>,
 }
@@ -36,28 +31,19 @@ pub struct ValueBatchBuilder<'a> {
 #[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, packed)]
 pub(super) struct ValueBatchHeader {
-    pub folded: u32, //boolean flag
     pub num_values: u32,
 }
 
 #[derive(Debug, KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, packed)]
 pub(super) struct ValueEntryHeader {
-    pub length: u64,
+    pub key_length: u32,
+    pub value_length: u32,
 }
 
 impl ValueBatchHeader {
-    pub fn is_folded(&self) -> bool {
-        self.folded != 0
-    }
-
     pub fn offsets_len(&self) -> usize {
-        let len = if self.is_folded() {
-            (self.num_values as usize) * 2 * size_of::<u32>()
-        } else {
-            (self.num_values as usize) * size_of::<u32>()
-        };
-
+        let len = (self.num_values as usize) * size_of::<u32>();
         crate::pad_offset(len)
     }
 
@@ -77,7 +63,7 @@ impl<'a> ValueBatchBuilder<'a> {
     }
 
     /// Add another value to this batch
-    pub async fn add_value(&mut self, mut val: Value) -> ValueId {
+    pub async fn add_entry(&mut self, key: &[u8], val: &[u8]) -> ValueId {
         // Add padding (if needed)
         let offset = crate::pad_offset(self.value_data.len());
         assert!(offset >= self.value_data.len());
@@ -86,11 +72,13 @@ impl<'a> ValueBatchBuilder<'a> {
         self.offsets.extend_from_slice((offset as u32).as_bytes());
 
         let entry_header = ValueEntryHeader {
-            length: val.len() as u64,
+            key_length: key.len().try_into().expect("Key is too long"),
+            value_length: val.len().try_into().expect("Value is too long"),
         };
 
         self.value_data.extend_from_slice(entry_header.as_bytes());
-        self.value_data.append(&mut val);
+        self.value_data.extend_from_slice(key);
+        self.value_data.extend_from_slice(val);
 
         (self.identifier, offset as u32)
     }
@@ -99,10 +87,7 @@ impl<'a> ValueBatchBuilder<'a> {
     pub async fn finish(mut self) -> Result<ValueBatchId, Error> {
         let num_values = (self.offsets.len() / size_of::<u32>()) as u32;
 
-        let header = ValueBatchHeader {
-            folded: 0,
-            num_values,
-        };
+        let header = ValueBatchHeader { num_values };
 
         let mut delete_markers = vec![0u8; crate::pad_offset(num_values as usize)];
         crate::add_padding(&mut self.offsets);
@@ -119,7 +104,6 @@ impl<'a> ValueBatchBuilder<'a> {
         disk::write(&data_path, &self.value_data).await?;
 
         let batch = Arc::new(ValueBatch {
-            fold_table: None,
             metadata,
             value_data: self.value_data,
         });
@@ -138,52 +122,22 @@ impl<'a> ValueBatchBuilder<'a> {
 
 impl ValueBatch {
     pub fn from_existing(metadata: Vec<u8>, value_data: Vec<u8>) -> Self {
-        let mut obj = Self {
-            fold_table: None,
+        Self {
             metadata,
             value_data,
-        };
-
-        // Compute fold table?
-        if obj.is_folded() {
-            log::trace!("Loading fold table for batch");
-            let header_len = size_of::<ValueBatchHeader>();
-            let header = obj.get_header();
-
-            let offsets_start = header_len + header.delete_markers_len();
-            let offsets_end = offsets_start + header.offsets_len();
-            let offsets = obj.metadata[offsets_start..offsets_end]
-                .as_slice_of::<[u32; 2]>()
-                .unwrap();
-
-            let mut fold_table = HashMap::new();
-
-            // remove padding
-            for entry in &offsets[..(header.num_values as usize)] {
-                fold_table.insert(entry[0], entry[1]);
-            }
-
-            obj.fold_table = Some(fold_table);
         }
-
-        obj
     }
 
     pub fn get_ref(self_ptr: Arc<ValueBatch>, pos: ValueOffset) -> ValueRef {
-        let pos = if let Some(fold_table) = &self_ptr.fold_table {
-            *fold_table.get(&pos).expect("No such entry")
-        } else {
-            pos
-        };
-
         let mut offset = pos as usize;
         let (vheader, _) =
             ValueEntryHeader::ref_from_prefix(&self_ptr.value_data[offset..]).unwrap();
 
         offset += size_of::<ValueEntryHeader>();
+        offset += vheader.key_length as usize;
 
         ValueRef {
-            length: vheader.length as usize,
+            length: vheader.value_length as usize,
             batch: self_ptr,
             offset,
         }
@@ -200,6 +154,12 @@ impl ValueBatch {
             .0
     }
 
+    /// The number of all values in this batch, even deleted ones
+    #[allow(dead_code)]
+    pub fn total_num_values(&self) -> u32 {
+        self.get_header().num_values
+    }
+
     pub(super) fn get_delete_flags(&self) -> &[u8] {
         let header = self.get_header();
         let header_len = size_of::<ValueBatchHeader>();
@@ -209,17 +169,8 @@ impl ValueBatch {
         &flags[..(header.num_values as usize)]
     }
 
-    pub fn is_folded(&self) -> bool {
-        self.get_header().is_folded()
-    }
-
-    /// The number of all values in this batch, even deleted ones
-    #[allow(dead_code)]
-    pub fn total_num_values(&self) -> u32 {
-        self.get_header().num_values
-    }
-
     /// The number of all values in this batch that have not been deleted yet
+    #[allow(dead_code)]
     pub fn num_active_values(&self) -> u32 {
         let flags = self.get_delete_flags();
 

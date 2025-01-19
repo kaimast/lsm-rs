@@ -66,8 +66,7 @@ jobs:
       run: just monoio-wisckey-lint
     - name: "Formatting Checks"
       run: just check-formatting
-    # Does not work well as some dependencies only used by certain features
-    #- name: Check for unused dependencies
-    #  run: |
-    #     cargo install cargo-udeps
-    #     just udeps
+    - name: Check for unused dependencies
+      run: |
+         cargo install cargo-machete
+         cargo machete

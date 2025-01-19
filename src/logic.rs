@@ -561,7 +561,7 @@ impl DbLogic {
                     for (key, mem_entry) in memtable_entries.into_iter() {
                         match mem_entry {
                             MemtableEntry::Value{seq_number, value} => {
-                                let value_ref = vbuilder.add_value(value).await;
+                                let value_ref = vbuilder.add_entry(&key, &value).await;
                                 table_builder.add_value(&key, seq_number, value_ref).await?;
                             }
                             MemtableEntry::Deletion{seq_number} => {

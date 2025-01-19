@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::FromBytes;
 
 use crate::Error;
 
@@ -43,9 +42,11 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 #[cfg(test)]
 mod tests;
 
+//mod freelist;
+
 mod batch;
 pub use batch::ValueBatchBuilder;
-use batch::{ValueBatch, ValueBatchHeader, ValueEntryHeader};
+use batch::{ValueBatch, ValueBatchHeader};
 
 pub struct ValueLog {
     params: Arc<Params>,
@@ -127,25 +128,14 @@ impl ValueLog {
                 let (res, data) = file.read_exact_at(buf, pos as u64).await;
                 res?;
 
-                if header.is_folded() {
-                    for pos in 0..header.num_values {
-                        let upos = pos as usize;
-                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
-
-                        if old_offset == &value_offset {
-                            offset_pos = Some(pos);
-                        }
-                    }
-                } else {
-                    for pos in 0..header.num_values {
-                        let upos = pos as usize;
-                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
-                        if offset == &value_offset {
-                            offset_pos = Some(pos);
-                            break;
-                        }
-                    }
+            for pos in 0..header.num_values {
+                let upos = pos as usize;
+                let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
+                if offset == &value_offset {
+                    offset_pos = Some(pos);
+                    break;
                 }
+            }
 
                 let delete_marker_pos = (header_len as u64) + (offset_pos.expect("Not a valid offset") as u64);
                 file.write_all_at(vec![1u8], delete_marker_pos).await.0?;
@@ -154,17 +144,6 @@ impl ValueLog {
                 file.seek(SeekFrom::Current(header.delete_markers_len() as i64))?;
                 let mut data = vec![0u8; header.offsets_len()];
                 file.read_exact(&mut data)?;
-
-                if header.is_folded() {
-                     for pos in 0..header.num_values {
-                        let upos = pos as usize;
-                        let (old_offset, _) = u32::ref_from_prefix(&data[2*upos*offset_len..]).unwrap();
-
-                        if old_offset == &value_offset {
-                            offset_pos = Some(pos);
-                        }
-                    }
-                } else {
                     for pos in 0..header.num_values {
                         let upos = pos as usize;
                         let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
@@ -172,7 +151,6 @@ impl ValueLog {
                             offset_pos = Some(pos);
                         }
                     }
-                }
 
                 let offset_pos = offset_pos.unwrap_or_else(|| panic!("Cannot mark as deleted: {value_offset} is not a valid offset"));
                 assert!(offset_pos < header.num_values);
@@ -248,11 +226,7 @@ impl ValueLog {
             }
         }
 
-        let mut buf = if header.is_folded() {
-            vec![0u8; offsets.len() * 2 * olen]
-        } else {
-            vec![0u8; offsets.len() * olen]
-        };
+        let mut buf = vec![0u8; offsets.len() * olen];
 
         cfg_if! {
             if #[cfg(feature="_async-io")] {
@@ -265,14 +239,8 @@ impl ValueLog {
            }
         }
 
-        if header.is_folded() {
-            for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * 2 * olen..]).unwrap().0;
-            }
-        } else {
-            for idx in 0..(header.num_values as usize) {
-                offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap().0;
-            }
+        for idx in 0..(header.num_values as usize) {
+            offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap().0;
         }
 
         let mut num_active: u32 = 0;
@@ -283,7 +251,6 @@ impl ValueLog {
             }
         }
 
-        let active_ratio = (num_active as f64) / (header.num_values as f64);
         let vlog_offset = self.manifest.get_value_log_offset().await;
 
         if num_active == 0 && batch_id == vlog_offset + 1 {
@@ -306,95 +273,9 @@ impl ValueLog {
             cache.pop(&batch_id);
 
             Ok(true)
-        } else if !header.is_folded() && active_ratio <= GARBAGE_COLLECT_THRESHOLD {
-            self.fold_batch(batch_id, &offsets).await?;
-            Ok(false)
         } else {
             Ok(false)
         }
-    }
-
-    /// Creates a more compact representation of an existing value batch
-    async fn fold_batch(&self, batch_id: ValueBatchId, offsets: &[u32]) -> Result<(), Error> {
-        log::debug!("Folding value batch #{batch_id}");
-        let batch = self.get_batch(batch_id).await?;
-
-        let mut value_data = vec![];
-        let mut new_offsets = vec![];
-
-        // Hold lock so nobody else messes with the file while we do this
-        let shard_id = Self::batch_to_shard_id(batch_id);
-        let mut cache = self.batch_caches[shard_id].lock().await;
-
-        // Ensure it has not been folded before we grab the lock
-        if batch.is_folded() {
-            return Ok(());
-        }
-
-        // Fetch flags again to prevent any race conditions
-        let delete_flags = batch.get_delete_flags();
-        let num_active = batch.num_active_values();
-
-        for (pos, flag) in delete_flags.iter().enumerate() {
-            let old_offset: u32 = offsets[pos];
-            let data_start = old_offset as usize;
-
-            let (entry_header, _) =
-                ValueEntryHeader::ref_from_prefix(&batch.get_value_data()[data_start..]).unwrap();
-
-            let data_end =
-                data_start + size_of::<ValueEntryHeader>() + (entry_header.length as usize);
-
-            if *flag != 0u8 {
-                continue;
-            }
-
-            let new_offset = value_data.len() as u32;
-
-            new_offsets.push((old_offset, new_offset));
-            value_data.extend_from_slice(&batch.get_value_data()[data_start..data_end]);
-        }
-
-        // re-write batch file
-        // TODO make this an atomic file operation
-
-        // write file header
-        let header = ValueBatchHeader {
-            folded: 1,
-            num_values: num_active,
-        };
-
-        let mut fold_table = HashMap::new();
-        assert!(header.num_values as usize == new_offsets.len());
-
-        let header_data = header.as_bytes();
-        let mut delete_markers = vec![0u8; header.delete_markers_len()];
-
-        let nsize = std::mem::size_of::<u32>();
-        let mut offsets = vec![0u8; header.offsets_len()];
-
-        for (pos, (old_offset, new_offset)) in new_offsets.iter().enumerate() {
-            let start = pos * 2 * nsize;
-            offsets[start..start + nsize].copy_from_slice(old_offset.as_bytes());
-            offsets[start + nsize..start + 2 * nsize].copy_from_slice(new_offset.as_bytes());
-            fold_table.insert(*old_offset, *new_offset);
-        }
-
-        let mut metadata = header_data.to_vec();
-        metadata.append(&mut delete_markers);
-        metadata.append(&mut offsets);
-
-        // Write metadata uncompressed so it can be updated easily
-        disk::write_uncompressed(&self.get_meta_file_path(&batch_id), metadata.clone()).await?;
-        disk::write(&self.get_data_file_path(&batch_id), &value_data).await?;
-
-        // Replace existing data block with folded version
-        cache.put(
-            batch_id,
-            Arc::new(ValueBatch::from_existing(metadata, value_data)),
-        );
-
-        Ok(())
     }
 
     #[inline]

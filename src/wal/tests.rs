@@ -1,5 +1,3 @@
-use log;
-
 /// Tests for the write-ahead log, especially its behavior during recovery
 use tempfile::TempDir;
 
