@@ -171,7 +171,7 @@ impl WriteAheadLog {
 
         cfg_if! {
             if #[cfg(feature="_async-io")] {
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
+                let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
             } else {
                 let file_offset = position % PAGE_SIZE;
                 let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;

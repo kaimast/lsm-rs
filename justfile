@@ -1,5 +1,8 @@
 LOG_LEVEL := "debug"
 
+# Common prefix for lints
+CLIPPY := "cargo clippy --no-default-features --tests"
+
 all: tests lint
 
 tests: sync-tests async-tests no-compression-tests \
@@ -64,22 +67,22 @@ sync-lint:
     cd sync && just lint
 
 async-lint:
-    cargo clippy --no-default-features -- -D warnings
+    {{CLIPPY}} -- -D warnings
 
 tokio-uring-lint:
-    cargo clippy --no-default-features --features=tokio-uring,bloom-filters -- -D warnings
+    {{CLIPPY}} --features=tokio-uring,bloom-filters -- -D warnings
 
 monoio-lint:
-    cargo clippy --no-default-features --features=monoio,bloom-filters -- -D warnings
+    {{CLIPPY}} --features=monoio,bloom-filters -- -D warnings
 
 monoio-wisckey-lint:
-    cargo clippy --no-default-features --features=monoio,wisckey,bloom-filters --tests -- -D warnings
+    {{CLIPPY}} --features=monoio,wisckey,bloom-filters -- -D warnings
 
 wisckey-lint:
-    cargo clippy --no-default-features --features=snappy-compression,wisckey --tests -- -D warnings
+    {{CLIPPY}} --features=snappy-compression,wisckey -- -D warnings
 
 wisckey-no-compression-lint:
-    cargo clippy --tests --no-default-features --features=wisckey
+    {{CLIPPY}} --features=wisckey -- -D warnings
 
 tokio-uring-wisckey-lint:
-    cargo clippy --no-default-features --features=tokio-uring,snappy-compression,wisckey -- -D warnings
+    {{CLIPPY}} --features=tokio-uring,snappy-compression,wisckey -- -D warnings

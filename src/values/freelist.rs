@@ -25,6 +25,8 @@ struct FreelistPageHeader {
     num_batches: u64,
     num_entries: u64,
 }
+
+/// An (up to) 4kb chunk of the freelist
 struct FreelistPage {
     header: FreelistPageHeader,
 
@@ -166,6 +168,9 @@ impl FreelistPage {
 /// write amplification caused by value deletion.
 /// A single page in the freelist can hold information
 /// for up to about 32k values.
+///
+/// Note: This is technically an "occupied" list.
+/// a bit set to 1 means the value is still in use.
 pub struct ValueFreelist {
     params: Arc<Params>,
     manifest: Arc<Manifest>,

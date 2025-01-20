@@ -143,7 +143,7 @@ impl DbLogic {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(err) => {
-                            return Err(Error::from_io_error(fromat!("Failed to create DB folder: {err}"), err));
+                            return Err(Error::from_io_error(format!("Failed to create DB folder: {err}"), err));
                         }
                     }
                 } else {
@@ -1036,7 +1036,7 @@ mod tests {
                 &logic.levels[1]
             };
 
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1103,7 +1103,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for _ in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1164,7 +1164,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for idx in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let pos = idx * 100;
             let next_pos = (idx + 1) * 100 - 1;
@@ -1244,7 +1244,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for _ in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1301,7 +1301,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for idx in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let pos = idx * 100;
             let next_pos = (idx + 1) * 100 - 1;
