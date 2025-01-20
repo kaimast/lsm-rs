@@ -100,14 +100,16 @@ impl ValueLog {
 
         // If this is the oldest value batch, try to remove things
         let start = vid.0;
-        let min_batch = self.manifest.get_minimum_value_batch().await.max(MIN_VALUE_BATCH_ID);
+        let min_batch = self
+            .manifest
+            .get_minimum_value_batch()
+            .await
+            .max(MIN_VALUE_BATCH_ID);
         let mut defragment_pos = self.manifest.get_value_defragment_position().await;
         let most_recent = self.manifest.most_recent_value_batch_id().await;
 
         if min_batch == start {
-
             for batch_id in vid.0..=most_recent {
-
                 if !self.try_to_remove(batch_id).await? {
                     // Don't defragment what has already been deleted
                     if batch_id > defragment_pos {
@@ -143,7 +145,7 @@ impl ValueLog {
     /// Attempts to delete empty batches
     #[tracing::instrument(skip(self))]
     async fn try_to_remove(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
-         log::trace!("Checking if value batch #{batch_id} can be removed");
+        log::trace!("Checking if value batch #{batch_id} can be removed");
 
         let num_active = self.freelist.count_active_entries(batch_id).await;
 
@@ -173,7 +175,7 @@ impl ValueLog {
     /// Check if we should reinsert entries from this batch
     #[tracing::instrument(skip(self))]
     async fn try_to_defragment(&self, batch_id: ValueBatchId) -> Result<Option<EntryList>, Error> {
-         log::trace!("Checking if value batch #{batch_id} should be defragmented");
+        log::trace!("Checking if value batch #{batch_id} should be defragmented");
 
         let batch = self.get_batch(batch_id).await?;
         let num_entries = batch.total_num_values() as usize;
