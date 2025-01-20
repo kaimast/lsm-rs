@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use crate::sorted_table::Key;
+use crate::Key;
 
 use super::{DataEntry, SearchResult};
 

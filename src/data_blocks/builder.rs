@@ -107,7 +107,11 @@ impl DataBlockBuilder {
             return Ok(None);
         }
 
-        let identifier = self.data_blocks.manifest.next_data_block_id().await;
+        let identifier = self
+            .data_blocks
+            .manifest
+            .generate_next_data_block_id()
+            .await;
 
         #[cfg(feature = "bloom-filters")]
         let bloom_filter: &[u8; BLOOM_LENGTH + BLOOM_HEADER_SIZE] =
@@ -143,7 +147,9 @@ impl DataBlockBuilder {
         let block_data = &block.data;
         let fpath = self.data_blocks.get_file_path(&identifier);
 
-        disk::write(&fpath, block_data).await?;
+        disk::write(&fpath, block_data).await.map_err(|err| {
+            Error::from_io_error(format!("Failed to write data block at `{fpath:?}`"), err)
+        })?;
 
         self.data_blocks.block_caches[shard_id]
             .lock()

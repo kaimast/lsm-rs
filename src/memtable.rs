@@ -5,8 +5,8 @@ use async_trait::async_trait;
 
 use crate::data_blocks::DataEntryType;
 use crate::manifest::SeqNumber;
-use crate::sorted_table::{InternalIterator, Key};
-use crate::{EntryRef, Params};
+use crate::sorted_table::InternalIterator;
+use crate::{EntryRef, Key, Params};
 
 #[cfg(feature = "wisckey")]
 use crate::values::ValueLog;

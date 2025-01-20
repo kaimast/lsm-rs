@@ -77,7 +77,7 @@ pub struct WriteAheadLog {
 }
 
 impl WriteAheadLog {
-    pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
+    pub async fn new(params: Arc<Params>) -> Result<Self, Error> {
         let status = LogStatus {
             queue_pos: 0,
             write_pos: 0,
@@ -106,48 +106,33 @@ impl WriteAheadLog {
     fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
+        let run_writer = async move {
+            let mut writer = WalWriter::new(params).await;
+            loop {
+                let done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+
+                if done {
+                    break;
+                }
+            }
+            let _ = finish_sender.send(());
+        };
+
         cfg_if::cfg_if! {
             if #[cfg(feature="monoio")] {
                 {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    monoio::spawn(run_writer);
                 }
             } else if #[cfg(feature = "_async-io")] {
                 unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else {
                 {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    tokio::spawn(run_writer);
                 }
             }
         }
@@ -160,7 +145,7 @@ impl WriteAheadLog {
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
-    ) -> Result<Self, std::io::Error> {
+    ) -> Result<Self, Error> {
         // This reads the file(s) in the current thread because we cannot
         // send stuff between threads easily
 
@@ -171,10 +156,10 @@ impl WriteAheadLog {
 
         cfg_if! {
             if #[cfg(feature="_async-io")] {
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
+                let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
             } else {
                 let file_offset = position % PAGE_SIZE;
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
+                let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
                 log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
             }
         }
@@ -192,7 +177,8 @@ impl WriteAheadLog {
                 &params,
                 true,
             )
-            .await?;
+            .await
+            .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
 
             if !success {
                 break;
@@ -264,45 +250,33 @@ impl WriteAheadLog {
     ) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
+        let run_writer = async move {
+            let mut writer = WalWriter::continue_from(position, params).await;
+            loop {
+                let done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+
+                if done {
+                    break;
+                }
+            }
+            let _ = finish_sender.send(());
+        };
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "tokio-uring")] {
                 unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else if #[cfg(feature="monoio")] {
                 {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    monoio::spawn(run_writer);
                 }
             } else {
                 {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    tokio::spawn(run_writer);
                 }
             }
         }
@@ -388,7 +362,7 @@ impl WriteAheadLog {
 
     /// Stores an operation and returns the new position in the logfile
     #[tracing::instrument(skip(self, batch))]
-    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, std::io::Error> {
+    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, Error> {
         let mut writes = vec![];
 
         for op in batch {
@@ -474,7 +448,7 @@ impl WriteAheadLog {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn sync(&self) -> Result<(), std::io::Error> {
+    pub async fn sync(&self) -> Result<(), Error> {
         let last_pos = {
             let mut lock = self.inner.status.write();
 

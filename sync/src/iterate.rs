@@ -3,7 +3,7 @@ use lsm::values::ValueLog;
 
 use lsm::EntryRef;
 use lsm::memtable::MemtableIterator;
-use lsm::sorted_table::{InternalIterator, Key, TableIterator};
+use lsm::sorted_table::{InternalIterator, TableIterator};
 
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -63,7 +63,7 @@ impl DbIterator {
     async fn parse_iter(
         &self,
         pos: usize,
-        last_key: &Option<Key>,
+        last_key: &Option<Vec<u8>>,
         next_iter: Option<&dyn InternalIterator>,
         iter: &mut dyn InternalIterator,
         next_kv: NextKV,
@@ -177,7 +177,7 @@ impl DbIterator {
 }
 
 impl Iterator for DbIterator {
-    type Item = (Key, EntryRef);
+    type Item = (Vec<u8>, EntryRef);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut iterators = std::mem::take(&mut self.iterators);

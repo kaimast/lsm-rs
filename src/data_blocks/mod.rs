@@ -1,7 +1,6 @@
 /// Data blocks hold the actual contents of storted table
 /// (In the case of WiscKey the content is only the key and the value reference)
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -26,6 +25,10 @@ use block::EntryHeader;
 use crate::values::ValueId;
 
 pub type DataBlockId = u64;
+
+/// The minimum valid data block identifier
+pub const MIN_DATA_BLOCK_ID: DataBlockId = 1;
+
 const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 #[derive(Debug)]
@@ -157,10 +160,11 @@ impl DataBlocks {
         (block_id as usize) % NUM_SHARDS
     }
 
+    /// The path where the block with the given id
+    /// will be stored at.
     #[inline]
     fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
-        let fname = format!("key{block_id:08}.data");
-        self.params.db_path.join(Path::new(&fname))
+        self.params.db_path.join(format!("key{block_id:08}.data"))
     }
 
     /// Start creation of a new block

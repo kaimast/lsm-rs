@@ -14,9 +14,7 @@ pub use builder::TableBuilder;
 #[cfg(test)]
 mod tests;
 
-pub type Key = Vec<u8>;
 pub type TableId = u64;
-pub type Value = Vec<u8>;
 
 /// Entries ach level are grouped into sorted tables
 /// These tables contain an ordered set of key/value-pairs

@@ -17,7 +17,6 @@ mod write_batch;
 pub use write_batch::{WriteBatch, WriteOp, WriteOptions};
 
 pub mod sorted_table;
-use sorted_table::{Key, Value};
 
 mod level_logger;
 
@@ -35,6 +34,13 @@ mod disk;
 mod index_blocks;
 mod level;
 mod wal;
+
+pub type Key = Vec<u8>;
+pub type Value = Vec<u8>;
+
+/// Shorthand for a list of key-value pairs
+#[cfg(feature = "wisckey")]
+type EntryList = Vec<(Key, Value)>;
 
 pub use database::Database;
 
@@ -63,7 +69,7 @@ fn add_padding(data: &mut Vec<u8>) {
 
 #[derive(Clone, Debug)]
 pub enum Error {
-    Io(String),
+    Io { context: String, message: String },
     InvalidParams(String),
     Serialization(String),
 }
@@ -71,8 +77,8 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         match self {
-            Self::Io(msg) => {
-                fmt.write_fmt(format_args!("Io Error: {msg}"))?;
+            Self::Io { context, message } => {
+                fmt.write_fmt(format_args!("{context}: {message}"))?;
             }
             Self::InvalidParams(msg) => {
                 fmt.write_fmt(format_args!("Invalid Parameter: {msg}"))?;
@@ -86,9 +92,12 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(inner: std::io::Error) -> Self {
-        Self::Io(inner.to_string())
+impl Error {
+    fn from_io_error<S: ToString>(context: S, inner: std::io::Error) -> Self {
+        Self::Io {
+            context: context.to_string(),
+            message: format!("{inner}"),
+        }
     }
 }
 

@@ -88,7 +88,9 @@ impl IndexBlock {
 
         // Store on disk before grabbing the lock
         let fpath = Self::get_file_path(params, &id);
-        disk::write(&fpath, &block_data).await?;
+        disk::write(&fpath, &block_data)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to write index block", err))?;
 
         Ok(IndexBlock { data: block_data })
     }
@@ -96,7 +98,9 @@ impl IndexBlock {
     pub async fn load(params: &Params, id: TableId) -> Result<Self, Error> {
         log::trace!("Loading index block from disk");
         let fpath = Self::get_file_path(params, &id);
-        let data = disk::read(&fpath, 0).await?;
+        let data = disk::read(&fpath, 0)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to read index block", err))?;
 
         Ok(IndexBlock { data })
     }
