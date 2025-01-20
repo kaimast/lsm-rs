@@ -106,48 +106,33 @@ impl WriteAheadLog {
     fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
+        let run_writer = async move {
+            let mut writer = WalWriter::new(params).await;
+            loop {
+                let done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+
+                if done {
+                    break;
+                }
+            }
+            let _ = finish_sender.send(());
+        };
+
         cfg_if::cfg_if! {
             if #[cfg(feature="monoio")] {
                 {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    monoio::spawn(run_writer);
                 }
             } else if #[cfg(feature = "_async-io")] {
                 unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else {
                 {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
+                    tokio::spawn(run_writer);
                 }
             }
         }
@@ -265,45 +250,33 @@ impl WriteAheadLog {
     ) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
+        let run_writer = async move {
+            let mut writer = WalWriter::continue_from(position, params).await;
+            loop {
+                let done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+
+                if done {
+                    break;
+                }
+            }
+            let _ = finish_sender.send(());
+        };
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "tokio-uring")] {
                 unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else if #[cfg(feature="monoio")] {
                 {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    monoio::spawn(run_writer);
                 }
             } else {
                 {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    tokio::spawn(run_writer);
                 }
             }
         }

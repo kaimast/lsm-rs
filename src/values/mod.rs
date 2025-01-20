@@ -7,19 +7,9 @@ use crate::Error;
 
 use lru::LruCache;
 
-#[cfg(feature = "monoio")]
-use std::fs::remove_file;
-#[cfg(feature = "tokio-uring")]
-use tokio_uring::fs::remove_file;
-
-#[cfg(not(feature = "_async-io"))]
-use std::fs::remove_file;
-
 use crate::Params;
 use crate::disk;
 use crate::manifest::Manifest;
-
-use cfg_if::cfg_if;
 
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
@@ -102,7 +92,7 @@ impl ValueLog {
 
     #[tracing::instrument(skip(self))]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
-        self.freelist.mark_value_as_deleted(vid).await;
+        self.freelist.mark_value_as_deleted(vid).await?;
 
         // FIXME make sure there aren't any race conditions here
         let most_recent = self.manifest.most_recent_value_batch_id().await;
@@ -134,25 +124,11 @@ impl ValueLog {
             self.manifest.set_minimum_value_batch(vlog_min + 1).await;
 
             let fpath = self.get_batch_file_path(&batch_id);
-
-            cfg_if! {
-                if #[ cfg(feature="tokio-uring") ] {
-                    remove_file(&fpath).await
-            .map_err(|err| Error::from_io_error(
-                "Failed to remove value log batch",
-                err))?;
-
-                } else {
-                    remove_file(&fpath)
-            .map_err(|err| Error::from_io_error(
-                "Failed to remove value log batch",
-                err))?;
-
-                }
-            }
+            disk::remove_file(&fpath)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to remove value log batch", err))?;
 
             cache.pop(&batch_id);
-
             Ok(true)
         } else {
             Ok(false)

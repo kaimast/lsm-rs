@@ -2,27 +2,21 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(not(feature = "_async-io"))]
-use std::fs::{File, remove_file};
+use std::fs::File;
 
 #[cfg(not(feature = "_async-io"))]
 use std::io::Write;
 
 #[cfg(feature = "tokio-uring")]
-use tokio_uring::{
-    buf::BoundedBuf,
-    fs::{File, remove_file},
-};
+use tokio_uring::{buf::BoundedBuf, fs::File};
 
 #[cfg(feature = "monoio")]
 use monoio::{buf::IoBuf, fs::File};
 
-#[cfg(feature = "monoio")]
-use std::fs::remove_file;
-
 use cfg_if::cfg_if;
 
-use crate::Params;
 use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
+use crate::{Error, Params, disk};
 
 /// The task that actually writes the log to disk
 pub struct WalWriter {
@@ -78,7 +72,7 @@ impl WalWriter {
     }
 
     /// Returns true if the writer is done and the associated task should terminate
-    pub async fn update_log(&mut self, inner: &LogInner) -> bool {
+    pub async fn update_log(&mut self, inner: &LogInner) -> Result<bool, Error> {
         let (to_write, sync_flag, sync_pos, new_offset, stop_flag) = loop {
             // This works around the following bug:
             // https://github.com/rust-lang/rust/issues/63768
@@ -117,7 +111,9 @@ impl WalWriter {
 
         // Don't hold lock while write
         for buf in to_write.into_iter() {
-            self.write_all(buf).await.expect("Write failed");
+            self.write_all(buf)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to writ write-ahead log", err))?;
         }
 
         // Only sync if necessary
@@ -129,7 +125,7 @@ impl WalWriter {
         }
 
         if let Some((new_offset, old_offset)) = new_offset {
-            self.set_offset(new_offset, old_offset).await;
+            self.set_offset(new_offset, old_offset).await?;
         }
 
         // Notify about finished write(s)
@@ -149,10 +145,10 @@ impl WalWriter {
             log::debug!("WAL writer finished");
         }
 
-        stop_flag
+        Ok(stop_flag)
     }
 
-    async fn set_offset(&mut self, new_offset: u64, old_offset: u64) {
+    async fn set_offset(&mut self, new_offset: u64, old_offset: u64) -> Result<(), Error> {
         let old_file_pos = old_offset / PAGE_SIZE;
         let new_file_pos = new_offset / PAGE_SIZE;
 
@@ -163,20 +159,12 @@ impl WalWriter {
                 .join(Path::new(&format!("log{:08}.data", fpos + 1)));
             log::trace!("Removing file {fpath:?}");
 
-            cfg_if! {
-                if #[cfg(feature="tokio-uring")] {
-                    remove_file(&fpath).await
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                } else {
-                    remove_file(&fpath)
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                }
-            }
+            disk::remove_file(&fpath).await.map_err(|err| {
+                Error::from_io_error(format!("Failed to remove log file {fpath:?}"), err)
+            })?;
         }
+
+        Ok(())
     }
 
     async fn sync(&mut self) {

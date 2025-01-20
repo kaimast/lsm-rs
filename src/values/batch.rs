@@ -97,6 +97,11 @@ impl<'a> ValueBatchBuilder<'a> {
             shard.put(self.identifier, batch);
         }
 
+        self.vlog
+            .freelist
+            .add_batch(self.identifier, num_values as usize)
+            .await?;
+
         log::trace!("Created value batch #{}", self.identifier);
         Ok(self.identifier)
     }

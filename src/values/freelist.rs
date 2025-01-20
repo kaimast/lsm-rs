@@ -1,10 +1,11 @@
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 
 use bitvec::vec::BitVec;
 
 use super::ValueBatchId;
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{RwLock, RwLockReadGuard};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -85,18 +86,20 @@ impl FreelistPage {
     }
 
     pub fn expand(&mut self, num_entries: usize) -> bool {
-        const MAX_SIZE: usize = 4 * 1024 * 1024;
+        const MAX_SIZE: usize = 4 * 1024;
         assert!(num_entries < MAX_SIZE);
 
         let current_entries = self.entries.len();
-        assert!(current_entries + num_entries < MAX_SIZE);
-
-        let new_size = (self.offsets.len() + 1)
-            * std::mem::size_of::<(ValueBatchId, u16)>()
-            * (current_entries + num_entries);
+        let new_size =
+            (self.offsets.len() + 1) * std::mem::size_of::<u16>() + (current_entries + num_entries);
 
         // Is there enough space?
         if new_size <= MAX_SIZE {
+            log::trace!(
+                "Adding {num_entries} entries to freelist page #{}",
+                self.header.identifier
+            );
+
             self.offsets.push(current_entries as u16);
 
             // We assume all entries are in use for a new batch
@@ -113,10 +116,20 @@ impl FreelistPage {
         data.extend_from_slice(self.offsets.as_bytes());
         data.extend_from_slice(self.entries.as_raw_slice());
 
-        disk::write(path, &data)
-            .await
-            .map_err(|err| Error::from_io_error("Failed to write freelist page", err))?;
+        disk::write(path, &data).await.map_err(|err| {
+            Error::from_io_error(format!("Failed to write freelist page at `{path:?}`"), err)
+        })?;
         Ok(())
+    }
+
+    /// Are any of the values in this freelist still in use?
+    pub fn is_in_use(&self) -> bool {
+        for val in self.entries.iter() {
+            if *val {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn get_active_entries(&self, batch_id: ValueBatchId) -> usize {
@@ -178,7 +191,7 @@ pub struct ValueFreelist {
     // Assuming a resonable number of entries (<1million)
     // this should never exceed 10mb.
     // So, we simply keep the entire freelist in memory
-    pages: RwLock<Vec<(ValueBatchId, FreelistPage)>>,
+    pages: RwLock<VecDeque<(ValueBatchId, FreelistPage)>>,
 }
 
 impl ValueFreelist {
@@ -205,7 +218,7 @@ impl ValueFreelist {
             let page = FreelistPage::open(&path).await?;
             let min_batch = page.header.start_batch;
 
-            pages.push((min_batch, page));
+            pages.push_back((min_batch, page));
         }
 
         drop(pages);
@@ -222,47 +235,40 @@ impl ValueFreelist {
     }
 
     #[inline]
-    fn find_page_idx(pages: &[(ValueBatchId, FreelistPage)], batch_id: ValueBatchId) -> usize {
+    fn find_page_idx(
+        pages: &VecDeque<(ValueBatchId, FreelistPage)>,
+        batch_id: ValueBatchId,
+    ) -> Option<usize> {
         // We only keep the minimum batch id for every page
         // So the search might not return an exact match
         match pages.binary_search_by_key(&batch_id, |(k, _)| *k) {
-            Ok(i) => i,
-            Err(i) => {
-                if i == 0 {
-                    panic!("No valid entry for batch id {batch_id}");
-                }
-                i - 1
-            }
+            Ok(i) => Some(i),
+            Err(0) => None, // already garbage collected?
+            Err(i) => Some(i - 1),
         }
     }
 
     #[inline]
     fn find_page_for_batch<'a>(
-        pages: &'a RwLockReadGuard<'_, Vec<(ValueBatchId, FreelistPage)>>,
+        pages: &'a RwLockReadGuard<'_, VecDeque<(ValueBatchId, FreelistPage)>>,
         batch_id: ValueBatchId,
-    ) -> &'a FreelistPage {
-        let idx = Self::find_page_idx(pages, batch_id);
-        &pages[idx].1
-    }
-
-    #[inline]
-    fn find_page_for_batch_mut<'a>(
-        pages: &'a mut RwLockWriteGuard<'_, Vec<(ValueBatchId, FreelistPage)>>,
-        batch_id: ValueBatchId,
-    ) -> &'a mut FreelistPage {
-        let idx = Self::find_page_idx(pages, batch_id);
-        &mut pages[idx].1
+    ) -> Option<&'a FreelistPage> {
+        let idx = Self::find_page_idx(pages, batch_id)?;
+        Some(&pages[idx].1)
     }
 
     pub async fn get_active_entries(&self, batch_id: ValueBatchId) -> usize {
         let pages = self.pages.read().await;
-        Self::find_page_for_batch(&pages, batch_id).get_active_entries(batch_id)
+        match Self::find_page_for_batch(&pages, batch_id) {
+            Some(p) => p.get_active_entries(batch_id),
+            None => 0,
+        }
     }
 
     pub async fn add_batch(&self, batch_id: ValueBatchId, num_entries: usize) -> Result<(), Error> {
         let mut pages = self.pages.write().await;
 
-        let p = if let Some((_, p)) = pages.last_mut()
+        let p = if let Some((_, p)) = pages.back_mut()
             && p.expand(num_entries)
         {
             p
@@ -270,10 +276,10 @@ impl ValueFreelist {
             // Add a new page
             let page_id = self.manifest.generate_next_value_freelist_id().await;
             let mut page = FreelistPage::new(page_id, batch_id);
-            let res = page.expand(num_entries);
-            assert!(res);
-            pages.push((batch_id, page));
-            &pages.last_mut().unwrap().1
+            let success = page.expand(num_entries);
+            assert!(success, "Data did not fit in new page?");
+            pages.push_back((batch_id, page));
+            &pages.back_mut().unwrap().1
         };
 
         // Persist changes to disk
@@ -282,9 +288,26 @@ impl ValueFreelist {
         Ok(())
     }
 
-    pub async fn mark_value_as_deleted(&self, vid: ValueId) {
+    pub async fn mark_value_as_deleted(&self, vid: ValueId) -> Result<(), Error> {
         let mut pages = self.pages.write().await;
-        Self::find_page_for_batch_mut(&mut pages, vid.0).mark_value_as_deleted(vid);
+        let page_idx = Self::find_page_idx(&pages, vid.0).expect("Outdated batch?");
+
+        pages[page_idx].1.mark_value_as_deleted(vid);
+
+        // TODO allow gaps as well!
+        while page_idx == 0 && !pages[page_idx].1.is_in_use() {
+            let id = pages[page_idx].1.get_identifier();
+            self.manifest.set_minimum_freelist_page(id).await;
+
+            let fpath = self.get_page_file_path(&id);
+            disk::remove_file(&fpath)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to remove freelist page", err))?;
+
+            pages.pop_front();
+        }
+
+        Ok(())
     }
 }
 
@@ -328,7 +351,7 @@ mod tests {
 
     #[async_test]
     async fn add_batch() {
-        let (_, freelist) = test_init().await;
+        let (_tmp_dir, freelist) = test_init().await;
 
         let batch_id = 1;
         let num_entries = 100;
@@ -336,7 +359,65 @@ mod tests {
         freelist.add_batch(batch_id, num_entries).await.unwrap();
         freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
 
+        assert_eq!(freelist.num_pages().await, 1);
+        assert_eq!(freelist.get_active_entries(batch_id).await, num_entries);
+    }
+
+    #[async_test]
+    async fn multiple_pages() {
+        let (_tmp_dir, freelist) = test_init().await;
+
+        let batch_id = 1;
+        let num_entries = 4000;
+
+        freelist.add_batch(batch_id, num_entries).await.unwrap();
+        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
+
         assert_eq!(freelist.num_pages().await, 2);
         assert_eq!(freelist.get_active_entries(batch_id).await, num_entries);
+    }
+
+    #[async_test]
+    async fn delete_entry() {
+        let (_tmp_dir, freelist) = test_init().await;
+
+        let batch_id = 1;
+        let num_entries = 100;
+
+        freelist.add_batch(batch_id, num_entries).await.unwrap();
+        freelist.mark_value_as_deleted((batch_id, 2)).await.unwrap();
+        freelist
+            .mark_value_as_deleted((batch_id, 32))
+            .await
+            .unwrap();
+        freelist
+            .mark_value_as_deleted((batch_id, 59))
+            .await
+            .unwrap();
+
+        assert_eq!(freelist.num_pages().await, 1);
+        assert_eq!(freelist.get_active_entries(batch_id).await, num_entries - 3);
+    }
+
+    #[async_test]
+    async fn remove_page() {
+        let (_tmp_dir, freelist) = test_init().await;
+
+        let batch_id = 1;
+        let num_entries = 4000;
+
+        freelist.add_batch(batch_id, num_entries).await.unwrap();
+        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
+
+        for idx in 0..num_entries {
+            freelist
+                .mark_value_as_deleted((batch_id, idx as u32))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(freelist.num_pages().await, 1);
+        assert_eq!(freelist.get_active_entries(batch_id).await, 0);
+        assert_eq!(freelist.get_active_entries(batch_id + 1).await, num_entries);
     }
 }

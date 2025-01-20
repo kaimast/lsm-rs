@@ -337,11 +337,22 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn set_minimum_value_batch(&self, offset: u64) {
+    pub async fn set_minimum_value_batch(&self, offset: ValueBatchId) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
         assert!(meta.value_log.minimum_batch < offset);
+        meta.value_log.minimum_batch = offset;
+
+        mmap.flush().unwrap();
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub async fn set_minimum_freelist_page(&self, offset: FreelistPageId) {
+        let mut mmap = self.metadata.write().await;
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
+
+        assert!(meta.value_log.minimum_freelist_page < offset);
         meta.value_log.minimum_batch = offset;
 
         mmap.flush().unwrap();

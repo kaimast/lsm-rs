@@ -1,7 +1,6 @@
 /// Data blocks hold the actual contents of storted table
 /// (In the case of WiscKey the content is only the key and the value reference)
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -161,10 +160,11 @@ impl DataBlocks {
         (block_id as usize) % NUM_SHARDS
     }
 
+    /// The path where the block with the given id
+    /// will be stored at.
     #[inline]
     fn get_file_path(&self, block_id: &DataBlockId) -> std::path::PathBuf {
-        let fname = format!("key{block_id:08}.data");
-        self.params.db_path.join(Path::new(&fname))
+        self.params.db_path.join(format!("key{block_id:08}.data"))
     }
 
     /// Start creation of a new block
