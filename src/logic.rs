@@ -133,8 +133,6 @@ impl DbLogic {
         let manifest;
         let memtable;
         let wal;
-        #[cfg(feature="wisckey")]
-        let value_log;
 
         if create {
             cfg_if! {
@@ -161,10 +159,6 @@ impl DbLogic {
                 }
             }
 
-        #[cfg(feature = "wisckey")]
-        value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
-
-
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
             wal = WriteAheadLog::new(params.clone()).await?;
@@ -176,16 +170,19 @@ impl DbLogic {
 
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
-        #[cfg(feature = "wisckey")]
-        value_log = Arc::new(ValueLog::open(params.clone(), manifest.clone()).await);
-
-
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
             wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
                 .await?;
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
+
+        #[cfg(feature = "wisckey")]
+        let value_log = if create {
+            Arc::new(ValueLog::new(params.clone(), manifest.clone()).await)
+        } else {
+            Arc::new(ValueLog::open(params.clone(), manifest.clone()).await?)
+        };
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 

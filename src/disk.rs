@@ -60,6 +60,8 @@ pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std
     Ok(buf)
 }
 
+/// Read the contents of the file from the given offset to
+/// its end.
 #[inline(always)]
 #[tracing::instrument]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {

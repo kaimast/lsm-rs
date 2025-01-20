@@ -25,7 +25,6 @@ use block::EntryHeader;
 #[cfg(feature = "wisckey")]
 use crate::values::ValueId;
 
-
 pub type DataBlockId = u64;
 
 /// The minimum valid data block identifier

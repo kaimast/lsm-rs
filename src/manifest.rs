@@ -12,12 +12,12 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use tokio::sync::RwLock;
 
-use crate::data_blocks::{MIN_DATA_BLOCK_ID, DataBlockId};
+use crate::data_blocks::{DataBlockId, MIN_DATA_BLOCK_ID};
 use crate::sorted_table::TableId;
 use crate::{Error, Params};
 
 #[cfg(feature = "wisckey")]
-use crate::values::{MIN_VALUE_BATCH_ID, MIN_FREELIST_PAGE_ID, FreelistPageId, ValueBatchId};
+use crate::values::{FreelistPageId, MIN_FREELIST_PAGE_ID, MIN_VALUE_BATCH_ID, ValueBatchId};
 
 pub type SeqNumber = u64;
 pub type LevelId = u32;

@@ -1,19 +1,21 @@
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
+
+use bitvec::vec::BitVec;
 
 use super::ValueBatchId;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::{Params, disk};
 use crate::manifest::Manifest;
 use crate::values::ValueId;
+use crate::{Error, Params, disk};
 
 pub type FreelistPageId = u64;
 
 /// The minimum valid data block identifier
-const MIN_FREELIST_PAGE_ID: FreelistPageId = 1;
+pub const MIN_FREELIST_PAGE_ID: FreelistPageId = 1;
 
 #[derive(KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, packed)]
@@ -23,13 +25,20 @@ struct FreelistPageHeader {
     num_entries: u16,
 }
 
+#[derive(Clone, KnownLayout, Immutable, IntoBytes, FromBytes)]
+#[repr(C, packed)]
+struct FreelistBatchEntry {
+    batch_id: ValueBatchId,
+    offset: u16,
+}
+
 struct FreelistPage {
     header: FreelistPageHeader,
 
     /// Tracks the value batches covered by this page
     /// and where they start in the bitmap
-    batches: Vec<(ValueBatchId, u16)>,
-    entries: Vec<bool>,
+    batches: Vec<FreelistBatchEntry>,
+    entries: BitVec<u8>,
 }
 
 impl FreelistPage {
@@ -40,32 +49,36 @@ impl FreelistPage {
                 num_batches: 0,
                 num_entries: 0,
             },
-            batches: vec![],
-            entries: vec![],
+            batches: Default::default(),
+            entries: Default::default(),
         }
     }
 
-    pub fn open(path: &Path, identifier: FreelistPageId) -> Self {
-        let data = disk::read(path).await;
-        let (header, dat) = FreelistPageHeader::ref_from_prefix(&data).unwrap();
+    pub async fn open(path: &Path) -> Result<Self, Error> {
+        let data = disk::read(path, 0).await?;
+        let (header, ref mut data) = FreelistPageHeader::read_from_prefix(&data).unwrap();
 
-        let batches = Vec::with_capacity(header.num_batches());
-        let batches_size = header.num_batches() * std::mem::size_of::<(ValueBatchId, u16)>();
-        batches.extend_from_slice(data[..batches_size]);
-
-        Self {
-            header, FreelistPageHeader,
-            batches: batches,
-            entries: vec![],
+        let mut batches = Vec::with_capacity(header.num_batches.into());
+        for _ in 0..header.num_batches {
+            let (entry, next) = FreelistBatchEntry::read_from_prefix(data).unwrap();
+            batches.push(entry.clone());
+            *data = next;
         }
-    }
 
+        let entries = BitVec::from_slice(data);
+
+        Ok(Self {
+            header,
+            batches,
+            entries,
+        })
+    }
 
     pub fn get_identifier(&self) -> FreelistPageId {
         self.header.identifier
     }
 
-    pub fn expand(&mut self, id: ValueBatchId, num_entries: usize) -> bool {
+    pub fn expand(&mut self, batch_id: ValueBatchId, num_entries: usize) -> bool {
         const MAX_SIZE: usize = 4 * 1024 * 1024;
         assert!(num_entries < MAX_SIZE);
 
@@ -77,7 +90,10 @@ impl FreelistPage {
             * (current_entries + num_entries);
 
         if new_size <= MAX_SIZE {
-            self.batches.push((id, current_entries as u16));
+            self.batches.push(FreelistBatchEntry {
+                batch_id,
+                offset: current_entries as u16,
+            });
             self.entries.resize(current_entries + num_entries, true);
 
             true
@@ -86,11 +102,13 @@ impl FreelistPage {
         }
     }
 
-    pub async fn flush(&self, path: &Path) {
+    pub async fn flush(&self, path: &Path) -> Result<(), Error> {
         let mut data = self.header.as_bytes().to_vec();
         data.extend_from_slice(self.batches.as_bytes());
-        data.extend_from_slice(self.entries.as_bytes()); 
-        disk::write(path, &data).await;
+        data.extend_from_slice(self.entries.as_raw_slice());
+
+        disk::write(path, &data).await?;
+        Ok(())
     }
 
     pub fn get_active_entries(&self, batch_id: ValueBatchId) -> usize {
@@ -107,13 +125,13 @@ impl FreelistPage {
 
     #[inline]
     fn get_batch_range(&self, batch_id: ValueBatchId) -> (usize, usize) {
-        let Ok(start_idx) = self.batches.binary_search_by_key(&batch_id, |(k, _)| *k) else {
+        let Ok(start_idx) = self.batches.binary_search_by_key(&batch_id, |e| e.batch_id) else {
             panic!("No such batch in freelist!");
         };
 
-        let start_pos = self.batches[start_idx].1 as usize;
+        let start_pos = self.batches[start_idx].offset as usize;
         let end_pos = if start_idx + 1 < self.batches.len() {
-            self.batches[start_idx].1 as usize
+            self.batches[start_idx].offset as usize
         } else {
             self.entries.len()
         };
@@ -123,7 +141,7 @@ impl FreelistPage {
 
     pub fn mark_value_as_deleted(&mut self, vid: ValueId) {
         let (start_pos, end_pos) = self.get_batch_range(vid.0);
-        let marker = self.entries[start_pos..end_pos]
+        let mut marker = self.entries[start_pos..end_pos]
             .get_mut(vid.1 as usize)
             .expect("Entry index out of range");
 
@@ -161,22 +179,30 @@ impl ValueFreelist {
         }
     }
 
-    pub fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let mut obj = Self {
+    pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Result<Self, Error> {
+        let obj = Self {
             params,
             manifest,
             pages: Default::default(),
         };
 
-        for page_id in MIN_FREELIST_PAGE_ID..manifest.most_recent_freelist_page_id() {
-            let path = obj.get_page_file_path(page_id);
-            let page = FreelistPage::open(path, page_id).await;
-            let min_batch = page.batches.get(0).expect("Freelist contains no batches?");
-        
-            obj.pages.push((min_batch, page));
+        let mut pages = obj.pages.write().await;
+        let max_id = obj.manifest.most_recent_freelist_page_id().await;
+
+        for page_id in MIN_FREELIST_PAGE_ID..=max_id {
+            let path = obj.get_page_file_path(&page_id);
+            let page = FreelistPage::open(&path).await?;
+            let min_batch = page
+                .batches
+                .first()
+                .expect("Freelist contains no batches?")
+                .batch_id;
+
+            pages.push((min_batch, page));
         }
 
-        obj
+        drop(pages);
+        Ok(obj)
     }
 
     pub async fn num_pages(&self) -> usize {
@@ -226,16 +252,15 @@ impl ValueFreelist {
         Self::find_page_for_batch(&pages, batch_id).get_active_entries(batch_id)
     }
 
-    pub async fn add_batch(&self, batch_id: ValueBatchId, num_entries: usize) {
+    pub async fn add_batch(&self, batch_id: ValueBatchId, num_entries: usize) -> Result<(), Error> {
         let mut pages = self.pages.write().await;
 
         loop {
             if let Some((_, p)) = pages.last_mut()
                 && p.expand(batch_id, num_entries)
             {
-                let path = self.get_page_file_path(page.get_identifier());
-                p.flush(&path).await;
-                break;
+                let path = self.get_page_file_path(&p.get_identifier());
+                return p.flush(&path).await;
             }
 
             // Add a new page
@@ -296,8 +321,8 @@ mod tests {
         let batch_id = 1;
         let num_entries = 100;
 
-        freelist.add_batch(batch_id, num_entries).await;
-        freelist.add_batch(batch_id + 1, num_entries).await;
+        freelist.add_batch(batch_id, num_entries).await.unwrap();
+        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
 
         assert_eq!(freelist.num_pages().await, 2);
         assert_eq!(freelist.get_active_entries(batch_id).await, num_entries);

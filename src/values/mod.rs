@@ -8,11 +8,9 @@ use crate::Error;
 use lru::LruCache;
 
 #[cfg(feature = "monoio")]
-use monoio::fs::OpenOptions;
-#[cfg(feature = "monoio")]
 use std::fs::remove_file;
 #[cfg(feature = "tokio-uring")]
-use tokio_uring::fs::{OpenOptions, remove_file};
+use tokio_uring::fs::remove_file;
 
 #[cfg(not(feature = "_async-io"))]
 use std::fs::remove_file;
@@ -40,7 +38,7 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 mod tests;
 
 mod freelist;
-pub use freelist::{MIN_FREELIST_PAGE_ID, FreelistPageId, ValueFreelist};
+pub use freelist::{FreelistPageId, MIN_FREELIST_PAGE_ID, ValueFreelist};
 
 mod batch;
 use batch::ValueBatch;
@@ -66,21 +64,20 @@ impl ValueRef {
 }
 
 impl ValueLog {
-    fn init_caches(params: &Params) -> Vec<BatchCache> {
+    fn init_caches(params: &Params) -> Vec<Mutex<BatchShard>> {
         let max_value_files = NonZeroUsize::new(params.max_open_files / 2)
             .expect("Max open files needs to be greater than 2");
 
         let shard_size = NonZeroUsize::new(max_value_files.get() / NUM_SHARDS)
             .expect("Not enough open files to support the number of shards");
 
-        0..NUM_SHARDS.get().map(|_| {
-            let cache = Mutex::new(BatchShard::new(shard_size));
-            batch_caches.push(cache);
-        }).collect()
+        (0..NUM_SHARDS.get())
+            .map(|_| Mutex::new(BatchShard::new(shard_size)))
+            .collect()
     }
 
     pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let batch_chaches = Self::init_caches(&params);
+        let batch_caches = Self::init_caches(&params);
         let freelist = ValueFreelist::new(params.clone(), manifest.clone());
 
         Self {
@@ -91,16 +88,16 @@ impl ValueLog {
         }
     }
 
-    pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let batch_chaches = Self::init_caches(&params);
-        let freelist = ValueFreelist::open(params.clone(), manifest.clone());
+    pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Result<Self, Error> {
+        let batch_caches = Self::init_caches(&params);
+        let freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
 
-        Self {
+        Ok(Self {
             freelist,
             params,
             manifest,
             batch_caches,
-        }
+        })
     }
 
     #[tracing::instrument(skip(self))]
