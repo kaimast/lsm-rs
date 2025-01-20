@@ -17,7 +17,6 @@ mod write_batch;
 pub use write_batch::{WriteBatch, WriteOp, WriteOptions};
 
 pub mod sorted_table;
-use sorted_table::{Key, Value};
 
 mod level_logger;
 
@@ -35,6 +34,13 @@ mod disk;
 mod index_blocks;
 mod level;
 mod wal;
+
+pub type Key = Vec<u8>;
+pub type Value = Vec<u8>;
+
+/// Shorthand for a list of key-value pairs
+#[cfg(feature = "wisckey")]
+type EntryList = Vec<(Key, Value)>;
 
 pub use database::Database;
 

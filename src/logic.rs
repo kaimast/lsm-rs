@@ -16,9 +16,9 @@ use crate::manifest::{LevelId, Manifest};
 use crate::memtable::{
     ImmMemtableRef, Memtable, MemtableEntry, MemtableEntryRef, MemtableIterator, MemtableRef,
 };
-use crate::sorted_table::{InternalIterator, Key, TableId, TableIterator};
+use crate::sorted_table::{InternalIterator, TableId, TableIterator};
 use crate::wal::WriteAheadLog;
-use crate::{Error, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
+use crate::{Error, Key, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
 use crate::values::{ValueLog, ValueRef};
@@ -897,8 +897,21 @@ impl DbLogic {
         }
 
         #[cfg(feature = "wisckey")]
-        for vid in deleted_values.into_iter() {
-            self.value_log.mark_value_deleted(vid).await?;
+        {
+            let mut reinsert = WriteBatch::new();
+            for vid in deleted_values.into_iter() {
+                let entries = self.value_log.mark_value_deleted(vid).await?;
+                for (k, v) in entries.into_iter() {
+                    reinsert.put(k, v);
+                }
+            }
+
+            // Reinsert values, if needed to defragment
+            // Old batches will eventually be removed as a result
+            if !reinsert.writes.is_empty() {
+                let opts = WriteOptions { sync: true };
+                self.write_opts(reinsert, &opts).await?;
+            }
         }
 
         if let Some(logger) = &self.level_logger {

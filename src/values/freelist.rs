@@ -132,7 +132,7 @@ impl FreelistPage {
         false
     }
 
-    pub fn get_active_entries(&self, batch_id: ValueBatchId) -> usize {
+    pub fn count_active_entries(&self, batch_id: ValueBatchId) -> usize {
         let (start_pos, end_pos) = self.get_batch_range(batch_id);
         let mut count = 0;
         for pos in start_pos..end_pos {
@@ -142,6 +142,22 @@ impl FreelistPage {
         }
 
         count
+    }
+
+    pub fn get_active_entries(&self, batch_id: ValueBatchId) -> Vec<u32> {
+        let (start_pos, end_pos) = self.get_batch_range(batch_id);
+        self.entries[start_pos..end_pos]
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, active)| {
+                if *active {
+                    let pos = offset + start_pos;
+                    Some(pos as u32)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[inline]
@@ -257,11 +273,23 @@ impl ValueFreelist {
         Some(&pages[idx].1)
     }
 
-    pub async fn get_active_entries(&self, batch_id: ValueBatchId) -> usize {
+    /// Returns the number of active entries for the
+    /// specified batch
+    pub async fn count_active_entries(&self, batch_id: ValueBatchId) -> usize {
+        let pages = self.pages.read().await;
+        match Self::find_page_for_batch(&pages, batch_id) {
+            Some(p) => p.count_active_entries(batch_id),
+            None => 0,
+        }
+    }
+
+    /// Returns a list of active entries (their offsets)
+    /// for the specified batch
+    pub async fn get_active_entries(&self, batch_id: ValueBatchId) -> Vec<u32> {
         let pages = self.pages.read().await;
         match Self::find_page_for_batch(&pages, batch_id) {
             Some(p) => p.get_active_entries(batch_id),
-            None => 0,
+            None => vec![],
         }
     }
 
@@ -294,8 +322,12 @@ impl ValueFreelist {
 
         pages[page_idx].1.mark_value_as_deleted(vid);
 
+        // Tries to clean up unused pages
+        // This only removes the oldest page(s)
+        // and ensures there is always at least one page left
+        //
         // TODO allow gaps as well!
-        while page_idx == 0 && !pages[page_idx].1.is_in_use() {
+        while page_idx == 0 && pages.len() > 1 && !pages[page_idx].1.is_in_use() {
             let id = pages[page_idx].1.get_identifier();
             self.manifest.set_minimum_freelist_page(id).await;
 
@@ -360,7 +392,7 @@ mod tests {
         freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
 
         assert_eq!(freelist.num_pages().await, 1);
-        assert_eq!(freelist.get_active_entries(batch_id).await, num_entries);
+        assert_eq!(freelist.count_active_entries(batch_id).await, num_entries);
     }
 
     #[async_test]
@@ -374,7 +406,7 @@ mod tests {
         freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
 
         assert_eq!(freelist.num_pages().await, 2);
-        assert_eq!(freelist.get_active_entries(batch_id).await, num_entries);
+        assert_eq!(freelist.count_active_entries(batch_id).await, num_entries);
     }
 
     #[async_test]
@@ -396,7 +428,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(freelist.num_pages().await, 1);
-        assert_eq!(freelist.get_active_entries(batch_id).await, num_entries - 3);
+        assert_eq!(
+            freelist.count_active_entries(batch_id).await,
+            num_entries - 3
+        );
     }
 
     #[async_test]
@@ -417,7 +452,10 @@ mod tests {
         }
 
         assert_eq!(freelist.num_pages().await, 1);
-        assert_eq!(freelist.get_active_entries(batch_id).await, 0);
-        assert_eq!(freelist.get_active_entries(batch_id + 1).await, num_entries);
+        assert_eq!(freelist.count_active_entries(batch_id).await, 0);
+        assert_eq!(
+            freelist.count_active_entries(batch_id + 1).await,
+            num_entries
+        );
     }
 }

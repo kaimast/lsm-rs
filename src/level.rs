@@ -1,7 +1,7 @@
 use crate::data_blocks::{DataBlocks, DataEntry};
 use crate::manifest::{INVALID_TABLE_ID, LevelId, Manifest};
-use crate::sorted_table::{Key, SortedTable, TableBuilder, TableId};
-use crate::{Error, Params};
+use crate::sorted_table::{SortedTable, TableBuilder, TableId};
+use crate::{Error, Key, Params};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -128,6 +128,27 @@ impl ValueBatch {
         }
     }
 
+    pub fn get_entries(&self, offsets: &[ValueOffset]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        offsets
+            .iter()
+            .map(|offset| {
+                let mut offset = *offset as usize;
+                let data = &self.get_value_data()[offset..];
+
+                let (vheader, _) = ValueEntryHeader::ref_from_prefix(data).unwrap();
+
+                offset += size_of::<ValueEntryHeader>();
+
+                let key = data[offset..(vheader.key_length as usize)].to_vec();
+                offset += vheader.key_length as usize;
+
+                let value = data[offset..(vheader.value_length as usize)].to_vec();
+
+                (key, value)
+            })
+            .collect()
+    }
+
     /// Access the raw data of this batch
     #[inline]
     pub(super) fn get_value_data(&self) -> &[u8] {

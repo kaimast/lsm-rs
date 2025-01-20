@@ -34,6 +34,8 @@ mod batch;
 use batch::ValueBatch;
 pub use batch::ValueBatchBuilder;
 
+use crate::EntryList;
+
 pub struct ValueLog {
     freelist: ValueFreelist,
     params: Arc<Params>,
@@ -90,38 +92,65 @@ impl ValueLog {
         })
     }
 
+    /// Marks a value as unused and, potentially, removes old value batches
+    /// On success, this might return a list of entries to reinsert in order to defragment the log
     #[tracing::instrument(skip(self))]
-    pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
+    pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<EntryList, Error> {
         self.freelist.mark_value_as_deleted(vid).await?;
 
-        // FIXME make sure there aren't any race conditions here
+        // If this is the oldest value batch, try to remove things
+        let start = vid.0;
+        let min_batch = self.manifest.get_minimum_value_batch().await;
+        let mut defragment_pos = self.manifest.get_value_defragment_position().await;
         let most_recent = self.manifest.most_recent_value_batch_id().await;
-        for batch_id in vid.0..=most_recent {
-            // This will re-read some of the file
-            // it's somewhat inefficient but makes the code much more readable
-            let deleted = self.cleanup_batch(batch_id).await?;
 
-            if !deleted {
-                break;
+        if min_batch == start {
+            for batch_id in vid.0..most_recent {
+                if !self.try_to_remove(batch_id).await? {
+                    // Don't defragment what has already been deleted
+                    if batch_id > defragment_pos {
+                        defragment_pos = batch_id;
+                        self.manifest.set_value_defragment_position(batch_id).await;
+                    }
+                    break;
+                }
             }
         }
 
-        Ok(())
+        let mut reinsert = vec![];
+
+        if defragment_pos == start {
+            for batch_id in start..most_recent {
+                if let Some(mut entries) = self.try_to_defragment(batch_id).await? {
+                    reinsert.append(&mut entries);
+                } else {
+                    if batch_id > start {
+                        self.manifest.set_value_defragment_position(batch_id).await;
+                    } else {
+                        assert!(reinsert.is_empty());
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        Ok(reinsert)
     }
 
+    /// Attempts to delete empty batches
     #[tracing::instrument(skip(self))]
-    async fn cleanup_batch(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
-        let num_active = self.freelist.get_active_entries(batch_id).await;
-        let vlog_min = self.manifest.get_minimum_value_batch().await;
+    async fn try_to_remove(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
+        let num_active = self.freelist.count_active_entries(batch_id).await;
 
-        if num_active == 0 && batch_id == vlog_min + 1 {
-            log::trace!("Deleting batch #{batch_id}");
+        if num_active == 0 {
+            log::trace!("Deleting empty batch #{batch_id}");
 
             // Hold lock so nobody else messes with the file while we do this
             let shard_id = Self::batch_to_shard_id(batch_id);
             let mut cache = self.batch_caches[shard_id].lock().await;
 
-            self.manifest.set_minimum_value_batch(vlog_min + 1).await;
+            self.manifest.set_minimum_value_batch(batch_id + 1).await;
 
             let fpath = self.get_batch_file_path(&batch_id);
             disk::remove_file(&fpath)
@@ -132,6 +161,23 @@ impl ValueLog {
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    /// Check if we should reinsert entries from this batch
+    #[tracing::instrument(skip(self))]
+    async fn try_to_defragment(&self, batch_id: ValueBatchId) -> Result<Option<EntryList>, Error> {
+        let batch = self.get_batch(batch_id).await?;
+        let num_entries = batch.total_num_values() as usize;
+        let num_active = self.freelist.count_active_entries(batch_id).await;
+        let active_ratio = (num_active * 100) / (num_entries * 100);
+
+        if active_ratio < 25 {
+            log::trace!("Re-inserting sparse value batch #{batch_id}");
+            let offsets = self.freelist.get_active_entries(batch_id).await;
+            Ok(Some(batch.get_entries(&offsets)))
+        } else {
+            Ok(None)
         }
     }
 
