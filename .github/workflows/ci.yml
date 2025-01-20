@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
@@ -48,6 +48,20 @@ jobs:
     - name: "Test: Wisckey and Monoio"
       run: just monoio-wisckey-tests
       timeout-minutes: 10
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install rustc and clippy nightly
+      uses: dtolnay/rust-toolchain@stable
+      with:
+         toolchain: nightly
+         components: cargo, rustc, clippy, rustfmt
+    - name: Install Just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just
+ 
     - name: "Lint Checks: Tokio (with sync FS)"
       run: just async-lint
     - name: "Lint Checks: Tokio-Uring"
