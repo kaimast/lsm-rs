@@ -1,10 +1,7 @@
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-
-use zerocopy::FromBytes;
 
 use crate::Error;
 
@@ -18,9 +15,7 @@ use std::fs::remove_file;
 use tokio_uring::fs::{OpenOptions, remove_file};
 
 #[cfg(not(feature = "_async-io"))]
-use std::fs::{OpenOptions, remove_file};
-#[cfg(not(feature = "_async-io"))]
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::remove_file;
 
 use crate::Params;
 use crate::disk;
@@ -30,6 +25,8 @@ use cfg_if::cfg_if;
 
 pub type ValueOffset = u32;
 pub type ValueBatchId = u64;
+
+pub const MIN_VALUE_BATCH_ID: ValueBatchId = 1;
 
 pub type ValueId = (ValueBatchId, ValueOffset);
 
@@ -42,13 +39,15 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 #[cfg(test)]
 mod tests;
 
-//mod freelist;
+mod freelist;
+pub use freelist::{MIN_FREELIST_PAGE_ID, FreelistPageId, ValueFreelist};
 
 mod batch;
+use batch::ValueBatch;
 pub use batch::ValueBatchBuilder;
-use batch::{ValueBatch, ValueBatchHeader};
 
 pub struct ValueLog {
+    freelist: ValueFreelist,
     params: Arc<Params>,
     manifest: Arc<Manifest>,
     batch_caches: Vec<Mutex<BatchShard>>,
@@ -67,20 +66,37 @@ impl ValueRef {
 }
 
 impl ValueLog {
-    pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        let mut batch_caches = Vec::new();
+    fn init_caches(params: &Params) -> Vec<BatchCache> {
         let max_value_files = NonZeroUsize::new(params.max_open_files / 2)
             .expect("Max open files needs to be greater than 2");
 
         let shard_size = NonZeroUsize::new(max_value_files.get() / NUM_SHARDS)
             .expect("Not enough open files to support the number of shards");
 
-        for _ in 0..NUM_SHARDS.get() {
+        0..NUM_SHARDS.get().map(|_| {
             let cache = Mutex::new(BatchShard::new(shard_size));
             batch_caches.push(cache);
-        }
+        }).collect()
+    }
+
+    pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+        let batch_chaches = Self::init_caches(&params);
+        let freelist = ValueFreelist::new(params.clone(), manifest.clone());
 
         Self {
+            freelist,
+            params,
+            manifest,
+            batch_caches,
+        }
+    }
+
+    pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+        let batch_chaches = Self::init_caches(&params);
+        let freelist = ValueFreelist::open(params.clone(), manifest.clone());
+
+        Self {
+            freelist,
             params,
             manifest,
             batch_caches,
@@ -89,95 +105,16 @@ impl ValueLog {
 
     #[tracing::instrument(skip(self))]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<(), Error> {
-        let (batch_id, value_offset) = vid;
-        let meta_path = self.get_meta_file_path(&batch_id);
-
-        log::trace!("Marking value in batch #{batch_id} at offset {value_offset} as deleted");
-
-        let header_len = std::mem::size_of::<ValueBatchHeader>();
-        let mut header_data = vec![0u8; header_len];
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let file =  OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(&meta_path).await?;
-
-                let (res, buf) = file.read_exact_at(header_data, 0).await;
-                res?;
-                header_data = buf;
-            } else {
-                let mut file =  OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(&meta_path)?;
-
-                file.read_exact(&mut header_data)?;
-            }
-        }
-
-        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
-
-        let mut offset_pos = None;
-        let offset_len = size_of::<u32>();
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                // Skip deletion markers
-                let pos = header_len + header.delete_markers_len();
-                let buf = vec![0u8; header.offsets_len()];
-                let (res, data) = file.read_exact_at(buf, pos as u64).await;
-                res?;
-
-            for pos in 0..header.num_values {
-                let upos = pos as usize;
-                let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
-                if offset == &value_offset {
-                    offset_pos = Some(pos);
-                    break;
-                }
-            }
-
-                let delete_marker_pos = (header_len as u64) + (offset_pos.expect("Not a valid offset") as u64);
-                file.write_all_at(vec![1u8], delete_marker_pos).await.0?;
-            } else {
-                // Skip deletion markers
-                file.seek(SeekFrom::Current(header.delete_markers_len() as i64))?;
-                let mut data = vec![0u8; header.offsets_len()];
-                file.read_exact(&mut data)?;
-                    for pos in 0..header.num_values {
-                        let upos = pos as usize;
-                        let (offset, _) = u32::ref_from_prefix(&data[upos*offset_len..]).unwrap();
-                        if offset == &value_offset {
-                            offset_pos = Some(pos);
-                        }
-                    }
-
-                let offset_pos = offset_pos.unwrap_or_else(|| panic!("Cannot mark as deleted: {value_offset} is not a valid offset"));
-                assert!(offset_pos < header.num_values);
-
-                log::trace!("Marking entry #{offset_pos} at offset {value_offset} as deleted");
-                file.seek(SeekFrom::Start((header_len as u64) + (offset_pos as u64)))?;
-                file.write_all(&[1u8])?;
-            }
-        }
-
-        // Metadata is (currently) not mmap, so evict outdated version from cache
-        let shard_id = Self::batch_to_shard_id(batch_id);
-        self.batch_caches[shard_id].lock().await.pop(&batch_id);
-
-        // we might need to delete more than one batch
-        let mut batch_id = batch_id;
+        self.freelist.mark_value_as_deleted(vid).await;
 
         // FIXME make sure there aren't any race conditions here
         let most_recent = self.manifest.most_recent_value_batch_id().await;
-        while batch_id <= most_recent {
+        for batch_id in vid.0..=most_recent {
             // This will re-read some of the file
             // it's somewhat inefficient but makes the code much more readable
             let deleted = self.cleanup_batch(batch_id).await?;
 
-            if deleted {
-                batch_id += 1;
-            } else {
+            if !deleted {
                 break;
             }
         }
@@ -187,80 +124,19 @@ impl ValueLog {
 
     #[tracing::instrument(skip(self))]
     async fn cleanup_batch(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
-        let fpath = self.get_meta_file_path(&batch_id);
+        let num_active = self.freelist.get_active_entries(batch_id).await;
+        let vlog_min = self.manifest.get_minimum_value_batch().await;
 
-        let header_len = std::mem::size_of::<ValueBatchHeader>();
-        let mut header_data = vec![0u8; header_len];
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let file =  OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(&fpath).await?;
-
-                let (res, buf) = file.read_exact_at(header_data, 0).await;
-                res?;
-                header_data = buf;
-            } else {
-                let mut file =  OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(&fpath)?;
-
-                file.read_exact(&mut header_data)?;
-            }
-        }
-
-        let header = ValueBatchHeader::ref_from_bytes(&header_data).unwrap();
-
-        let olen = std::mem::size_of::<u32>();
-        let mut offsets = vec![0u32; header.num_values as usize];
-        let mut delete_flags = vec![0u8; header.delete_markers_len()];
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let (res, buf) = file.read_exact_at(delete_flags, header_len as u64).await;
-                res?;
-                delete_flags = buf;
-            } else {
-                file.read_exact(&mut delete_flags)?;
-            }
-        }
-
-        let mut buf = vec![0u8; offsets.len() * olen];
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let pos = header_len + header.delete_markers_len();
-                let (res, data) = file.read_exact_at(buf, pos as u64).await;
-                res?;
-                buf = data;
-            } else {
-                file.read_exact(&mut buf)?;
-           }
-        }
-
-        for idx in 0..(header.num_values as usize) {
-            offsets[idx] = *u32::ref_from_prefix(&buf[idx * olen..]).unwrap().0;
-        }
-
-        let mut num_active: u32 = 0;
-        // Remove padding...
-        for flag in &delete_flags[..(header.num_values as usize)] {
-            if *flag == 0u8 {
-                num_active += 1;
-            }
-        }
-
-        let vlog_offset = self.manifest.get_value_log_offset().await;
-
-        if num_active == 0 && batch_id == vlog_offset + 1 {
+        if num_active == 0 && batch_id == vlog_min + 1 {
             log::trace!("Deleting batch #{batch_id}");
 
             // Hold lock so nobody else messes with the file while we do this
             let shard_id = Self::batch_to_shard_id(batch_id);
             let mut cache = self.batch_caches[shard_id].lock().await;
 
-            self.manifest.set_value_log_offset(vlog_offset + 1).await;
+            self.manifest.set_minimum_value_batch(vlog_min + 1).await;
+
+            let fpath = self.get_batch_file_path(&batch_id);
 
             cfg_if! {
                 if #[ cfg(feature="tokio-uring") ] {
@@ -284,17 +160,12 @@ impl ValueLog {
     }
 
     #[inline]
-    fn get_meta_file_path(&self, batch_id: &ValueBatchId) -> std::path::PathBuf {
-        self.params.db_path.join(format!("val{batch_id:08}.value"))
-    }
-
-    #[inline]
-    fn get_data_file_path(&self, batch_id: &ValueBatchId) -> std::path::PathBuf {
+    fn get_batch_file_path(&self, batch_id: &ValueBatchId) -> std::path::PathBuf {
         self.params.db_path.join(format!("val{batch_id:08}.data"))
     }
 
     pub async fn make_batch(&self) -> ValueBatchBuilder<'_> {
-        let identifier = self.manifest.next_value_batch_id().await;
+        let identifier = self.manifest.generate_next_value_batch_id().await;
         ValueBatchBuilder::new(identifier, self)
     }
 
@@ -308,11 +179,9 @@ impl ValueLog {
         } else {
             log::trace!("Loading value batch #{identifier} from disk");
 
-            let metadata =
-                disk::read_uncompressed(&self.get_meta_file_path(&identifier), 0).await?;
-            let value_data = disk::read(&self.get_data_file_path(&identifier), 0).await?;
+            let data = disk::read(&self.get_batch_file_path(&identifier), 0).await?;
 
-            let obj = Arc::new(ValueBatch::from_existing(metadata, value_data));
+            let obj = Arc::new(ValueBatch::from_existing(data));
             cache.put(identifier, obj.clone());
 
             Ok(obj)

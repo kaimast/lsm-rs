@@ -333,7 +333,7 @@ impl Level {
         {
             table_id
         } else {
-            self.manifest.next_table_id().await
+            self.manifest.generate_next_table_id().await
         };
 
         placeholders.push(TablePlaceholder {

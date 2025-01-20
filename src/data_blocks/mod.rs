@@ -25,7 +25,12 @@ use block::EntryHeader;
 #[cfg(feature = "wisckey")]
 use crate::values::ValueId;
 
+
 pub type DataBlockId = u64;
+
+/// The minimum valid data block identifier
+pub const MIN_DATA_BLOCK_ID: DataBlockId = 1;
+
 const NUM_SHARDS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 #[derive(Debug)]

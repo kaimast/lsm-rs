@@ -30,33 +30,6 @@ async fn test_init() -> (TempDir, ValueLog) {
 }
 
 #[async_test]
-async fn delete_value() {
-    const SIZE: usize = 1_000;
-
-    let (_tmpdir, values) = test_init().await;
-
-    let mut builder = values.make_batch().await;
-
-    let key = "hello".as_bytes().to_vec();
-    let data = vec![b'a'; SIZE];
-
-    let _ = builder.add_entry(&key, &data).await;
-    let vid2 = builder.add_entry(&key, &data).await;
-
-    let batch_id = builder.finish().await.unwrap();
-
-    let batch = values.get_batch(batch_id).await.unwrap();
-    assert_eq!(batch.num_active_values(), 2);
-    assert_eq!(batch.total_num_values(), 2);
-
-    values.mark_value_deleted(vid2).await.unwrap();
-    let batch = values.get_batch(batch_id).await.unwrap();
-
-    assert_eq!(batch.num_active_values(), 1);
-    assert_eq!(batch.total_num_values(), 2);
-}
-
-#[async_test]
 async fn delete_batch() {
     const SIZE: usize = 1_000;
 
@@ -71,7 +44,6 @@ async fn delete_batch() {
     let batch_id = builder.finish().await.unwrap();
     let batch = values.get_batch(batch_id).await.unwrap();
 
-    assert_eq!(batch.num_active_values(), 1);
     assert_eq!(batch.total_num_values(), 1);
 
     values.mark_value_deleted(vid).await.unwrap();

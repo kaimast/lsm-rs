@@ -133,6 +133,8 @@ impl DbLogic {
         let manifest;
         let memtable;
         let wal;
+        #[cfg(feature="wisckey")]
+        let value_log;
 
         if create {
             cfg_if! {
@@ -159,6 +161,10 @@ impl DbLogic {
                 }
             }
 
+        #[cfg(feature = "wisckey")]
+        value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
+
+
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
             wal = WriteAheadLog::new(params.clone()).await?;
@@ -170,15 +176,16 @@ impl DbLogic {
 
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
+        #[cfg(feature = "wisckey")]
+        value_log = Arc::new(ValueLog::open(params.clone(), manifest.clone()).await);
+
+
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
             wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
                 .await?;
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
-
-        #[cfg(feature = "wisckey")]
-        let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
@@ -549,7 +556,7 @@ impl DbLogic {
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.first().unwrap();
-            let table_id = self.manifest.next_table_id().await;
+            let table_id = self.manifest.generate_next_table_id().await;
             let mut table_builder = l0.build_table(table_id, min_key.to_vec(), max_key.to_vec());
 
             let memtable_entries = mem.get().get_entries();

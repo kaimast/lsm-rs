@@ -107,7 +107,11 @@ impl DataBlockBuilder {
             return Ok(None);
         }
 
-        let identifier = self.data_blocks.manifest.next_data_block_id().await;
+        let identifier = self
+            .data_blocks
+            .manifest
+            .generate_next_data_block_id()
+            .await;
 
         #[cfg(feature = "bloom-filters")]
         let bloom_filter: &[u8; BLOOM_LENGTH + BLOOM_HEADER_SIZE] =
