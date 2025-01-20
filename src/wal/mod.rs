@@ -77,7 +77,7 @@ pub struct WriteAheadLog {
 }
 
 impl WriteAheadLog {
-    pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
+    pub async fn new(params: Arc<Params>) -> Result<Self, Error> {
         let status = LogStatus {
             queue_pos: 0,
             write_pos: 0,
@@ -160,7 +160,7 @@ impl WriteAheadLog {
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
-    ) -> Result<Self, std::io::Error> {
+    ) -> Result<Self, Error> {
         // This reads the file(s) in the current thread because we cannot
         // send stuff between threads easily
 
@@ -174,7 +174,7 @@ impl WriteAheadLog {
                 let mut log_file = WalWriter::open_file(&params, fpos).await?;
             } else {
                 let file_offset = position % PAGE_SIZE;
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
+                let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
                 log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
             }
         }
@@ -192,7 +192,8 @@ impl WriteAheadLog {
                 &params,
                 true,
             )
-            .await?;
+            .await
+            .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
 
             if !success {
                 break;
@@ -388,7 +389,7 @@ impl WriteAheadLog {
 
     /// Stores an operation and returns the new position in the logfile
     #[tracing::instrument(skip(self, batch))]
-    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, std::io::Error> {
+    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, Error> {
         let mut writes = vec![];
 
         for op in batch {
@@ -474,7 +475,7 @@ impl WriteAheadLog {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn sync(&self) -> Result<(), std::io::Error> {
+    pub async fn sync(&self) -> Result<(), Error> {
         let last_pos = {
             let mut lock = self.inner.status.write();
 

@@ -147,7 +147,9 @@ impl DataBlockBuilder {
         let block_data = &block.data;
         let fpath = self.data_blocks.get_file_path(&identifier);
 
-        disk::write(&fpath, block_data).await?;
+        disk::write(&fpath, block_data)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to write data block", err))?;
 
         self.data_blocks.block_caches[shard_id]
             .lock()

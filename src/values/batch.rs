@@ -84,7 +84,9 @@ impl<'a> ValueBatchBuilder<'a> {
         let file_path = self.vlog.get_batch_file_path(&self.identifier);
 
         data.extend_from_slice(&self.value_data);
-        disk::write(&file_path, &data).await?;
+        disk::write(&file_path, &data)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to write value log batch", err))?;
 
         let batch = Arc::new(ValueBatch { data });
 

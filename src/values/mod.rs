@@ -137,9 +137,17 @@ impl ValueLog {
 
             cfg_if! {
                 if #[ cfg(feature="tokio-uring") ] {
-                    remove_file(&fpath).await?;
+                    remove_file(&fpath).await
+            .map_err(|err| Error::from_io_error(
+                "Failed to remove value log batch",
+                err))?;
+
                 } else {
-                    remove_file(&fpath)?;
+                    remove_file(&fpath)
+            .map_err(|err| Error::from_io_error(
+                "Failed to remove value log batch",
+                err))?;
+
                 }
             }
 
@@ -176,7 +184,9 @@ impl ValueLog {
         } else {
             log::trace!("Loading value batch #{identifier} from disk");
 
-            let data = disk::read(&self.get_batch_file_path(&identifier), 0).await?;
+            let data = disk::read(&self.get_batch_file_path(&identifier), 0)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to read value log batch", err))?;
 
             let obj = Arc::new(ValueBatch::from_existing(data));
             cache.put(identifier, obj.clone());

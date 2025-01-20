@@ -240,7 +240,8 @@ impl Manifest {
             .truncate(false)
             .read(true)
             .write(true)
-            .open(manifest_path)?;
+            .open(manifest_path)
+            .map_err(|err| Error::from_io_error("Failed to open manifest", err))?;
 
         let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
@@ -262,7 +263,8 @@ impl Manifest {
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(fname)?;
+                .open(fname)
+                .map_err(|err| Error::from_io_error("Failed to open manifest", err))?;
 
             let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 

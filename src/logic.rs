@@ -143,7 +143,7 @@ impl DbLogic {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(err) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
+                            return Err(Error::from_io_error(fromat!("Failed to create DB folder: {err}"), err));
                         }
                     }
                 } else {
@@ -153,7 +153,7 @@ impl DbLogic {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(err) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
+                            return Err(Error::from_io_error(format!("Failed to create DB folder: {err}"), err));
                         }
                     }
                 }
