@@ -12,7 +12,7 @@ use tokio_uring::fs::{File, OpenOptions};
 use monoio::fs::{File, OpenOptions};
 
 #[cfg(feature = "wisckey")]
-use crate::values::FreelistPageId;
+use crate::values::{FreelistPageId, ValueFreelist};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, WriteOp};
@@ -45,7 +45,7 @@ impl LogEntry<'_> {
         match self {
             Self::Write(_) => Self::WRITE,
             #[cfg(feature = "wisckey")]
-            Self::ValueDeletion(_,_) => Self::VALUE_DELETION,
+            Self::ValueDeletion(_, _) => Self::VALUE_DELETION,
         }
     }
 }
@@ -87,10 +87,35 @@ struct LogStatus {
     stop_flag: bool,
 }
 
+impl LogStatus {
+    fn new(position: u64, start_position: u64) -> Self {
+        Self {
+            queue_pos: position,
+            write_pos: position,
+            sync_pos: position,
+            flush_pos: start_position,
+            offset_pos: start_position,
+            queue: vec![],
+            sync_flag: false,
+            stop_flag: false,
+        }
+    }
+}
+
 struct LogInner {
     status: RwLock<LogStatus>,
     queue_cond: Notify,
     write_cond: Notify,
+}
+
+impl LogInner {
+    fn new(status: LogStatus) -> Self {
+        Self {
+            status: RwLock::new(status),
+            queue_cond: Default::default(),
+            write_cond: Default::default(),
+        }
+    }
 }
 
 /// The write-ahead log keeps track of the most recent changes
@@ -133,6 +158,31 @@ impl WriteAheadLog {
     /// Open an existing log and insert entries into memtable
     ///
     /// This is similar to `new` but fetches state from disk first.
+    #[cfg(feature = "wisckey")]
+    pub async fn open(
+        params: Arc<Params>,
+        start_position: u64,
+        memtable: &mut Memtable,
+        freelist: &mut ValueFreelist,
+    ) -> Result<Self, Error> {
+        // This reads the file(s) in the current thread
+        // because we cannot send stuff between threads easily
+
+        let mut reader = WalReader::new(params.clone(), start_position).await?;
+
+        let position = reader.run(memtable, freelist).await?;
+
+        let status = LogStatus::new(position, start_position);
+        let inner = Arc::new(LogInner::new(status));
+        let finish_receiver = Self::continue_writer(inner.clone(), position, params);
+
+        Ok(Self {
+            inner,
+            finish_receiver: Mutex::new(Some(finish_receiver)),
+        })
+    }
+
+    #[cfg(not(feature = "wisckey"))]
     pub async fn open(
         params: Arc<Params>,
         start_position: u64,
@@ -142,25 +192,11 @@ impl WriteAheadLog {
         // because we cannot send stuff between threads easily
 
         let mut reader = WalReader::new(params.clone(), start_position).await?;
+
         let position = reader.run(memtable).await?;
 
-        let status = LogStatus {
-            queue_pos: position,
-            write_pos: position,
-            sync_pos: position,
-            flush_pos: start_position,
-            offset_pos: start_position,
-            queue: vec![],
-            sync_flag: false,
-            stop_flag: false,
-        };
-
-        let inner = Arc::new(LogInner {
-            status: RwLock::new(status),
-            queue_cond: Default::default(),
-            write_cond: Default::default(),
-        });
-
+        let status = LogStatus::new(position, start_position);
+        let inner = Arc::new(LogInner::new(status));
         let finish_receiver = Self::continue_writer(inner.clone(), position, params);
 
         Ok(Self {

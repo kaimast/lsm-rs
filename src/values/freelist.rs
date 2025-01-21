@@ -31,9 +31,15 @@ struct FreelistPageHeader {
 struct FreelistPage {
     header: FreelistPageHeader,
 
+    /// True if some changes to this page might not
+    /// have been written to disk yet
+    dirty: bool,
+
     /// Tracks the value batches covered by this page
     /// and where they start in the bitmap
     offsets: Vec<u16>,
+
+    /// The actual bitmap
     entries: BitVec<u8>,
 }
 
@@ -48,6 +54,7 @@ impl FreelistPage {
                 num_batches: 0,
                 num_entries: 0,
             },
+            dirty: true,
             offsets: Default::default(),
             entries: Default::default(),
         }
@@ -78,6 +85,7 @@ impl FreelistPage {
             header,
             offsets,
             entries,
+            dirty: false,
         })
     }
 
@@ -88,7 +96,7 @@ impl FreelistPage {
     /// Add a new value batch to this page
     ///
     /// - Returns true if there was enoguh space
-    /// - Note, this will not update the page until you flush()
+    /// - Note, this will not update the page until calling sync()
     pub fn expand(&mut self, num_entries: usize) -> bool {
         const MAX_SIZE: usize = 4 * 1024;
         assert!(num_entries < MAX_SIZE);
@@ -108,6 +116,7 @@ impl FreelistPage {
 
             // We assume all entries are in use for a new batch
             self.entries.resize(current_entries + num_entries, true);
+            self.dirty = true;
 
             true
         } else {
@@ -116,7 +125,11 @@ impl FreelistPage {
     }
 
     /// Write the current state of the page to the disk
-    pub async fn flush(&self, path: &Path) -> Result<(), Error> {
+    pub async fn sync(&mut self, path: &Path) -> Result<bool, Error> {
+        if !self.dirty {
+            return Ok(false);
+        }
+
         let mut data = self.header.as_bytes().to_vec();
         data.extend_from_slice(self.offsets.as_bytes());
         data.extend_from_slice(self.entries.as_raw_slice());
@@ -124,7 +137,9 @@ impl FreelistPage {
         disk::write(path, &data).await.map_err(|err| {
             Error::from_io_error(format!("Failed to write freelist page at `{path:?}`"), err)
         })?;
-        Ok(())
+
+        self.dirty = false;
+        Ok(true)
     }
 
     /// Are any of the values in this freelist still in use?
@@ -187,7 +202,7 @@ impl FreelistPage {
     /// Mark a value as deleted
     ///
     /// - Returns the offset within the page that got changed
-    /// - Changes will not be persisted until we flush()
+    /// - Changes will not be persisted until we sync()
     pub fn mark_value_as_deleted(&mut self, vid: ValueId) -> u16 {
         let (start_pos, end_pos) = self.get_batch_range(vid.0);
 
@@ -200,7 +215,21 @@ impl FreelistPage {
         }
 
         *marker = false;
+        self.dirty = true;
+
         (start_pos as u16) + (vid.1 as u16)
+    }
+
+    pub fn unset_entry(&mut self, offset: u16) {
+        let mut marker = self
+            .entries
+            .get_mut(offset as usize)
+            .expect("Offset out of range");
+
+        if *marker {
+            *marker = false;
+            self.dirty = true;
+        }
     }
 }
 
@@ -253,6 +282,25 @@ impl ValueFreelist {
 
         drop(pages);
         Ok(obj)
+    }
+
+    pub async fn sync(&self) -> Result<(), Error> {
+        let mut count = 0;
+        let mut pages = self.pages.write().await;
+
+        for (_, page) in pages.iter_mut() {
+            if !page.dirty {
+                continue;
+            }
+
+            let path = self.get_page_file_path(&page.get_identifier());
+            let updated = page.sync(&path).await?;
+            assert!(updated);
+            count += 1;
+        }
+
+        log::trace!("Flushed {count} freelist pages to disk");
+        Ok(())
     }
 
     pub async fn num_pages(&self) -> usize {
@@ -321,12 +369,12 @@ impl ValueFreelist {
             let success = page.expand(num_entries);
             assert!(success, "Data did not fit in new page?");
             pages.push_back((batch_id, page));
-            &pages.back_mut().unwrap().1
+            &mut pages.back_mut().unwrap().1
         };
 
         // Persist changes to disk
         let path = self.get_page_file_path(&p.get_identifier());
-        p.flush(&path).await?;
+        p.sync(&path).await?;
         Ok(())
     }
 
@@ -359,6 +407,15 @@ impl ValueFreelist {
         }
 
         Ok((page_id, offset))
+    }
+
+    pub async fn unset_entry(&self, page_id: FreelistPageId, offset: u16) {
+        let mut pages = self.pages.write().await;
+
+        match pages.binary_search_by_key(&page_id, |(_, p)| p.get_identifier()) {
+            Ok(idx) => pages[idx].1.unset_entry(offset),
+            Err(_) => panic!("No page with id={page_id}"),
+        }
     }
 }
 

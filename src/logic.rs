@@ -21,7 +21,7 @@ use crate::wal::{LogEntry, WriteAheadLog};
 use crate::{Error, Key, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueLog, ValueRef};
+use crate::values::{ValueFreelist, ValueLog, ValueRef};
 
 use crate::data_blocks::DataEntry;
 
@@ -134,6 +134,9 @@ impl DbLogic {
         let memtable;
         let wal;
 
+        #[cfg(feature = "wisckey")]
+        let value_log;
+
         if create {
             cfg_if! {
                 if #[ cfg(feature="_async-io") ] {
@@ -162,6 +165,9 @@ impl DbLogic {
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
             wal = Arc::new(WriteAheadLog::new(params.clone()).await?);
+
+            value_log =
+                Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await);
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",
@@ -171,20 +177,25 @@ impl DbLogic {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = Arc::new(
-                WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                    .await?,
-            );
+
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    let mut freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
+                    wal = Arc::new(
+                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable, &mut freelist)
+                            .await?,
+                    );
+                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), freelist).await?);
+                } else {
+                    wal = Arc::new(
+                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
+                            .await?,
+                    );
+                }
+            }
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
-
-        #[cfg(feature = "wisckey")]
-        let value_log = if create {
-            Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await)
-        } else {
-            Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone()).await?)
-        };
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
@@ -600,6 +611,10 @@ impl DbLogic {
             if let Some(logger) = &self.level_logger {
                 logger.l0_table_added();
             }
+
+            // Sync all freelist changes to disk
+            #[cfg(feature = "wisckey")]
+            self.value_log.sync().await?;
 
             // Then update manifest and flush WAL
             let seq_offset = mem.get().get_next_seq_number();

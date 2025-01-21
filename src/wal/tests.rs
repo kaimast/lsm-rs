@@ -3,6 +3,11 @@ use tempfile::TempDir;
 
 use super::*;
 
+use crate::manifest::Manifest;
+
+#[cfg(feature = "wisckey")]
+use crate::values::ValueFreelist;
+
 #[cfg(feature = "tokio-uring")]
 use kioto_uring_executor::test as async_test;
 
@@ -40,6 +45,30 @@ async fn test_cleanup(tempdir: TempDir, wal: WriteAheadLog) {
 
     log::trace!("Removing tempdir at {:?}", tempdir.path());
     drop(tempdir);
+}
+
+#[cfg(feature = "wisckey")]
+async fn reopen_wal(params: Arc<Params>, offset: u64) -> (Memtable, WriteAheadLog) {
+    let mut memtable = Memtable::new(0);
+
+    let manifest = Arc::new(Manifest::new(params.clone()).await);
+    let mut freelist = ValueFreelist::new(params.clone(), manifest);
+    let wal = WriteAheadLog::open(params, offset, &mut memtable, &mut freelist)
+        .await
+        .unwrap();
+
+    (memtable, wal)
+}
+
+#[cfg(not(feature = "wisckey"))]
+async fn reopen_wal(params: Arc<Params>, offset: u64) -> (Memtable, WriteAheadLog) {
+    let mut memtable = Memtable::new(0);
+
+    let wal = WriteAheadLog::open(params, offset, &mut memtable)
+        .await
+        .unwrap();
+
+    (memtable, wal)
 }
 
 #[async_test]
@@ -98,8 +127,7 @@ async fn reopen() {
     wal.sync().await.unwrap();
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 0, &mut memtable).await.unwrap();
+    let (memtable, wal) = reopen_wal(params, 0).await;
     assert_eq!(wal.inner.status.read().sync_pos, 21);
     assert_eq!(wal.inner.status.read().write_pos, 21);
 
@@ -126,10 +154,8 @@ async fn reopen_with_offset1() {
 
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 21, &mut memtable)
-        .await
-        .unwrap();
+    let (memtable, wal) = reopen_wal(params, 0).await;
+
     assert_eq!(wal.inner.status.read().sync_pos, 43);
     assert_eq!(wal.inner.status.read().write_pos, 43);
 
@@ -155,13 +181,12 @@ async fn reopen_with_offset_and_cleanup1() {
     wal.store(&[LogEntry::Write(&op2)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    wal.set_offset(21).await;
+    let offset = 21;
+    wal.set_offset(offset).await;
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 21, &mut memtable)
-        .await
-        .unwrap();
+    let (memtable, wal) = reopen_wal(params, offset).await;
+
     assert_eq!(wal.inner.status.read().sync_pos, 43);
     assert_eq!(wal.inner.status.read().write_pos, 43);
 
@@ -188,14 +213,13 @@ async fn reopen_with_offset_and_cleanup2() {
     wal.store(&[LogEntry::Write(&op2)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    wal.set_offset(8211).await;
+    let offset = 8211;
+    wal.set_offset(offset).await;
 
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 8211, &mut memtable)
-        .await
-        .unwrap();
+    let (memtable, wal) = reopen_wal(params, offset).await;
+
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
     assert_eq!(wal.inner.status.read().write_pos, 8233);
 
@@ -224,10 +248,8 @@ async fn reopen_with_offset2() {
 
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 8211, &mut memtable)
-        .await
-        .unwrap();
+    let (memtable, wal) = reopen_wal(params, 8211).await;
+
     assert_eq!(wal.inner.status.read().sync_pos, 8233);
     assert_eq!(wal.inner.status.read().write_pos, 8233);
 
@@ -251,8 +273,8 @@ async fn reopen_large_file() {
 
     drop(wal);
 
-    let mut memtable = Memtable::new(0);
-    let wal = WriteAheadLog::open(params, 0, &mut memtable).await.unwrap();
+    let (memtable, wal) = reopen_wal(params, 0).await;
+
     assert_eq!(wal.inner.status.read().sync_pos, 8211);
     assert_eq!(wal.inner.status.read().write_pos, 8211);
 

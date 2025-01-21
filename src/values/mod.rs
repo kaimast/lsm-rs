@@ -100,10 +100,9 @@ impl ValueLog {
         wal: Arc<WriteAheadLog>,
         params: Arc<Params>,
         manifest: Arc<Manifest>,
+        freelist: ValueFreelist,
     ) -> Result<Self, Error> {
         let batch_caches = Self::init_caches(&params);
-        let freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
-
         Ok(Self {
             wal,
             freelist,
@@ -259,5 +258,9 @@ impl ValueLog {
         let batch = self.get_batch(id).await?;
 
         Ok(ValueBatch::get_ref(batch, offset))
+    }
+
+    pub async fn sync(&self) -> Result<(), Error> {
+        self.freelist.sync().await
     }
 }

@@ -5,6 +5,9 @@ use std::sync::Arc;
 #[cfg(not(feature = "_async-io"))]
 use std::io::{Read, Seek};
 
+#[cfg(feature = "wisckey")]
+use crate::values::ValueFreelist;
+
 #[cfg(feature = "tokio-uring")]
 use tokio_uring::fs::File;
 
@@ -48,6 +51,42 @@ impl WalReader {
         })
     }
 
+    #[cfg(feature = "wisckey")]
+    pub async fn run(
+        &mut self,
+        memtable: &mut Memtable,
+        freelist: &mut ValueFreelist,
+    ) -> Result<u64, Error> {
+        // Re-insert ops into memtable
+        let mut count = 0;
+
+        loop {
+            let mut log_type = [0u8; 1];
+            let success = self
+                .read_from_log(&mut log_type[..], true)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
+
+            if !success {
+                break;
+            }
+
+            if log_type[0] == LogEntry::WRITE {
+                self.parse_write_entry(memtable).await?
+            } else if log_type[0] == LogEntry::VALUE_DELETION {
+                self.parse_value_deletion_entry(freelist).await?
+            } else {
+                panic!("Unexpected log entry type!");
+            }
+
+            count += 1;
+        }
+
+        log::debug!("Found {count} entries in write-ahead log");
+        Ok(self.position)
+    }
+
+    #[cfg(not(feature = "wisckey"))]
     pub async fn run(&mut self, memtable: &mut Memtable) -> Result<u64, Error> {
         // Re-insert ops into memtable
         let mut count = 0;
@@ -63,26 +102,10 @@ impl WalReader {
                 break;
             }
 
-            cfg_if! {
-                if #[cfg(feature="wisckey")] {
-                     let success = if log_type[0] == LogEntry::WRITE {
-                         self.parse_write_entry(memtable).await?
-                     } else if log_type[1] == LogEntry::VALUE_DELETION {
-                         self.parse_value_deletion_entry().await?
-                     } else {
-                         panic!("Unexpected log entry type!");
-                     };
-                } else {
-                    let success = if log_type[0] == LogEntry::WRITE {
-                         self.parse_write_entry(memtable).await?
-                     } else {
-                         panic!("Unexpected log entry type!");
-                     };
-                }
-            }
-
-            if !success {
-                break;
+            if log_type[0] == LogEntry::WRITE {
+                self.parse_write_entry(memtable).await?
+            } else {
+                panic!("Unexpected log entry type!");
             }
 
             count += 1;
@@ -92,19 +115,14 @@ impl WalReader {
         Ok(self.position)
     }
 
-    async fn parse_write_entry(&mut self, memtable: &mut Memtable) -> Result<bool, Error> {
+    async fn parse_write_entry(&mut self, memtable: &mut Memtable) -> Result<(), Error> {
         const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
         const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
 
         let mut op_header = [0u8; HEADER_SIZE];
-        let success = self
-            .read_from_log(&mut op_header[..], true)
+        self.read_from_log(&mut op_header[..], false)
             .await
             .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
-
-        if !success {
-            return Ok(false);
-        }
 
         let op_type = op_header[1];
 
@@ -129,12 +147,24 @@ impl WalReader {
             panic!("Unexpected op type!");
         }
 
-        Ok(true)
+        Ok(())
     }
 
-    #[cfg(feature="wisckey")]
-    async fn parse_value_deletion_entry(&mut self) -> Result<bool, Error> {
-        todo!();
+    #[cfg(feature = "wisckey")]
+    async fn parse_value_deletion_entry(
+        &mut self,
+        freelist: &mut ValueFreelist,
+    ) -> Result<(), Error> {
+        let mut page_id = [0u8; 8];
+        self.read_from_log(&mut page_id, false).await.unwrap();
+        let page_id = u64::from_le_bytes(page_id);
+
+        let mut offset = [0u8; 2];
+        self.read_from_log(&mut offset, false).await.unwrap();
+        let offset = u16::from_le_bytes(offset);
+
+        freelist.unset_entry(page_id, offset).await;
+        Ok(())
     }
 
     /// Read the next entry from the log
