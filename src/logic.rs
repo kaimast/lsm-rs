@@ -17,7 +17,7 @@ use crate::memtable::{
     ImmMemtableRef, Memtable, MemtableEntry, MemtableEntryRef, MemtableIterator, MemtableRef,
 };
 use crate::sorted_table::{InternalIterator, TableId, TableIterator};
-use crate::wal::WriteAheadLog;
+use crate::wal::{LogEntry, WriteAheadLog};
 use crate::{Error, Key, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
@@ -500,7 +500,9 @@ impl DbLogic {
         let mem_inner = unsafe { memtable.get_mut() };
 
         let wal_offset = {
-            let log_pos = self.wal.store(&write_batch.writes).await?;
+            let writes: Vec<_> = write_batch.writes.iter().map(LogEntry::Write).collect();
+
+            let log_pos = self.wal.store(&writes).await?;
 
             if opt.sync {
                 self.wal.sync().await?;

@@ -8,7 +8,7 @@ use std::io::{Read, Seek};
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, oneshot};
 
 #[cfg(feature = "tokio-uring")]
@@ -16,6 +16,9 @@ use tokio_uring::fs::{File, OpenOptions};
 
 #[cfg(feature = "monoio")]
 use monoio::fs::{File, OpenOptions};
+
+#[cfg(feature = "wisckey")]
+use crate::values::FreelistPageId;
 
 use cfg_if::cfg_if;
 
@@ -28,10 +31,23 @@ use writer::WalWriter;
 #[cfg(test)]
 mod tests;
 
+/// In the vanilla configuration, the log only stores
+/// write operations.
+/// For Wisckey, it also stores changes to the freelist
+/// to reduce write amplification.
+pub enum LogEntry<'a> {
+    Write(&'a WriteOp),
+    #[cfg(feature = "wisckey")]
+    ValueDeletion(FreelistPageId, u16),
+}
+
 /// The log is split individual files (pages) that can be
 /// garbage collected once the logged data is not needed anymore
 const PAGE_SIZE: u64 = 4 * 1024;
 
+/// The state of the log (internal DS shared between writer
+/// task and WAL object)
+///
 /// Invariants:
 ///  - sync_pos <= write_pos <= queue_pos
 ///  - flush_pos <= offset_pos
@@ -72,8 +88,9 @@ struct LogInner {
 /// It can be used to recover from crashes
 pub struct WriteAheadLog {
     inner: Arc<LogInner>,
-    // Allows to wait for the write to shut down
-    finish_receiver: parking_lot::Mutex<Option<oneshot::Receiver<()>>>,
+
+    /// Allows waiting for the background write task to shut down
+    finish_receiver: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl WriteAheadLog {
@@ -100,7 +117,7 @@ impl WriteAheadLog {
 
         Ok(Self {
             inner,
-            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
+            finish_receiver: Mutex::new(Some(finish_receiver)),
         })
     }
 
@@ -205,7 +222,7 @@ impl WriteAheadLog {
 
         Ok(Self {
             inner,
-            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
+            finish_receiver: Mutex::new(Some(finish_receiver)),
         })
     }
 
@@ -370,30 +387,38 @@ impl WriteAheadLog {
     /// Stores an operation and returns the new position in
     /// the logfile
     #[tracing::instrument(skip(self, batch))]
-    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, Error> {
+    pub async fn store(&self, batch: &[LogEntry<'_>]) -> Result<u64, Error> {
         let mut writes = vec![];
 
-        for op in batch {
-            let op_type = op.get_type().to_le_bytes();
+        for entry in batch {
+            match entry {
+                LogEntry::Write(op) => {
+                    let op_type = op.get_type().to_le_bytes();
 
-            let key = op.get_key();
-            let klen = op.get_key_length().to_le_bytes();
-            let vlen = op.get_value_length().to_le_bytes();
+                    let key = op.get_key();
+                    let klen = op.get_key_length().to_le_bytes();
+                    let vlen = op.get_value_length().to_le_bytes();
 
-            let mut data = vec![];
-            data.extend_from_slice(op_type.as_slice());
-            data.extend_from_slice(klen.as_slice());
-            data.extend_from_slice(key);
+                    let mut data = vec![];
+                    data.extend_from_slice(op_type.as_slice());
+                    data.extend_from_slice(klen.as_slice());
+                    data.extend_from_slice(key);
 
-            match op {
-                WriteOp::Put(_, value) => {
-                    data.extend_from_slice(vlen.as_slice());
-                    data.extend_from_slice(value);
+                    match op {
+                        WriteOp::Put(_, value) => {
+                            data.extend_from_slice(vlen.as_slice());
+                            data.extend_from_slice(value);
+                        }
+                        WriteOp::Delete(_) => {}
+                    }
+
+                    writes.push(data);
                 }
-                WriteOp::Delete(_) => {}
+                #[cfg(feature = "wisckey")]
+                LogEntry::ValueDeletion(_page_id, _offset) => {
+                    todo!();
+                }
             }
-
-            writes.push(data);
         }
 
         // Queue write
