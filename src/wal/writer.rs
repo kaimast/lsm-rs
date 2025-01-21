@@ -7,17 +7,17 @@ use std::io::Write;
 #[cfg(feature = "tokio-uring")]
 use tokio_uring::fs::{File, OpenOptions};
 
+#[cfg(feature = "tokio-uring")]
+use tokio_uring::buf::BoundedBuf;
+
 #[cfg(feature = "monoio")]
 use monoio::fs::{File, OpenOptions};
 
 #[cfg(not(feature = "_async-io"))]
 use std::fs::{File, OpenOptions};
 
-#[cfg(feature = "tokio-uring")]
-use tokio_uring::{buf::BoundedBuf, fs::File};
-
 #[cfg(feature = "monoio")]
-use monoio::{buf::IoBuf, fs::File};
+use monoio::buf::IoBuf;
 
 use cfg_if::cfg_if;
 

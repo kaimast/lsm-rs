@@ -166,8 +166,11 @@ impl DbLogic {
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
             wal = Arc::new(WriteAheadLog::new(params.clone()).await?);
 
-            value_log =
-                Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await);
+            #[cfg(feature = "wisckey")]
+            {
+                value_log =
+                    Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await);
+            }
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",

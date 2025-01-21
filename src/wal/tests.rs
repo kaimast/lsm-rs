@@ -3,10 +3,8 @@ use tempfile::TempDir;
 
 use super::*;
 
-use crate::manifest::Manifest;
-
 #[cfg(feature = "wisckey")]
-use crate::values::ValueFreelist;
+use crate::{manifest::Manifest, values::ValueFreelist};
 
 #[cfg(feature = "tokio-uring")]
 use kioto_uring_executor::test as async_test;
@@ -92,8 +90,8 @@ async fn write_and_sync() {
     wal.store(&[LogEntry::Write(&op)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    assert_eq!(wal.inner.status.read().sync_pos, 21);
-    assert_eq!(wal.inner.status.read().write_pos, 21);
+    assert_eq!(wal.inner.status.read().sync_pos, 22);
+    assert_eq!(wal.inner.status.read().write_pos, 22);
 
     test_cleanup(tempdir, wal).await;
 }
@@ -109,8 +107,8 @@ async fn write_large_value() {
     wal.store(&[LogEntry::Write(&op)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    assert_eq!(wal.inner.status.read().sync_pos, 8211);
-    assert_eq!(wal.inner.status.read().write_pos, 8211);
+    assert_eq!(wal.inner.status.read().sync_pos, 8212);
+    assert_eq!(wal.inner.status.read().write_pos, 8212);
 
     test_cleanup(tempdir, wal).await;
 }
@@ -128,8 +126,8 @@ async fn reopen() {
     drop(wal);
 
     let (memtable, wal) = reopen_wal(params, 0).await;
-    assert_eq!(wal.inner.status.read().sync_pos, 21);
-    assert_eq!(wal.inner.status.read().write_pos, 21);
+    assert_eq!(wal.inner.status.read().sync_pos, 22);
+    assert_eq!(wal.inner.status.read().write_pos, 22);
 
     let entry = memtable.get(&key).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());
@@ -154,10 +152,10 @@ async fn reopen_with_offset1() {
 
     drop(wal);
 
-    let (memtable, wal) = reopen_wal(params, 0).await;
+    let (memtable, wal) = reopen_wal(params, 22).await;
 
-    assert_eq!(wal.inner.status.read().sync_pos, 43);
-    assert_eq!(wal.inner.status.read().write_pos, 43);
+    assert_eq!(wal.inner.status.read().sync_pos, 45);
+    assert_eq!(wal.inner.status.read().write_pos, 45);
 
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
@@ -181,14 +179,14 @@ async fn reopen_with_offset_and_cleanup1() {
     wal.store(&[LogEntry::Write(&op2)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    let offset = 21;
+    let offset = 22;
     wal.set_offset(offset).await;
     drop(wal);
 
     let (memtable, wal) = reopen_wal(params, offset).await;
 
-    assert_eq!(wal.inner.status.read().sync_pos, 43);
-    assert_eq!(wal.inner.status.read().write_pos, 43);
+    assert_eq!(wal.inner.status.read().sync_pos, 45);
+    assert_eq!(wal.inner.status.read().write_pos, 45);
 
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
@@ -213,15 +211,15 @@ async fn reopen_with_offset_and_cleanup2() {
     wal.store(&[LogEntry::Write(&op2)]).await.unwrap();
     wal.sync().await.unwrap();
 
-    let offset = 8211;
+    let offset = 8212;
     wal.set_offset(offset).await;
 
     drop(wal);
 
     let (memtable, wal) = reopen_wal(params, offset).await;
 
-    assert_eq!(wal.inner.status.read().sync_pos, 8233);
-    assert_eq!(wal.inner.status.read().write_pos, 8233);
+    assert_eq!(wal.inner.status.read().sync_pos, 8235);
+    assert_eq!(wal.inner.status.read().write_pos, 8235);
 
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
@@ -248,10 +246,10 @@ async fn reopen_with_offset2() {
 
     drop(wal);
 
-    let (memtable, wal) = reopen_wal(params, 8211).await;
+    let (memtable, wal) = reopen_wal(params, 8212).await;
 
-    assert_eq!(wal.inner.status.read().sync_pos, 8233);
-    assert_eq!(wal.inner.status.read().write_pos, 8233);
+    assert_eq!(wal.inner.status.read().sync_pos, 8235);
+    assert_eq!(wal.inner.status.read().write_pos, 8235);
 
     assert!(memtable.get(&key1).is_none());
     let entry = memtable.get(&key2).unwrap();
@@ -275,8 +273,8 @@ async fn reopen_large_file() {
 
     let (memtable, wal) = reopen_wal(params, 0).await;
 
-    assert_eq!(wal.inner.status.read().sync_pos, 8211);
-    assert_eq!(wal.inner.status.read().write_pos, 8211);
+    assert_eq!(wal.inner.status.read().sync_pos, 8212);
+    assert_eq!(wal.inner.status.read().write_pos, 8212);
 
     let entry = memtable.get(&key).unwrap();
     assert_eq!(entry.get_value(), Some(value).as_deref());

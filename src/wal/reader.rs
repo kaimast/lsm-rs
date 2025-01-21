@@ -36,7 +36,7 @@ impl WalReader {
 
         cfg_if! {
             if #[cfg(feature="_async-io")] {
-                let mut log_file = Self::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
+                let log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
             } else {
                 let file_offset = position % PAGE_SIZE;
                 let mut log_file = WalWriter::open_file(&params, fpos).await.map_err(|err| Error::from_io_error("Failed to open write-ahead log", err))?;
@@ -124,7 +124,7 @@ impl WalReader {
             .await
             .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
 
-        let op_type = op_header[1];
+        let op_type = op_header[0];
 
         let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
         let key_len = u64::from_le_bytes(*key_len_data);
@@ -194,7 +194,7 @@ impl WalReader {
             cfg_if! {
                 if #[cfg(feature="_async-io")] {
                     let buf = vec![0u8; read_slice.len()];
-                    let (read_result, buf) = log_file.read_exact_at(buf, file_offset).await;
+                    let (read_result, buf) = self.log_file.read_exact_at(buf, file_offset).await;
                     if read_result.is_ok() {
                         read_slice.copy_from_slice(&buf);
                     }

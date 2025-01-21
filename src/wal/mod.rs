@@ -5,12 +5,6 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, oneshot};
 
-#[cfg(feature = "tokio-uring")]
-use tokio_uring::fs::{File, OpenOptions};
-
-#[cfg(feature = "monoio")]
-use monoio::fs::{File, OpenOptions};
-
 #[cfg(feature = "wisckey")]
 use crate::values::{FreelistPageId, ValueFreelist};
 
