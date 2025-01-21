@@ -46,7 +46,7 @@ impl LogEntry<'_> {
 
 /// The log is split individual files (pages) that can be
 /// garbage collected once the logged data is not needed anymore
-const PAGE_SIZE: u64 = 4 * 1024;
+const PAGE_SIZE: usize = 4 * 1024;
 
 /// The state of the log (internal DS shared between writer
 /// task and WAL object)
@@ -56,13 +56,13 @@ const PAGE_SIZE: u64 = 4 * 1024;
 ///  - flush_pos <= offset_pos
 struct LogStatus {
     /// Absolute count of queued write operations
-    queue_pos: u64,
+    queue_pos: usize,
 
     /// Absolute count of fulfilled write operations
-    write_pos: u64,
+    write_pos: usize,
 
     /// At what write count did we last invoke sync?
-    sync_pos: u64,
+    sync_pos: usize,
 
     /// Pending data to be written
     queue: Vec<Vec<u8>>,
@@ -72,17 +72,17 @@ struct LogStatus {
 
     /// Where the current flush offset is
     /// (anything below this is not needed anymore)
-    offset_pos: u64,
+    offset_pos: usize,
 
     /// How much has actually been flushed? (cleaned up)
-    flush_pos: u64,
+    flush_pos: usize,
 
     /// Indicates the log should shut down
     stop_flag: bool,
 }
 
 impl LogStatus {
-    fn new(position: u64, start_position: u64) -> Self {
+    fn new(position: usize, start_position: usize) -> Self {
         Self {
             queue_pos: position,
             write_pos: position,
@@ -162,6 +162,8 @@ impl WriteAheadLog {
         // This reads the file(s) in the current thread
         // because we cannot send stuff between threads easily
 
+        let start_position = start_position as usize;
+
         let mut reader = WalReader::new(params.clone(), start_position).await?;
 
         let position = reader.run(memtable, freelist).await?;
@@ -184,6 +186,8 @@ impl WriteAheadLog {
     ) -> Result<Self, Error> {
         // This reads the file(s) in the current thread
         // because we cannot send stuff between threads easily
+
+        let start_position = start_position as usize;
 
         let mut reader = WalReader::new(params.clone(), start_position).await?;
 
@@ -241,7 +245,7 @@ impl WriteAheadLog {
     /// an existing log.
     fn continue_writer(
         inner: Arc<LogInner>,
-        position: u64,
+        position: usize,
         params: Arc<Params>,
     ) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
@@ -324,7 +328,7 @@ impl WriteAheadLog {
             let mut end_pos = lock.queue_pos;
 
             for data in writes.into_iter() {
-                let write_len = data.len() as u64;
+                let write_len = data.len();
                 lock.queue.push(data);
                 lock.queue_pos += write_len;
                 end_pos += write_len;
@@ -351,7 +355,7 @@ impl WriteAheadLog {
             fut.await;
         }
 
-        Ok(end_pos)
+        Ok(end_pos as u64)
     }
 
     /// Gracefully stop the write-ahead log
@@ -413,6 +417,8 @@ impl WriteAheadLog {
     /// Once the memtable has been flushed we can remove old log entries
     #[tracing::instrument(skip(self))]
     pub async fn set_offset(&self, new_offset: u64) {
+        let new_offset = new_offset as usize;
+
         {
             let mut lock = self.inner.status.write();
 

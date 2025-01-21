@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(not(feature = "_async-io"))]
@@ -27,7 +27,7 @@ use crate::{Error, Params, disk};
 /// The task that actually writes the log to disk
 pub struct WalWriter {
     log_file: File,
-    position: u64,
+    position: usize,
     params: Arc<Params>,
 }
 
@@ -48,7 +48,7 @@ impl WalWriter {
     }
 
     /// Start the writer at a specific position after opening a log
-    pub async fn continue_from(position: u64, params: Arc<Params>) -> Self {
+    pub async fn continue_from(position: usize, params: Arc<Params>) -> Self {
         let fpos = position / PAGE_SIZE;
 
         let log_file = if position % PAGE_SIZE == 0 {
@@ -77,11 +77,15 @@ impl WalWriter {
         }
     }
 
-    /// Open an existing log file (used during recovery/restart)
-    pub async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
+    pub fn get_file_path(params: &Params, fpos: usize) -> PathBuf {
+        params
             .db_path
-            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
+            .join(Path::new(&format!("log{:08}.data", fpos + 1)))
+    }
+
+    /// Open an existing log file (used during recovery/restart)
+    pub async fn open_file(params: &Params, fpos: usize) -> Result<File, std::io::Error> {
+        let fpath = Self::get_file_path(params, fpos);
         log::trace!("Opening file at {fpath:?}");
 
         cfg_if! {
@@ -123,7 +127,7 @@ impl WalWriter {
 
                 // Check whether there is something to do
                 if !to_write.is_empty() || new_offset.is_some() || sync_flag || stop_flag {
-                    assert_eq!(self.position, lock.write_pos);
+                    assert_eq!(self.position, lock.write_pos as usize);
 
                     lock.sync_flag = false;
                     break (to_write, sync_flag, sync_pos, new_offset, stop_flag);
@@ -147,19 +151,19 @@ impl WalWriter {
         // Only sync if necessary
         // We do not need to hold the lock while syncing
         // because there is only one write-ahead writer
-        if sync_flag && sync_pos < self.position {
+        if sync_flag && (sync_pos as usize) < self.position {
             self.sync().await;
             inner.status.write().sync_pos = self.position;
         }
 
         if let Some((new_offset, old_offset)) = new_offset {
-            self.set_offset(new_offset, old_offset).await?;
+            self.set_offset(new_offset as usize, old_offset as usize).await?;
         }
 
         // Notify about finished write(s)
         {
             let mut lock = inner.status.write();
-            assert!(lock.write_pos <= self.position);
+            assert!((lock.write_pos as usize) <= self.position);
             lock.write_pos = self.position;
 
             if let Some((new_offset, _)) = new_offset {
@@ -176,7 +180,7 @@ impl WalWriter {
         Ok(stop_flag)
     }
 
-    async fn set_offset(&mut self, new_offset: u64, old_offset: u64) -> Result<(), Error> {
+    async fn set_offset(&mut self, new_offset: usize, old_offset: usize) -> Result<(), Error> {
         let old_file_pos = old_offset / PAGE_SIZE;
         let new_file_pos = new_offset / PAGE_SIZE;
 
@@ -243,8 +247,8 @@ impl WalWriter {
             }
 
             buf_pos += write_len;
-            self.position += write_len as u64;
-            file_offset += write_len as u64;
+            self.position += write_len;
+            file_offset += write_len;
 
             assert!(file_offset <= PAGE_SIZE);
 
@@ -259,10 +263,8 @@ impl WalWriter {
     }
 
     /// Create a new file that is part of the log
-    pub async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
+    pub async fn create_file(params: &Params, file_pos: usize) -> Result<File, std::io::Error> {
+        let fpath = Self::get_file_path(params, file_pos);
         log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
