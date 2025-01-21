@@ -35,12 +35,23 @@ use batch::ValueBatch;
 pub use batch::ValueBatchBuilder;
 
 use crate::EntryList;
+use crate::wal::{LogEntry, WriteAheadLog};
 
 pub struct ValueLog {
+    /// The value log uses the WAL to batch updates
+    /// especially those to the freelist
+    wal: Arc<WriteAheadLog>,
+
+    /// The freelist keeps track of all used entires within
+    /// the value log and helps to garbage collect and
+    /// defragment
     freelist: ValueFreelist,
+
+    /// Sharded storage of log batches
+    batch_caches: Vec<Mutex<BatchShard>>,
+
     params: Arc<Params>,
     manifest: Arc<Manifest>,
-    batch_caches: Vec<Mutex<BatchShard>>,
 }
 
 pub struct ValueRef {
@@ -68,11 +79,16 @@ impl ValueLog {
             .collect()
     }
 
-    pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
+    pub async fn new(
+        wal: Arc<WriteAheadLog>,
+        params: Arc<Params>,
+        manifest: Arc<Manifest>,
+    ) -> Self {
         let batch_caches = Self::init_caches(&params);
         let freelist = ValueFreelist::new(params.clone(), manifest.clone());
 
         Self {
+            wal,
             freelist,
             params,
             manifest,
@@ -80,11 +96,16 @@ impl ValueLog {
         }
     }
 
-    pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Result<Self, Error> {
+    pub async fn open(
+        wal: Arc<WriteAheadLog>,
+        params: Arc<Params>,
+        manifest: Arc<Manifest>,
+    ) -> Result<Self, Error> {
         let batch_caches = Self::init_caches(&params);
         let freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
 
         Ok(Self {
+            wal,
             freelist,
             params,
             manifest,
@@ -96,7 +117,10 @@ impl ValueLog {
     /// On success, this might return a list of entries to reinsert in order to defragment the log
     #[tracing::instrument(skip(self))]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<EntryList, Error> {
-        self.freelist.mark_value_as_deleted(vid).await?;
+        let (page_id, page_offset) = self.freelist.mark_value_as_deleted(vid).await?;
+        self.wal
+            .store(&[LogEntry::ValueDeletion(page_id, page_offset)])
+            .await?;
 
         // If this is the oldest value batch, try to remove things
         let start = vid.0;

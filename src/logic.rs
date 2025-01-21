@@ -70,7 +70,7 @@ pub struct DbLogic {
     imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
     levels: Vec<Level>,
-    wal: WriteAheadLog,
+    wal: Arc<WriteAheadLog>,
     level_logger: Option<LevelLogger>,
 
     #[cfg(feature = "wisckey")]
@@ -161,7 +161,7 @@ impl DbLogic {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
-            wal = WriteAheadLog::new(params.clone()).await?;
+            wal = Arc::new(WriteAheadLog::new(params.clone()).await?);
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",
@@ -171,17 +171,19 @@ impl DbLogic {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                .await?;
+            wal = Arc::new(
+                WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
+                    .await?,
+            );
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
 
         #[cfg(feature = "wisckey")]
         let value_log = if create {
-            Arc::new(ValueLog::new(params.clone(), manifest.clone()).await)
+            Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await)
         } else {
-            Arc::new(ValueLog::open(params.clone(), manifest.clone()).await?)
+            Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone()).await?)
         };
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));

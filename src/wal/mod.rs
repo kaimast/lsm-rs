@@ -41,6 +41,20 @@ pub enum LogEntry<'a> {
     ValueDeletion(FreelistPageId, u16),
 }
 
+impl LogEntry<'_> {
+    const WRITE: u8 = 0;
+    #[cfg(feature = "wisckey")]
+    const VALUE_DELETION: u8 = 1;
+
+    pub fn get_type(&self) -> u8 {
+        match self {
+            Self::Write(_) => Self::WRITE,
+            #[cfg(feature = "wisckey")]
+            Self::ValueDeletion(_,_) => Self::VALUE_DELETION,
+        }
+    }
+}
+
 /// The log is split individual files (pages) that can be
 /// garbage collected once the logged data is not needed anymore
 const PAGE_SIZE: u64 = 4 * 1024;
@@ -149,14 +163,11 @@ impl WriteAheadLog {
 
         // Re-insert ops into memtable
         loop {
-            const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
-            const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
-
-            let mut op_header = [0u8; HEADER_SIZE];
+            let mut log_type = [0u8; 1];
             let success = Self::read_from_log(
                 &mut log_file,
                 &mut position,
-                &mut op_header[..],
+                &mut log_type[..],
                 &params,
                 true,
             )
@@ -167,33 +178,26 @@ impl WriteAheadLog {
                 break;
             }
 
-            let op_type = op_header[0];
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                     let success = if log_type[0] == LogEntry::WRITE {
+                         Self::parse_write_entry(&mut log_file, memtable, &mut position, &params).await?
+                     } else if log_type[1] == LogEntry::VALUE_DELETION {
+                         Self::parse_value_deletion_entry(&mut log_file, &mut position, &params).await?
+                     } else {
+                         panic!("Unexpected log entry type!");
+                     };
+                } else {
+                    let success = if log_type[0] == LogEntry::WRITE {
+                         Self::parse_write_entry(&mut log_file, memtable, &mut position, &params).await?
+                     } else {
+                         panic!("Unexpected log entry type!");
+                     };
+                }
+            }
 
-            let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
-            let key_len = u64::from_le_bytes(*key_len_data);
-
-            let mut key = vec![0; key_len as usize];
-            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false)
-                .await
-                .unwrap();
-
-            if op_type == WriteOp::PUT_OP {
-                let mut val_len = [0u8; 8];
-                Self::read_from_log(&mut log_file, &mut position, &mut val_len, &params, false)
-                    .await
-                    .unwrap();
-
-                let val_len = u64::from_le_bytes(val_len);
-                let mut value = vec![0; val_len as usize];
-
-                Self::read_from_log(&mut log_file, &mut position, &mut value, &params, false)
-                    .await
-                    .unwrap();
-                memtable.put(key, value);
-            } else if op_type == WriteOp::DELETE_OP {
-                memtable.delete(key);
-            } else {
-                panic!("Unexpected op type!");
+            if !success {
+                break;
             }
 
             count += 1;
@@ -226,6 +230,64 @@ impl WriteAheadLog {
         })
     }
 
+    async fn parse_write_entry(
+        log_file: &mut File,
+        memtable: &mut Memtable,
+        position: &mut u64,
+        params: &Params,
+    ) -> Result<bool, Error> {
+        const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
+        const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
+
+        let mut op_header = [0u8; HEADER_SIZE];
+        let success = Self::read_from_log(log_file, position, &mut op_header[..], &params, true)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to read write-ahead log", err))?;
+
+        if !success {
+            return Ok(false);
+        }
+
+        let op_type = op_header[1];
+
+        let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
+        let key_len = u64::from_le_bytes(*key_len_data);
+
+        let mut key = vec![0; key_len as usize];
+        Self::read_from_log(log_file, position, &mut key, &params, false)
+            .await
+            .unwrap();
+
+        if op_type == WriteOp::PUT_OP {
+            let mut val_len = [0u8; 8];
+            Self::read_from_log(log_file, position, &mut val_len, &params, false)
+                .await
+                .unwrap();
+
+            let val_len = u64::from_le_bytes(val_len);
+            let mut value = vec![0; val_len as usize];
+
+            Self::read_from_log(log_file, position, &mut value, &params, false)
+                .await
+                .unwrap();
+            memtable.put(key, value);
+        } else if op_type == WriteOp::DELETE_OP {
+            memtable.delete(key);
+        } else {
+            panic!("Unexpected op type!");
+        }
+
+        Ok(true)
+    }
+
+    async fn parse_value_deletion_entry(
+        log_file: &mut File,
+        position: &mut u64,
+        params: &Params,
+    ) -> Result<bool, Error> {
+        todo!();
+    } 
+
     /// Spawns the background task that will actually write
     /// to the WAL.
     ///
@@ -236,15 +298,13 @@ impl WriteAheadLog {
 
         let run_writer = async move {
             let mut writer = WalWriter::new(params).await;
-            loop {
-                let done = writer
+            let mut done = false;
+
+            while !done {
+                done = writer
                     .update_log(&inner)
                     .await
                     .expect("Write-ahead logging task failed");
-
-                if done {
-                    break;
-                }
             }
             let _ = finish_sender.send(());
         };
@@ -277,15 +337,13 @@ impl WriteAheadLog {
 
         let run_writer = async move {
             let mut writer = WalWriter::continue_from(position, params).await;
-            loop {
-                let done = writer
+            let mut done = false;
+
+            while !done {
+                done = writer
                     .update_log(&inner)
                     .await
                     .expect("Write-ahead logging task failed");
-
-                if done {
-                    break;
-                }
             }
             let _ = finish_sender.send(());
         };
@@ -306,8 +364,9 @@ impl WriteAheadLog {
     }
 
     /// Read the next entry from the log
+    /// (only used during recovery)
     ///
-    /// Only used during recovery
+    /// TODO: Change this to just fetch an entire page at a time
     async fn read_from_log(
         log_file: &mut File,
         position: &mut u64,
@@ -391,6 +450,8 @@ impl WriteAheadLog {
         let mut writes = vec![];
 
         for entry in batch {
+            let mut data = vec![entry.get_type()];
+
             match entry {
                 LogEntry::Write(op) => {
                     let op_type = op.get_type().to_le_bytes();
@@ -399,7 +460,6 @@ impl WriteAheadLog {
                     let klen = op.get_key_length().to_le_bytes();
                     let vlen = op.get_value_length().to_le_bytes();
 
-                    let mut data = vec![];
                     data.extend_from_slice(op_type.as_slice());
                     data.extend_from_slice(klen.as_slice());
                     data.extend_from_slice(key);
@@ -415,8 +475,14 @@ impl WriteAheadLog {
                     writes.push(data);
                 }
                 #[cfg(feature = "wisckey")]
-                LogEntry::ValueDeletion(_page_id, _offset) => {
-                    todo!();
+                LogEntry::ValueDeletion(page_id, offset) => {
+                    let page_id = page_id.to_le_bytes();
+                    let offset = offset.to_le_bytes();
+
+                    data.extend_from_slice(page_id.as_slice());
+                    data.extend_from_slice(offset.as_slice());
+
+                    writes.push(data);
                 }
             }
         }

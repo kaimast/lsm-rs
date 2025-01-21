@@ -85,6 +85,10 @@ impl FreelistPage {
         self.header.identifier
     }
 
+    /// Add a new value batch to this page
+    ///
+    /// - Returns true if there was enoguh space
+    /// - Note, this will not update the page until you flush()
     pub fn expand(&mut self, num_entries: usize) -> bool {
         const MAX_SIZE: usize = 4 * 1024;
         assert!(num_entries < MAX_SIZE);
@@ -111,6 +115,7 @@ impl FreelistPage {
         }
     }
 
+    /// Write the current state of the page to the disk
     pub async fn flush(&self, path: &Path) -> Result<(), Error> {
         let mut data = self.header.as_bytes().to_vec();
         data.extend_from_slice(self.offsets.as_bytes());
@@ -132,6 +137,7 @@ impl FreelistPage {
         false
     }
 
+    /// How many entries in the specified batch are still in use?
     pub fn count_active_entries(&self, batch_id: ValueBatchId) -> usize {
         let (start_pos, end_pos) = self.get_batch_range(batch_id);
         let mut count = 0;
@@ -144,6 +150,8 @@ impl FreelistPage {
         count
     }
 
+    /// The list of all entries (offsets) still in use in
+    /// a given batch
     pub fn get_active_entries(&self, batch_id: ValueBatchId) -> Vec<u32> {
         let (start_pos, end_pos) = self.get_batch_range(batch_id);
         self.entries[start_pos..end_pos]
@@ -176,8 +184,13 @@ impl FreelistPage {
         (start_pos, end_pos)
     }
 
-    pub fn mark_value_as_deleted(&mut self, vid: ValueId) {
+    /// Mark a value as deleted
+    ///
+    /// - Returns the offset within the page that got changed
+    /// - Changes will not be persisted until we flush()
+    pub fn mark_value_as_deleted(&mut self, vid: ValueId) -> u16 {
         let (start_pos, end_pos) = self.get_batch_range(vid.0);
+
         let mut marker = self.entries[start_pos..end_pos]
             .get_mut(vid.1 as usize)
             .expect("Entry index out of range");
@@ -187,6 +200,7 @@ impl FreelistPage {
         }
 
         *marker = false;
+        (start_pos as u16) + (vid.1 as u16)
     }
 }
 
@@ -316,11 +330,16 @@ impl ValueFreelist {
         Ok(())
     }
 
-    pub async fn mark_value_as_deleted(&self, vid: ValueId) -> Result<(), Error> {
+    pub async fn mark_value_as_deleted(
+        &self,
+        vid: ValueId,
+    ) -> Result<(FreelistPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, vid.0).expect("Outdated batch?");
 
-        pages[page_idx].1.mark_value_as_deleted(vid);
+        let page = &mut pages[page_idx].1;
+        let offset = page.mark_value_as_deleted(vid);
+        let page_id = page.get_identifier();
 
         // Tries to clean up unused pages
         // This only removes the oldest page(s)
@@ -339,7 +358,7 @@ impl ValueFreelist {
             pages.pop_front();
         }
 
-        Ok(())
+        Ok((page_id, offset))
     }
 }
 
