@@ -127,7 +127,7 @@ impl WalWriter {
 
                 // Check whether there is something to do
                 if !to_write.is_empty() || new_offset.is_some() || sync_flag || stop_flag {
-                    assert_eq!(self.position, lock.write_pos as usize);
+                    assert_eq!(self.position, lock.write_pos);
 
                     lock.sync_flag = false;
                     break (to_write, sync_flag, sync_pos, new_offset, stop_flag);
@@ -151,19 +151,19 @@ impl WalWriter {
         // Only sync if necessary
         // We do not need to hold the lock while syncing
         // because there is only one write-ahead writer
-        if sync_flag && (sync_pos as usize) < self.position {
+        if sync_flag && sync_pos < self.position {
             self.sync().await;
             inner.status.write().sync_pos = self.position;
         }
 
         if let Some((new_offset, old_offset)) = new_offset {
-            self.set_offset(new_offset as usize, old_offset as usize).await?;
+            self.set_offset(new_offset, old_offset).await?;
         }
 
         // Notify about finished write(s)
         {
             let mut lock = inner.status.write();
-            assert!((lock.write_pos as usize) <= self.position);
+            assert!(lock.write_pos <= self.position);
             lock.write_pos = self.position;
 
             if let Some((new_offset, _)) = new_offset {
@@ -222,19 +222,19 @@ impl WalWriter {
 
             let page_remaining = PAGE_SIZE - file_offset;
             let buffer_remaining = data.len() - buf_pos;
-            let write_len = (buffer_remaining).min(page_remaining as usize);
+            let write_len = (buffer_remaining).min(page_remaining);
 
             assert!(write_len > 0);
             cfg_if! {
                 if #[cfg(feature="tokio-uring")] {
                     let to_write = data.slice(buf_pos..buf_pos + write_len);
-                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset as u64).await;
                     res.expect("Failed to write to log file");
 
                     data = buf.into_inner();
                 } else if #[cfg(feature="monoio")] {
                     let to_write = data.slice(buf_pos..buf_pos + write_len);
-                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset as u64).await;
                     res.expect("Failed to write to log file");
 
                     data = buf.into_inner();

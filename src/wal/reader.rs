@@ -3,14 +3,8 @@ use std::sync::Arc;
 #[cfg(feature = "wisckey")]
 use crate::values::ValueFreelist;
 
-#[cfg(feature = "tokio-uring")]
-use tokio_uring::fs::File;
-
-#[cfg(feature = "monoio")]
-use monoio::fs::File;
-
 use crate::memtable::Memtable;
-use crate::{disk, Error, Params};
+use crate::{Error, Params, disk};
 
 use super::{LogEntry, PAGE_SIZE, WalWriter, WriteOp};
 
@@ -25,15 +19,18 @@ impl WalReader {
     pub async fn new(params: Arc<Params>, start_position: usize) -> Result<Self, Error> {
         let position = start_position;
         let fpos = position / PAGE_SIZE;
-        let offset = position % PAGE_SIZE;
 
         let fpath = WalWriter::get_file_path(&params, fpos);
-        let current_page = disk::read_uncompressed(&fpath, offset as u64).await.map_err(|err| Error::from_io_error("Failed to open WAL file", err))?;
+        log::trace!("Opening next log file at {fpath:?}");
+
+        let current_page = disk::read_uncompressed(&fpath, 0)
+            .await
+            .map_err(|err| Error::from_io_error("Failed to open WAL file", err))?;
 
         Ok(Self {
             params,
             current_page,
-            position: start_position,
+            position,
         })
     }
 
@@ -48,9 +45,7 @@ impl WalReader {
 
         loop {
             let mut log_type = [0u8; 1];
-            let success = self
-                .read_from_log(&mut log_type[..], true)
-                .await?;
+            let success = self.read_from_log(&mut log_type[..], true).await?;
 
             if !success {
                 break;
@@ -61,7 +56,7 @@ impl WalReader {
             } else if log_type[0] == LogEntry::VALUE_DELETION {
                 self.parse_value_deletion_entry(freelist).await?
             } else {
-                panic!("Unexpected log entry type!");
+                panic!("Unexpected log entry type! {}", log_type[0]);
             }
 
             count += 1;
@@ -78,9 +73,7 @@ impl WalReader {
 
         loop {
             let mut log_type = [0u8; 1];
-            let success = self
-                .read_from_log(&mut log_type[..], true)
-                .await?;
+            let success = self.read_from_log(&mut log_type[..], true).await?;
 
             if !success {
                 break;
@@ -104,8 +97,7 @@ impl WalReader {
         const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
 
         let mut op_header = [0u8; HEADER_SIZE];
-        self.read_from_log(&mut op_header[..], false)
-            .await?;
+        self.read_from_log(&mut op_header[..], false).await?;
 
         let op_type = op_header[0];
 
@@ -116,7 +108,7 @@ impl WalReader {
         self.read_from_log(&mut key, false).await?;
 
         if op_type == WriteOp::PUT_OP {
-            let mut val_len = [0u8; 8];
+            let mut val_len = [0u8; std::mem::size_of::<u64>()];
             self.read_from_log(&mut val_len, false).await?;
 
             let val_len = u64::from_le_bytes(val_len);
@@ -138,11 +130,11 @@ impl WalReader {
         &mut self,
         freelist: &mut ValueFreelist,
     ) -> Result<(), Error> {
-        let mut page_id = [0u8; 8];
+        let mut page_id = [0u8; std::mem::size_of::<u64>()];
         self.read_from_log(&mut page_id, false).await?;
         let page_id = u64::from_le_bytes(page_id);
 
-        let mut offset = [0u8; 2];
+        let mut offset = [0u8; std::mem::size_of::<u16>()];
         self.read_from_log(&mut offset, false).await?;
         let offset = u16::from_le_bytes(offset);
 
@@ -156,34 +148,50 @@ impl WalReader {
     /// TODO: Change this to just fetch an entire page at a time
     async fn read_from_log(&mut self, out: &mut [u8], maybe: bool) -> Result<bool, Error> {
         let buffer_len = out.len();
-        let mut buffer_pos: usize = 0;
-
+        let mut buffer_pos = 0;
         assert!(buffer_len > 0);
 
         while buffer_pos < buffer_len {
-            let offset = (self.position % PAGE_SIZE) as usize;
-            let remaining = self.current_page.len() - (offset as usize); 
-            let len = ((buffer_len - buffer_pos) as usize).min(remaining);
+            let offset = self.position % PAGE_SIZE;
+            let file_remaining = self
+                .current_page
+                .len()
+                .checked_sub(offset)
+                .expect("Invalid offset. Page too small?");
+            let buffer_remaining = buffer_len - buffer_pos;
+
+            let len = buffer_remaining.min(file_remaining);
 
             if len > 0 {
-                out[buffer_pos..].copy_from_slice(&self.current_page[offset..offset+len]);
+                out[buffer_pos..buffer_pos + len]
+                    .copy_from_slice(&self.current_page[offset..offset + len]);
+                buffer_pos += len;
+                self.position += len;
+            } else if self.position % PAGE_SIZE != 0 {
+                log::trace!(
+                    "WAL reader is done. Current file was not full; assuming it is the most recent."
+                );
+                assert!(self.current_page.len() < PAGE_SIZE);
+                return Ok(false);
             }
 
-            buffer_pos += len;
-            self.position += len;
-
             // Move to next file?
-            if (offset as usize) == PAGE_SIZE {
-                // Try to open next file
+            if self.position % PAGE_SIZE == 0 {
                 let fpos = self.position / PAGE_SIZE;
                 let fpath = WalWriter::get_file_path(&self.params, fpos);
+                log::trace!("Opening next log file at {fpath:?}");
 
                 self.current_page = match disk::read_uncompressed(&fpath, 0).await {
-                    Ok(file) => file,
-                    Err(err) => if maybe {
-                        return Ok(false);
-                    } else {
-                        return Err(Error::from_io_error("Failed to open WAL file", err));
+                    Ok(data) => data,
+                    Err(err) => {
+                        if maybe && err.kind() == std::io::ErrorKind::NotFound {
+                            // At last file but it is still exactly
+                            // one page
+                            log::trace!("WAL reader is done. No next log file found");
+                            return Ok(false);
+                        } else {
+                            return Err(Error::from_io_error("Failed to open WAL file", err));
+                        }
                     }
                 }
             }

@@ -101,7 +101,7 @@ async fn write_large_value() {
     let (tempdir, _, wal) = test_init().await;
 
     let key = vec![1, 2];
-    let value = vec![1; 2 * (PAGE_SIZE as usize)];
+    let value = vec![1; 2 * PAGE_SIZE];
     let op = WriteOp::Put(key.clone(), value.clone());
 
     wal.store(&[LogEntry::Write(&op)]).await.unwrap();
@@ -201,7 +201,7 @@ async fn reopen_with_offset_and_cleanup2() {
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
-    let value1 = vec![2; 2 * (PAGE_SIZE as usize)];
+    let value1 = vec![2; 2 * PAGE_SIZE];
     let value2 = vec![2, 3];
 
     let op1 = WriteOp::Put(key1.clone(), value1.clone());
@@ -234,7 +234,7 @@ async fn reopen_with_offset2() {
 
     let key1 = vec![1, 2];
     let key2 = vec![1, 2, 3];
-    let value1 = vec![2; 2 * (PAGE_SIZE as usize)];
+    let value1 = vec![2; 2 * PAGE_SIZE];
     let value2 = vec![2, 3];
 
     let op1 = WriteOp::Put(key1.clone(), value1.clone());
@@ -263,7 +263,7 @@ async fn reopen_large_file() {
     let (tempdir, params, wal) = test_init().await;
 
     let key = vec![1, 2];
-    let value = vec![2; 2 * (PAGE_SIZE as usize)];
+    let value = vec![2; 2 * PAGE_SIZE];
     let op = WriteOp::Put(key.clone(), value.clone());
 
     wal.store(&[LogEntry::Write(&op)]).await.unwrap();
