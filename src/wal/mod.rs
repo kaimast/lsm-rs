@@ -77,6 +77,7 @@ pub struct WriteAheadLog {
 }
 
 impl WriteAheadLog {
+    /// Creates a new and empty write-ahead log
     pub async fn new(params: Arc<Params>) -> Result<Self, Error> {
         let status = LogStatus {
             queue_pos: 0,
@@ -103,51 +104,16 @@ impl WriteAheadLog {
         })
     }
 
-    fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
-        let (finish_sender, finish_receiver) = oneshot::channel();
-
-        let run_writer = async move {
-            let mut writer = WalWriter::new(params).await;
-            loop {
-                let done = writer
-                    .update_log(&inner)
-                    .await
-                    .expect("Write-ahead logging task failed");
-
-                if done {
-                    break;
-                }
-            }
-            let _ = finish_sender.send(());
-        };
-
-        cfg_if::cfg_if! {
-            if #[cfg(feature="monoio")] {
-                {
-                    monoio::spawn(run_writer);
-                }
-            } else if #[cfg(feature = "_async-io")] {
-                unsafe {
-                    kioto_uring_executor::unsafe_spawn(run_writer);
-                }
-            } else {
-                {
-                    tokio::spawn(run_writer);
-                }
-            }
-        }
-
-        finish_receiver
-    }
-
-    /// Open an existing log
+    /// Open an existing log and insert entries into memtable
+    ///
+    /// This is similar to `new` but fetches state from disk first.
     pub async fn open(
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
     ) -> Result<Self, Error> {
-        // This reads the file(s) in the current thread because we cannot
-        // send stuff between threads easily
+        // This reads the file(s) in the current thread
+        // because we cannot send stuff between threads easily
 
         let mut position = start_position;
         let mut count: usize = 0;
@@ -243,6 +209,48 @@ impl WriteAheadLog {
         })
     }
 
+    /// Spawns the background task that will actually write
+    /// to the WAL.
+    ///
+    /// There is exactly one task that writes to the log
+    /// so that we have to worry about ordering less.
+    fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
+        let (finish_sender, finish_receiver) = oneshot::channel();
+
+        let run_writer = async move {
+            let mut writer = WalWriter::new(params).await;
+            loop {
+                let done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+
+                if done {
+                    break;
+                }
+            }
+            let _ = finish_sender.send(());
+        };
+
+        cfg_if::cfg_if! {
+            if #[cfg(feature="monoio")] {
+                monoio::spawn(run_writer);
+            } else if #[cfg(feature="tokio-uring")] {
+                unsafe {
+                    kioto_uring_executor::unsafe_spawn(run_writer);
+                }
+            } else {
+                tokio::spawn(run_writer);
+            }
+        }
+
+        finish_receiver
+    }
+
+    /// Start the background task that writes to the log
+    ///
+    /// This is similar to `start_writer`, but when we open
+    /// an existing log.
     fn continue_writer(
         inner: Arc<LogInner>,
         position: u64,
@@ -271,19 +279,18 @@ impl WriteAheadLog {
                     kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else if #[cfg(feature="monoio")] {
-                {
-                    monoio::spawn(run_writer);
-                }
+                monoio::spawn(run_writer);
             } else {
-                {
-                    tokio::spawn(run_writer);
-                }
+                tokio::spawn(run_writer);
             }
         }
 
         finish_receiver
     }
 
+    /// Read the next entry from the log
+    ///
+    /// Only used during recovery
     async fn read_from_log(
         log_file: &mut File,
         position: &mut u64,
@@ -360,7 +367,8 @@ impl WriteAheadLog {
         Ok(true)
     }
 
-    /// Stores an operation and returns the new position in the logfile
+    /// Stores an operation and returns the new position in
+    /// the logfile
     #[tracing::instrument(skip(self, batch))]
     pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, Error> {
         let mut writes = vec![];
@@ -404,13 +412,7 @@ impl WriteAheadLog {
             end_pos
         };
 
-        /*
         // Wait until write has been processed
-        let mut status = self.inner.status.read();
-        while status.write_pos < end_pos {
-            status = self.inner.write_cond.rw_read_wait(status).await;
-        }*/
-
         loop {
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
@@ -430,6 +432,10 @@ impl WriteAheadLog {
         Ok(end_pos)
     }
 
+    /// Gracefully stop the write-ahead log
+    ///
+    /// This is intended to only be called during shutdown
+    /// and shall be called exactly once.
     pub async fn stop(&self) -> Result<(), Error> {
         log::trace!("Shutting down write-ahead log. Waiting for writer to terminate.");
 
