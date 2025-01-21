@@ -2,10 +2,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(not(feature = "_async-io"))]
-use std::fs::File;
+use std::io::Write;
+
+#[cfg(feature = "tokio-uring")]
+use tokio_uring::fs::{File, OpenOptions};
+
+#[cfg(feature = "monoio")]
+use monoio::fs::{File, OpenOptions};
 
 #[cfg(not(feature = "_async-io"))]
-use std::io::Write;
+use std::fs::{File, OpenOptions};
 
 #[cfg(feature = "tokio-uring")]
 use tokio_uring::{buf::BoundedBuf, fs::File};
@@ -15,7 +21,7 @@ use monoio::{buf::IoBuf, fs::File};
 
 use cfg_if::cfg_if;
 
-use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
+use crate::wal::{LogInner, PAGE_SIZE};
 use crate::{Error, Params, disk};
 
 /// The task that actually writes the log to disk
@@ -69,6 +75,28 @@ impl WalWriter {
             params,
             position,
         }
+    }
+
+    /// Open an existing log file (used during recovery/restart)
+    pub async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
+        let fpath = params
+            .db_path
+            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
+        log::trace!("Opening file at {fpath:?}");
+
+        cfg_if! {
+            if #[cfg(feature="_async-io")] {
+                let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath).await?;
+            } else {
+                 let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath)?;
+            }
+        }
+
+        Ok(log_file)
     }
 
     /// Returns true if the writer is done and the associated task should terminate
@@ -244,27 +272,5 @@ impl WalWriter {
                 File::create(fpath)
             }
         }
-    }
-
-    /// Open an existing log file (used during recovery)
-    pub async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-        log::trace!("Opening file at {fpath:?}");
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath).await?;
-            } else {
-                 let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath)?;
-            }
-        }
-
-        Ok(log_file)
     }
 }
