@@ -13,15 +13,15 @@ use crate::manifest::Manifest;
 use crate::values::ValueId;
 use crate::{Error, Params, disk};
 
-pub type FreelistPageId = u64;
+pub type IndexPageId = u64;
 
 /// The minimum valid data block identifier
-pub const MIN_FREELIST_PAGE_ID: FreelistPageId = 1;
+pub const MIN_VALUE_INDEX_PAGE_ID: IndexPageId = 1;
 
 #[derive(KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, align(8))]
-struct FreelistPageHeader {
-    identifier: FreelistPageId,
+struct IndexPageHeader {
+    identifier: IndexPageId,
     start_batch: ValueBatchId,
     num_batches: u64,
     num_entries: u64,
@@ -53,8 +53,8 @@ impl TryFrom<u8> for ValueBatchState {
 ///
 /// Invariants:
 ///   - offsets.len() == compacted.len()
-struct FreelistPage {
-    header: FreelistPageHeader,
+struct IndexPage {
+    header: IndexPageHeader,
 
     /// True if some changes to this page might not
     /// have been written to disk yet
@@ -72,12 +72,12 @@ struct FreelistPage {
     entries: BitVec<u8>,
 }
 
-impl FreelistPage {
-    pub fn new(identifier: FreelistPageId, start_batch: ValueBatchId) -> Self {
+impl IndexPage {
+    pub fn new(identifier: IndexPageId, start_batch: ValueBatchId) -> Self {
         log::trace!("Creating new freelist page with id={identifier}");
 
         Self {
-            header: FreelistPageHeader {
+            header: IndexPageHeader {
                 identifier,
                 start_batch,
                 num_batches: 0,
@@ -95,7 +95,7 @@ impl FreelistPage {
             .await
             .map_err(|err| Error::from_io_error("Failed to read freelist page", err))?;
 
-        let (header, ref mut data) = FreelistPageHeader::read_from_prefix(&data).unwrap();
+        let (header, ref mut data) = IndexPageHeader::read_from_prefix(&data).unwrap();
 
         log::trace!(
             "Opening existing freelist page with id={} path={path:?}",
@@ -125,7 +125,7 @@ impl FreelistPage {
         })
     }
 
-    pub fn get_identifier(&self) -> FreelistPageId {
+    pub fn get_identifier(&self) -> IndexPageId {
         self.header.identifier
     }
 
@@ -316,17 +316,17 @@ impl FreelistPage {
 ///
 /// Note: This is technically an "occupied" list.
 /// a bit set to 1 means the value is still in use.
-pub struct ValueFreelist {
+pub struct ValueIndex {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
 
     // Assuming a resonable number of entries (<1million)
     // this should never exceed 10mb.
     // So, we simply keep the entire freelist in memory
-    pages: RwLock<VecDeque<(ValueBatchId, FreelistPage)>>,
+    pages: RwLock<VecDeque<(ValueBatchId, IndexPage)>>,
 }
 
-impl ValueFreelist {
+impl ValueIndex {
     pub fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
         Self {
             params,
@@ -343,11 +343,13 @@ impl ValueFreelist {
         };
 
         let mut pages = obj.pages.write().await;
-        let max_id = obj.manifest.most_recent_freelist_page_id().await;
 
-        for page_id in MIN_FREELIST_PAGE_ID..=max_id {
+        let min_id = obj.manifest.get_minimum_value_index_page_id().await;
+        let max_id = obj.manifest.get_most_recent_value_index_page_id().await;
+
+        for page_id in min_id..=max_id {
             let path = obj.get_page_file_path(&page_id);
-            let page = FreelistPage::open(&path).await?;
+            let page = IndexPage::open(&path).await?;
             let min_batch = page.header.start_batch;
 
             pages.push_back((min_batch, page));
@@ -381,13 +383,13 @@ impl ValueFreelist {
     }
 
     #[inline]
-    fn get_page_file_path(&self, page_id: &FreelistPageId) -> std::path::PathBuf {
-        self.params.db_path.join(format!("free{page_id:08}.data"))
+    fn get_page_file_path(&self, page_id: &IndexPageId) -> std::path::PathBuf {
+        self.params.db_path.join(format!("vindex{page_id:08}.data"))
     }
 
     #[inline]
     fn find_page_idx(
-        pages: &VecDeque<(ValueBatchId, FreelistPage)>,
+        pages: &VecDeque<(ValueBatchId, IndexPage)>,
         batch_id: ValueBatchId,
     ) -> Option<usize> {
         // We only keep the minimum batch id for every page
@@ -401,9 +403,9 @@ impl ValueFreelist {
 
     #[inline]
     fn find_page_for_batch<'a>(
-        pages: &'a RwLockReadGuard<'_, VecDeque<(ValueBatchId, FreelistPage)>>,
+        pages: &'a RwLockReadGuard<'_, VecDeque<(ValueBatchId, IndexPage)>>,
         batch_id: ValueBatchId,
-    ) -> Option<&'a FreelistPage> {
+    ) -> Option<&'a IndexPage> {
         let idx = Self::find_page_idx(pages, batch_id)?;
         Some(&pages[idx].1)
     }
@@ -437,8 +439,8 @@ impl ValueFreelist {
             p
         } else {
             // Add a new page
-            let page_id = self.manifest.generate_next_value_freelist_id().await;
-            let mut page = FreelistPage::new(page_id, batch_id);
+            let page_id = self.manifest.generate_next_value_index_id().await;
+            let mut page = IndexPage::new(page_id, batch_id);
             let success = page.expand(num_entries);
             assert!(success, "Data did not fit in new page?");
             pages.push_back((batch_id, page));
@@ -454,7 +456,7 @@ impl ValueFreelist {
     pub async fn mark_batch_as_deleted(
         &self,
         batch_id: ValueBatchId,
-    ) -> Result<(FreelistPageId, u16), Error> {
+    ) -> Result<(IndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
 
@@ -469,7 +471,7 @@ impl ValueFreelist {
     /// Only used during recovery
     pub async fn mark_batch_as_deleted_at(
         &self,
-        page_id: FreelistPageId,
+        page_id: IndexPageId,
         index: u16,
     ) -> Result<(), Error> {
         let mut pages = self.pages.write().await;
@@ -483,7 +485,7 @@ impl ValueFreelist {
     pub async fn mark_batch_as_compacted(
         &self,
         batch_id: ValueBatchId,
-    ) -> Result<(FreelistPageId, u16), Error> {
+    ) -> Result<(IndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
 
@@ -492,10 +494,7 @@ impl ValueFreelist {
         Ok((page.get_identifier(), offset))
     }
 
-    pub async fn mark_value_as_deleted(
-        &self,
-        vid: ValueId,
-    ) -> Result<(FreelistPageId, u16), Error> {
+    pub async fn mark_value_as_deleted(&self, vid: ValueId) -> Result<(IndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, vid.0).expect("Outdated batch?");
 
@@ -510,7 +509,7 @@ impl ValueFreelist {
         // TODO allow gaps as well!
         while page_idx == 0 && pages.len() > 1 && !pages[page_idx].1.is_in_use() {
             let id = pages[page_idx].1.get_identifier();
-            self.manifest.set_minimum_freelist_page(id).await;
+            self.manifest.set_minimum_value_index_page_id(id).await;
 
             let fpath = self.get_page_file_path(&id);
             disk::remove_file(&fpath)
@@ -523,7 +522,7 @@ impl ValueFreelist {
         Ok((page_id, offset))
     }
 
-    pub async fn mark_value_as_deleted_at(&self, page_id: FreelistPageId, offset: u16) {
+    pub async fn mark_value_as_deleted_at(&self, page_id: IndexPageId, offset: u16) {
         let mut pages = self.pages.write().await;
 
         match pages.binary_search_by_key(&page_id, |(_, p)| p.get_identifier()) {
@@ -548,12 +547,12 @@ mod tests {
 
     use tempfile::{Builder, TempDir};
 
-    use super::ValueFreelist;
+    use super::ValueIndex;
 
     use crate::manifest::Manifest;
     use crate::params::Params;
 
-    async fn test_init() -> (TempDir, ValueFreelist) {
+    async fn test_init() -> (TempDir, ValueIndex) {
         let tmp_dir = Builder::new()
             .prefix("lsm-freelist-test-")
             .tempdir()
@@ -568,7 +567,7 @@ mod tests {
         let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        (tmp_dir, ValueFreelist::new(params, manifest))
+        (tmp_dir, ValueIndex::new(params, manifest))
     }
 
     #[async_test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use zerocopy::FromBytes;
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueBatchId, ValueFreelist};
+use crate::values::{ValueBatchId, ValueIndex};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, disk};
@@ -48,7 +48,7 @@ impl WalReader {
     pub async fn run(
         &mut self,
         memtable: &mut Memtable,
-        freelist: &mut ValueFreelist,
+        value_index: &mut ValueIndex,
     ) -> Result<RecoveryResult, Error> {
         let mut result = RecoveryResult::default();
 
@@ -64,9 +64,9 @@ impl WalReader {
             if log_type[0] == LogEntryType::Write as u8 {
                 self.parse_write_entry(memtable).await?
             } else if log_type[0] == LogEntryType::DeleteValue as u8 {
-                self.parse_value_deletion_entry(freelist).await?
+                self.parse_value_deletion_entry(value_index).await?
             } else if log_type[0] == LogEntryType::DeleteBatch as u8 {
-                self.parse_batch_deletion_entry(freelist).await?
+                self.parse_batch_deletion_entry(value_index).await?
             } else {
                 panic!("Unexpected log entry type! {}", log_type[0]);
             }
@@ -146,11 +146,11 @@ impl WalReader {
     #[cfg(feature = "wisckey")]
     async fn parse_value_deletion_entry(
         &mut self,
-        freelist: &mut ValueFreelist,
+        value_index: &mut ValueIndex,
     ) -> Result<(), Error> {
         let page_id = self.read_value().await?;
         let offset = self.read_value().await?;
-        freelist.mark_value_as_deleted_at(page_id, offset).await;
+        value_index.mark_value_as_deleted_at(page_id, offset).await;
 
         Ok(())
     }
@@ -158,11 +158,13 @@ impl WalReader {
     #[cfg(feature = "wisckey")]
     async fn parse_batch_deletion_entry(
         &mut self,
-        freelist: &mut ValueFreelist,
+        value_index: &mut ValueIndex,
     ) -> Result<(), Error> {
         let page_id = self.read_value().await?;
         let offset = self.read_value().await?;
-        freelist.mark_batch_as_deleted_at(page_id, offset).await?;
+        value_index
+            .mark_batch_as_deleted_at(page_id, offset)
+            .await?;
         Ok(())
     }
 

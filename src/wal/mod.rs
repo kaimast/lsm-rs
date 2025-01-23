@@ -8,7 +8,7 @@ use tokio::sync::{Notify, oneshot};
 use zerocopy::IntoBytes;
 
 #[cfg(feature = "wisckey")]
-use crate::values::{FreelistPageId, ValueFreelist};
+use crate::values::{IndexPageId, ValueIndex};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, WriteOp};
@@ -25,14 +25,14 @@ mod tests;
 
 /// In the vanilla configuration, the log only stores
 /// write operations.
-/// For Wisckey, it also stores changes to the freelist
+/// For Wisckey, it also stores changes to the value_index
 /// to reduce write amplification.
 pub enum LogEntry<'a> {
     Write(&'a WriteOp),
     #[cfg(feature = "wisckey")]
-    DeleteBatch(FreelistPageId, u16),
+    DeleteBatch(IndexPageId, u16),
     #[cfg(feature = "wisckey")]
-    DeleteValue(FreelistPageId, u16),
+    DeleteValue(IndexPageId, u16),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -182,7 +182,7 @@ impl WriteAheadLog {
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
-        freelist: &mut ValueFreelist,
+        value_index: &mut ValueIndex,
     ) -> Result<(Self, RecoveryResult), Error> {
         // This reads the file(s) in the current thread
         // because we cannot send it between threads easily
@@ -191,7 +191,7 @@ impl WriteAheadLog {
 
         let mut reader = WalReader::new(params.clone(), start_position).await?;
 
-        let result = reader.run(memtable, freelist).await?;
+        let result = reader.run(memtable, value_index).await?;
 
         let status = LogStatus::new(result.new_position, start_position);
         let inner = Arc::new(LogInner::new(status));

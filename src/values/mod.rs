@@ -27,8 +27,8 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 #[cfg(test)]
 mod tests;
 
-mod freelist;
-pub use freelist::{FreelistPageId, MIN_FREELIST_PAGE_ID, ValueFreelist};
+mod index;
+pub use index::{IndexPageId, MIN_VALUE_INDEX_PAGE_ID, ValueIndex};
 
 mod batch;
 use batch::ValueBatch;
@@ -38,14 +38,14 @@ use crate::EntryList;
 use crate::wal::{LogEntry, WriteAheadLog};
 
 pub struct ValueLog {
-    /// The value log uses the WAL to batch updates
-    /// especially those to the freelist
+    /// The value log uses the write-ahed log
+    /// to batch updates to its index
     wal: Arc<WriteAheadLog>,
 
-    /// The freelist keeps track of all used entires within
+    /// The value_index keeps track of all used entires within
     /// the value log and helps to garbage collect and
     /// defragment
-    freelist: ValueFreelist,
+    index: ValueIndex,
 
     /// Sharded storage of log batches
     batch_caches: Vec<Mutex<BatchShard>>,
@@ -85,11 +85,11 @@ impl ValueLog {
         manifest: Arc<Manifest>,
     ) -> Self {
         let batch_caches = Self::init_caches(&params);
-        let freelist = ValueFreelist::new(params.clone(), manifest.clone());
+        let index = ValueIndex::new(params.clone(), manifest.clone());
 
         Self {
             wal,
-            freelist,
+            index,
             params,
             manifest,
             batch_caches,
@@ -100,13 +100,13 @@ impl ValueLog {
         wal: Arc<WriteAheadLog>,
         params: Arc<Params>,
         manifest: Arc<Manifest>,
-        freelist: ValueFreelist,
+        index: ValueIndex,
         to_delete: Vec<ValueBatchId>,
     ) -> Result<Self, Error> {
         let batch_caches = Self::init_caches(&params);
         let obj = Self {
             wal,
-            freelist,
+            index,
             params,
             manifest,
             batch_caches,
@@ -123,7 +123,7 @@ impl ValueLog {
     /// On success, this might return a list of entries to reinsert in order to defragment the log
     #[tracing::instrument(skip(self))]
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<EntryList, Error> {
-        let (page_id, page_offset) = self.freelist.mark_value_as_deleted(vid).await?;
+        let (page_id, page_offset) = self.index.mark_value_as_deleted(vid).await?;
         self.wal
             .store(&[LogEntry::DeleteValue(page_id, page_offset)])
             .await?;
@@ -142,7 +142,7 @@ impl ValueLog {
     async fn try_to_remove(&self, batch_id: ValueBatchId) -> Result<bool, Error> {
         log::trace!("Checking if value batch #{batch_id} can be removed");
 
-        let num_active = self.freelist.count_active_entries(batch_id).await;
+        let num_active = self.index.count_active_entries(batch_id).await;
 
         // Can only remove if no values in this batch are active
         if num_active > 0 {
@@ -150,7 +150,7 @@ impl ValueLog {
         }
 
         log::trace!("Deleting empty batch #{batch_id}");
-        self.freelist.mark_batch_as_deleted(batch_id).await?;
+        self.index.mark_batch_as_deleted(batch_id).await?;
 
         // Hold lock so nobody else messes with the file while we do this
         self.remove_batch_from_disk(batch_id).await?;
@@ -179,11 +179,11 @@ impl ValueLog {
             return Ok(());
         }
 
-        let most_recent = self.manifest.most_recent_value_batch_id().await;
+        let most_recent = self.manifest.get_most_recent_value_batch_id().await;
         let mut new_minimum = batch_id;
 
         while new_minimum < most_recent {
-            if self.freelist.count_active_entries(batch_id).await > 0 {
+            if self.index.count_active_entries(batch_id).await > 0 {
                 break;
             }
             new_minimum += 1;
@@ -202,13 +202,13 @@ impl ValueLog {
 
         let batch = self.get_batch(batch_id).await?;
         let num_entries = batch.total_num_values() as usize;
-        let num_active = self.freelist.count_active_entries(batch_id).await;
+        let num_active = self.index.count_active_entries(batch_id).await;
         let active_ratio = (num_active * 100) / (num_entries * 100);
 
         if active_ratio < 25 {
             log::trace!("Re-inserting sparse value batch #{batch_id}");
-            let offsets = self.freelist.get_active_entries(batch_id).await;
-            self.freelist.mark_batch_as_compacted(batch_id).await?;
+            let offsets = self.index.get_active_entries(batch_id).await;
+            self.index.mark_batch_as_compacted(batch_id).await?;
 
             Ok(Some(batch.get_entries(&offsets)))
         } else {
@@ -263,6 +263,6 @@ impl ValueLog {
     }
 
     pub async fn sync(&self) -> Result<(), Error> {
-        self.freelist.sync().await
+        self.index.sync().await
     }
 }

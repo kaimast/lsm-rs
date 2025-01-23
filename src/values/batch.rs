@@ -98,7 +98,7 @@ impl<'a> ValueBatchBuilder<'a> {
         }
 
         self.vlog
-            .freelist
+            .index
             .add_batch(self.identifier, num_values as usize)
             .await?;
 

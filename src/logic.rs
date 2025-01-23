@@ -21,7 +21,7 @@ use crate::wal::{LogEntry, WriteAheadLog};
 use crate::{Error, Key, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueFreelist, ValueLog, ValueRef};
+use crate::values::{ValueIndex, ValueLog, ValueRef};
 
 use crate::data_blocks::DataEntry;
 
@@ -183,12 +183,12 @@ impl DbLogic {
 
             cfg_if! {
                 if #[cfg(feature="wisckey")] {
-                    let mut freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
+                    let mut value_index = ValueIndex::open(params.clone(), manifest.clone()).await?;
                     let (w, recovery_result) =
-                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable, &mut freelist)
+                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable, &mut value_index)
                             .await?;
                     wal = Arc::new(w);
-                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), freelist, recovery_result.value_batches_to_delete).await?);
+                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), value_index, recovery_result.value_batches_to_delete).await?);
                 } else {
                     let (w, _) = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?;
 
@@ -614,7 +614,7 @@ impl DbLogic {
                 logger.l0_table_added();
             }
 
-            // Sync all freelist changes to disk
+            // Sync all value index changes to disk
             #[cfg(feature = "wisckey")]
             self.value_log.sync().await?;
 
