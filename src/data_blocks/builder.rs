@@ -129,8 +129,7 @@ impl DataBlockBuilder {
 
         // Write restart list
         for restart_offset in self.restart_list.drain(..) {
-            let mut offset = restart_offset.to_le_bytes().to_vec();
-            self.data.append(&mut offset);
+            self.data.extend_from_slice(restart_offset.as_bytes());
         }
 
         let block = Arc::new(DataBlock {

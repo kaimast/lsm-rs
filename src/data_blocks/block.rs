@@ -213,7 +213,7 @@ impl DataBlock {
         let offset_len = std::mem::size_of::<u32>();
         let pos = self.restart_list_start + (pos as usize) * offset_len;
 
-        u32::from_le_bytes(self.data[pos..pos + offset_len].try_into().unwrap())
+        u32::read_from_bytes(&self.data[pos..pos + offset_len]).unwrap()
             - Self::header_length() as u32
     }
 

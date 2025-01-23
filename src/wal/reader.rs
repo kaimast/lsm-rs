@@ -113,27 +113,15 @@ impl WalReader {
     }
 
     async fn parse_write_entry(&mut self, memtable: &mut Memtable) -> Result<(), Error> {
-        const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
-        const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
-
-        let mut op_header = [0u8; HEADER_SIZE];
-        self.read_from_log(&mut op_header[..], false).await?;
-
-        let op_type = op_header[0];
-
-        let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
-        let key_len = u64::from_le_bytes(*key_len_data);
+        let op_type: u8 = self.read_value().await?;
+        let key_len: u64 = self.read_value().await?;
 
         let mut key = vec![0; key_len as usize];
         self.read_from_log(&mut key, false).await?;
 
         if op_type == WriteOp::PUT_OP {
-            let mut val_len = [0u8; std::mem::size_of::<u64>()];
-            self.read_from_log(&mut val_len, false).await?;
-
-            let val_len = u64::from_le_bytes(val_len);
+            let val_len: u64 = self.read_value().await?;
             let mut value = vec![0; val_len as usize];
-
             self.read_from_log(&mut value, false).await?;
             memtable.put(key, value);
         } else if op_type == WriteOp::DELETE_OP {
@@ -145,6 +133,10 @@ impl WalReader {
         Ok(())
     }
 
+    /// Fetches a value from the current position at the log
+    /// and advances the position
+    ///
+    /// This might open the next page of the log, if needed
     async fn read_value<T: Sized + FromBytes>(&mut self) -> Result<T, Error> {
         let mut data = vec![0u8; std::mem::size_of::<T>()];
         self.read_from_log(&mut data, false).await?;
