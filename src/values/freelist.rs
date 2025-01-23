@@ -27,7 +27,18 @@ struct FreelistPageHeader {
     num_entries: u64,
 }
 
+#[derive(KnownLayout, Immutable, IntoBytes, FromBytes)]
+#[repr(C)]
+enum ValueBatchState {
+    Active,
+    Compacted,
+    Deleted,
+}
+
 /// An (up to) 4kb chunk of the freelist
+///
+/// Invariants:
+///   - offsets.len() == compacted.len()
 struct FreelistPage {
     header: FreelistPageHeader,
 
@@ -38,6 +49,10 @@ struct FreelistPage {
     /// Tracks the value batches covered by this page
     /// and where they start in the bitmap
     offsets: Vec<u16>,
+
+    /// Tracks which batches in this freelist have already
+    /// been garbage collected
+    state: Vec<ValueBatchState>,
 
     /// The actual bitmap
     entries: BitVec<u8>,
@@ -56,6 +71,7 @@ impl FreelistPage {
             },
             dirty: true,
             offsets: Default::default(),
+            compacted: Default::default(),
             entries: Default::default(),
         }
     }
@@ -79,12 +95,15 @@ impl FreelistPage {
             *data = next;
         }
 
-        let entries = BitVec::from_slice(data);
+        let len = (header.num_batches as usize).div_ceil(8);
+        let compacted = BitVec::from_slice(&data[..len]);
+        let entries = BitVec::from_slice(&data[len..]);
 
         Ok(Self {
             header,
             offsets,
             entries,
+            compacted,
             dirty: false,
         })
     }
@@ -112,7 +131,10 @@ impl FreelistPage {
                 self.header.identifier
             );
 
+            self.header.num_batches += 1;
+
             self.offsets.push(current_entries as u16);
+            self.batches.push(ValueBatchState::Active);
 
             // We assume all entries are in use for a new batch
             self.entries.resize(current_entries + num_entries, true);
@@ -132,6 +154,7 @@ impl FreelistPage {
 
         let mut data = self.header.as_bytes().to_vec();
         data.extend_from_slice(self.offsets.as_bytes());
+        data.extend_from_slice(self.batches.as_bytes());
         data.extend_from_slice(self.entries.as_raw_slice());
 
         disk::write(path, &data).await.map_err(|err| {

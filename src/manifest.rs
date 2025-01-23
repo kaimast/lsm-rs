@@ -46,11 +46,9 @@ struct DatabaseMetadata {
 ///
 /// Invariants
 /// * minimum_batch < next_batch_id
-/// * minimum_batch <= defragment_pos < next_batch_id
 /// * minimum_freelist_pag < next_freelist_page
 struct ValueLogMetadata {
     next_batch_id: ValueBatchId,
-    defragment_pos: ValueBatchId,
     minimum_batch: ValueBatchId,
     next_freelist_page_id: FreelistPageId,
     minimum_freelist_page: FreelistPageId,
@@ -180,7 +178,6 @@ impl Manifest {
             value_log: ValueLogMetadata {
                 next_batch_id: MIN_VALUE_BATCH_ID,
                 minimum_batch: 0,
-                defragment_pos: 0,
                 next_freelist_page_id: MIN_FREELIST_PAGE_ID,
                 minimum_freelist_page: 0,
             },
@@ -342,24 +339,6 @@ impl Manifest {
         let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
         meta.value_log.minimum_batch
-    }
-
-    #[cfg(feature = "wisckey")]
-    pub async fn get_value_defragment_position(&self) -> u64 {
-        let mmap = self.metadata.read().await;
-        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
-
-        meta.value_log.defragment_pos
-    }
-
-    #[cfg(feature = "wisckey")]
-    pub async fn set_value_defragment_position(&self, offset: ValueBatchId) {
-        let mut mmap = self.metadata.write().await;
-        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
-
-        assert!(meta.value_log.defragment_pos < offset);
-        meta.value_log.defragment_pos = offset;
-        mmap.flush().unwrap();
     }
 
     #[cfg(feature = "wisckey")]

@@ -27,6 +27,8 @@ mod tests;
 pub enum LogEntry<'a> {
     Write(&'a WriteOp),
     #[cfg(feature = "wisckey")]
+    CompactBatch(FreelistPageId, u16),
+    #[cfg(feature = "wisckey")]
     ValueDeletion(FreelistPageId, u16),
 }
 
@@ -34,12 +36,16 @@ impl LogEntry<'_> {
     const WRITE: u8 = 0;
     #[cfg(feature = "wisckey")]
     const VALUE_DELETION: u8 = 1;
+    #[cfg(feature = "wisckey")]
+    const COMPACT_BATCH: u8 = 2;
 
     pub fn get_type(&self) -> u8 {
         match self {
             Self::Write(_) => Self::WRITE,
             #[cfg(feature = "wisckey")]
             Self::ValueDeletion(_, _) => Self::VALUE_DELETION,
+            #[cfg(feature = "wisckey")]
+            Self::CompactBatch(_, _) => Self::COMPACT_BATCH,
         }
     }
 }
@@ -311,6 +317,16 @@ impl WriteAheadLog {
                 }
                 #[cfg(feature = "wisckey")]
                 LogEntry::ValueDeletion(page_id, offset) => {
+                    let page_id = page_id.to_le_bytes();
+                    let offset = offset.to_le_bytes();
+
+                    data.extend_from_slice(page_id.as_slice());
+                    data.extend_from_slice(offset.as_slice());
+
+                    writes.push(data);
+                }
+                #[cfg(feature = "wisckey")]
+                LogEntry::CompactBatch(page_id, offset) => {
                     let page_id = page_id.to_le_bytes();
                     let offset = offset.to_le_bytes();
 

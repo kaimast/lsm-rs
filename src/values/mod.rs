@@ -121,48 +121,11 @@ impl ValueLog {
             .store(&[LogEntry::ValueDeletion(page_id, page_offset)])
             .await?;
 
-        // If this is the oldest value batch, try to remove things
-        let start = vid.0;
-        let min_batch = self
-            .manifest
-            .get_minimum_value_batch()
-            .await
-            .max(MIN_VALUE_BATCH_ID);
-        let mut defragment_pos = self.manifest.get_value_defragment_position().await;
-        let most_recent = self.manifest.most_recent_value_batch_id().await;
-
-        if min_batch == start {
-            for batch_id in vid.0..=most_recent {
-                if !self.try_to_remove(batch_id).await? {
-                    // Don't defragment what has already been deleted
-                    if batch_id > defragment_pos {
-                        defragment_pos = batch_id;
-                        self.manifest.set_value_defragment_position(batch_id).await;
-                    }
-                    break;
-                }
-            }
+        if try_to_remove(page_id).await? {
+            return Ok(vec![]);
         }
 
-        let mut reinsert = vec![];
-
-        if defragment_pos == start {
-            for batch_id in start..most_recent {
-                if let Some(mut entries) = self.try_to_defragment(batch_id).await? {
-                    reinsert.append(&mut entries);
-                } else {
-                    if batch_id > start {
-                        self.manifest.set_value_defragment_position(batch_id).await;
-                    } else {
-                        assert!(reinsert.is_empty());
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        Ok(reinsert)
+        try_to_compact(page_id).await
     }
 
     /// Attempts to delete empty batches
@@ -178,27 +141,52 @@ impl ValueLog {
         }
 
         log::trace!("Deleting empty batch #{batch_id}");
+        self.freelist.mark_value_batch_deleted(batch);
 
         // Hold lock so nobody else messes with the file while we do this
         let shard_id = Self::batch_to_shard_id(batch_id);
         let mut cache = self.batch_caches[shard_id].lock().await;
-
-        self.manifest.set_minimum_value_batch(batch_id + 1).await;
-
         let fpath = self.get_batch_file_path(&batch_id);
         disk::remove_file(&fpath)
             .await
             .map_err(|err| Error::from_io_error("Failed to remove value log batch", err))?;
-
         cache.pop(&batch_id);
+
+        // Can we remove entries entirely?
+        let min_batch = self
+            .manifest
+            .get_minimum_value_batch()
+            .await
+            .max(MIN_VALUE_BATCH_ID);
+
+        // We can only completely remove batches starting from the oldest one
+        // Instead, we "empty" the batch, reducing its size to a single on-disk page
+        if batch_id > min_batch {
+            return Ok(true);
+        }
+
+        {
+            let most_recent = self.manifest.most_recent_value_batch_id().await;
+            let mut new_minimum = batch_id;
+
+            while new_minimum < most_recent {
+                if self.freelist.count_active_entries(batch_id) > 0 {
+                    break;
+                }
+                new_minimum += 1;
+            }
+
+            log::debug!("Full removed {} value batches", new_minimum - batch_id + 1);
+            self.manifest.set_minimum_value_batch_id(new_minimum);
+        }
 
         Ok(true)
     }
 
     /// Check if we should reinsert entries from this batch
     #[tracing::instrument(skip(self))]
-    async fn try_to_defragment(&self, batch_id: ValueBatchId) -> Result<Option<EntryList>, Error> {
-        log::trace!("Checking if value batch #{batch_id} should be defragmented");
+    async fn try_to_compact(&self, batch_id: ValueBatchId) -> Result<Option<EntryList>, Error> {
+        log::trace!("Checking if value batch #{batch_id} should be compacted (reinserted)");
 
         let batch = self.get_batch(batch_id).await?;
         let num_entries = batch.total_num_values() as usize;
