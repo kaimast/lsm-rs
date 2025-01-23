@@ -179,7 +179,7 @@ impl Manifest {
                 next_batch: MIN_VALUE_BATCH_ID,
                 minimum_batch: 0,
                 next_index_page: MIN_VALUE_INDEX_PAGE_ID,
-                minimum_index_page: 0,
+                minimum_index_page: MIN_VALUE_INDEX_PAGE_ID,
             },
         };
 

@@ -83,17 +83,17 @@ impl ValueLog {
         wal: Arc<WriteAheadLog>,
         params: Arc<Params>,
         manifest: Arc<Manifest>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let batch_caches = Self::init_caches(&params);
-        let index = ValueIndex::new(params.clone(), manifest.clone());
+        let index = ValueIndex::new(params.clone(), manifest.clone()).await?;
 
-        Self {
+        Ok(Self {
             wal,
             index,
             params,
             manifest,
             batch_caches,
-        }
+        })
     }
 
     pub async fn open(

@@ -27,7 +27,7 @@ async fn test_init() -> (TempDir, ValueLog) {
     let wal = Arc::new(WriteAheadLog::new(params.clone()).await.unwrap());
     let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-    (tmp_dir, ValueLog::new(wal, params, manifest).await)
+    (tmp_dir, ValueLog::new(wal, params, manifest).await.unwrap())
 }
 
 #[async_test]

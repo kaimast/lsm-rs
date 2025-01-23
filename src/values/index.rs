@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use bitvec::vec::BitVec;
 
-use super::ValueBatchId;
 use tokio::sync::{RwLock, RwLockReadGuard};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -12,6 +11,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::manifest::Manifest;
 use crate::values::ValueId;
 use crate::{Error, Params, disk};
+
+use super::{MIN_VALUE_BATCH_ID, ValueBatchId};
 
 pub type ValueIndexPageId = u64;
 
@@ -49,10 +50,10 @@ impl TryFrom<u8> for ValueBatchState {
     }
 }
 
-/// An (up to) 4kb chunk of the freelist
+/// An (up to) 4kb chunk of the value index
 ///
 /// Invariants:
-///   - offsets.len() == compacted.len()
+///   - offsets.len() == batches.len()
 struct IndexPage {
     header: IndexPageHeader,
 
@@ -64,17 +65,21 @@ struct IndexPage {
     /// and where they start in the bitmap
     offsets: Vec<u16>,
 
-    /// Tracks which batches in this freelist have already
-    /// been garbage collected
+    /// Tracks which batches in this index page have already
+    /// been garbage collected or deleted
     batches: Vec<ValueBatchState>,
 
     /// The actual bitmap
     entries: BitVec<u8>,
+
+    /// Once a page is sealed, no new batches can be added
+    /// (not stored on disk)
+    sealed: bool,
 }
 
 impl IndexPage {
     pub fn new(identifier: ValueIndexPageId, start_batch: ValueBatchId) -> Self {
-        log::trace!("Creating new freelist page with id={identifier}");
+        log::trace!("Creating new value index page with id={identifier}");
 
         Self {
             header: IndexPageHeader {
@@ -84,21 +89,25 @@ impl IndexPage {
                 num_entries: 0,
             },
             dirty: true,
+            sealed: false,
             offsets: Default::default(),
             batches: Default::default(),
             entries: Default::default(),
         }
     }
 
-    pub async fn open(path: &Path) -> Result<Self, Error> {
-        let data = disk::read(path, 0)
-            .await
-            .map_err(|err| Error::from_io_error("Failed to read freelist page", err))?;
+    pub async fn open(path: &Path, sealed: bool) -> Result<Self, Error> {
+        let data = disk::read(path, 0).await.map_err(|err| {
+            Error::from_io_error(
+                format!("Failed to read value index page at `{path:?}`"),
+                err,
+            )
+        })?;
 
         let (header, ref mut data) = IndexPageHeader::read_from_prefix(&data).unwrap();
 
         log::trace!(
-            "Opening existing freelist page with id={} path={path:?}",
+            "Opening existing value index page with id={} path={path:?}",
             header.identifier
         );
 
@@ -121,6 +130,7 @@ impl IndexPage {
             offsets,
             entries,
             batches,
+            sealed,
             dirty: false,
         })
     }
@@ -134,6 +144,8 @@ impl IndexPage {
     /// - Returns true if there was enoguh space
     /// - Note, this will not update the page until calling sync()
     pub fn expand(&mut self, num_entries: usize) -> bool {
+        assert!(!self.sealed);
+
         const MAX_SIZE: usize = 4 * 1024;
         assert!(num_entries < MAX_SIZE);
 
@@ -144,7 +156,7 @@ impl IndexPage {
         // Is there enough space?
         if new_size <= MAX_SIZE {
             log::trace!(
-                "Adding {num_entries} entries to freelist page #{}",
+                "Adding {num_entries} entries to value index page #{}",
                 self.header.identifier
             );
 
@@ -159,6 +171,7 @@ impl IndexPage {
 
             true
         } else {
+            self.sealed = true;
             false
         }
     }
@@ -169,20 +182,25 @@ impl IndexPage {
             return Ok(false);
         }
 
+        log::trace!("Writing with value index page to disk (path={path:?})");
+
         let mut data = self.header.as_bytes().to_vec();
         data.extend_from_slice(self.offsets.as_bytes());
         data.extend_from_slice(self.batches.as_bytes());
         data.extend_from_slice(self.entries.as_raw_slice());
 
         disk::write(path, &data).await.map_err(|err| {
-            Error::from_io_error(format!("Failed to write freelist page at `{path:?}`"), err)
+            Error::from_io_error(
+                format!("Failed to write value index page at `{path:?}`"),
+                err,
+            )
         })?;
 
         self.dirty = false;
         Ok(true)
     }
 
-    /// Are any of the values in this freelist still in use?
+    /// Are any of the values in this page still in use?
     pub fn is_in_use(&self) -> bool {
         for val in self.entries.iter() {
             if *val {
@@ -190,6 +208,10 @@ impl IndexPage {
             }
         }
         false
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.sealed
     }
 
     /// How many entries in the specified batch are still in use?
@@ -311,28 +333,34 @@ impl IndexPage {
 ///
 /// This is kept in a separate file to reduce the amount of
 /// write amplification caused by value deletion.
-/// A single page in the freelist can hold information
-/// for up to about 32k values.
-///
-/// Note: This is technically an "occupied" list.
-/// a bit set to 1 means the value is still in use.
+/// A single page in the value index can hold information
+/// for up to about 30k values.
 pub struct ValueIndex {
     params: Arc<Params>,
     manifest: Arc<Manifest>,
 
     // Assuming a resonable number of entries (<1million)
-    // this should never exceed 10mb.
-    // So, we simply keep the entire freelist in memory
+    // this should never exceed 10mb, so we simply keep
+    // the entire value index in memory.
+    // For larger database it is safe to assume better hardware
+    // with more available memory.
     pages: RwLock<VecDeque<(ValueBatchId, IndexPage)>>,
 }
 
 impl ValueIndex {
-    pub fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Self {
-        Self {
+    pub async fn new(params: Arc<Params>, manifest: Arc<Manifest>) -> Result<Self, Error> {
+        let obj = Self {
             params,
             manifest,
             pages: Default::default(),
+        };
+
+        {
+            let mut pages = obj.pages.write().await;
+            obj.create_new_page(&mut pages, MIN_VALUE_BATCH_ID).await;
         }
+
+        Ok(obj)
     }
 
     pub async fn open(params: Arc<Params>, manifest: Arc<Manifest>) -> Result<Self, Error> {
@@ -348,8 +376,10 @@ impl ValueIndex {
         let max_id = obj.manifest.get_most_recent_value_index_page_id().await;
 
         for page_id in min_id..=max_id {
+            let sealed = page_id < max_id;
+
             let path = obj.get_page_file_path(&page_id);
-            let page = IndexPage::open(&path).await?;
+            let page = IndexPage::open(&path, sealed).await?;
             let min_batch = page.header.start_batch;
 
             pages.push_back((min_batch, page));
@@ -374,7 +404,7 @@ impl ValueIndex {
             count += 1;
         }
 
-        log::trace!("Flushed {count} freelist pages to disk");
+        log::trace!("Flushed {count} value index pages to disk");
         Ok(())
     }
 
@@ -438,19 +468,28 @@ impl ValueIndex {
         {
             p
         } else {
-            // Add a new page
-            let page_id = self.manifest.generate_next_value_index_id().await;
-            let mut page = IndexPage::new(page_id, batch_id);
+            self.create_new_page(&mut pages, batch_id).await;
+            let page = &mut pages.back_mut().unwrap().1;
             let success = page.expand(num_entries);
             assert!(success, "Data did not fit in new page?");
-            pages.push_back((batch_id, page));
-            &mut pages.back_mut().unwrap().1
+            page
         };
 
         // Persist changes to disk
         let path = self.get_page_file_path(&p.get_identifier());
         p.sync(&path).await?;
         Ok(())
+    }
+
+    async fn create_new_page(
+        &self,
+        pages: &mut VecDeque<(ValueBatchId, IndexPage)>,
+        min_batch: ValueBatchId,
+    ) {
+        let page_id = self.manifest.generate_next_value_index_id().await;
+
+        let page = IndexPage::new(page_id, min_batch);
+        pages.push_back((min_batch, page));
     }
 
     pub async fn mark_batch_as_deleted(
@@ -510,16 +549,29 @@ impl ValueIndex {
         // and ensures there is always at least one page left
         //
         // TODO allow gaps as well!
-        while page_idx == 0 && pages.len() > 1 && !pages[page_idx].1.is_in_use() {
-            let id = pages[page_idx].1.get_identifier();
-            self.manifest.set_minimum_value_index_page_id(id).await;
+        if page_idx == 0 && !page.is_in_use() && page.is_sealed() {
+            loop {
+                let id = {
+                let (_, page) = pages.front().unwrap();
+                let id = page.get_identifier();
 
-            let fpath = self.get_page_file_path(&id);
-            disk::remove_file(&fpath)
-                .await
-                .map_err(|err| Error::from_io_error("Failed to remove freelist page", err))?;
+                // There is always one unsealed page
+                if !page.is_sealed() || page.is_in_use() {
+                    self.manifest.set_minimum_value_index_page_id(id).await;
+                    break;
+                }
 
-            pages.pop_front();
+                    id
+                };
+
+                log::trace!("Removing index page with id={id}");
+                let fpath = self.get_page_file_path(&id);
+                disk::remove_file(&fpath).await.map_err(|err| {
+                    Error::from_io_error("Failed to remove value index page", err)
+                })?;
+
+                pages.pop_front();
+            }
         }
 
         Ok((page_id, offset))
@@ -557,7 +609,7 @@ mod tests {
 
     async fn test_init() -> (TempDir, ValueIndex) {
         let tmp_dir = Builder::new()
-            .prefix("lsm-freelist-test-")
+            .prefix("lsm-value-index-test-")
             .tempdir()
             .unwrap();
         let _ = env_logger::builder().is_test(true).try_init();
@@ -570,83 +622,101 @@ mod tests {
         let params = Arc::new(params);
         let manifest = Arc::new(Manifest::new(params.clone()).await);
 
-        (tmp_dir, ValueIndex::new(params, manifest))
+        (tmp_dir, ValueIndex::new(params, manifest).await.unwrap())
     }
 
     #[async_test]
     async fn add_batch() {
-        let (_tmp_dir, freelist) = test_init().await;
+        let (_tmp_dir, value_index) = test_init().await;
 
         let batch_id = 1;
         let num_entries = 100;
 
-        freelist.add_batch(batch_id, num_entries).await.unwrap();
-        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
+        value_index.add_batch(batch_id, num_entries).await.unwrap();
+        value_index
+            .add_batch(batch_id + 1, num_entries)
+            .await
+            .unwrap();
 
-        assert_eq!(freelist.num_pages().await, 1);
-        assert_eq!(freelist.count_active_entries(batch_id).await, num_entries);
+        assert_eq!(value_index.num_pages().await, 1);
+        assert_eq!(
+            value_index.count_active_entries(batch_id).await,
+            num_entries
+        );
     }
 
     #[async_test]
     async fn multiple_pages() {
-        let (_tmp_dir, freelist) = test_init().await;
+        let (_tmp_dir, value_index) = test_init().await;
 
         let batch_id = 1;
         let num_entries = 4000;
 
-        freelist.add_batch(batch_id, num_entries).await.unwrap();
-        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
+        value_index.add_batch(batch_id, num_entries).await.unwrap();
+        value_index
+            .add_batch(batch_id + 1, num_entries)
+            .await
+            .unwrap();
 
-        assert_eq!(freelist.num_pages().await, 2);
-        assert_eq!(freelist.count_active_entries(batch_id).await, num_entries);
+        assert_eq!(value_index.num_pages().await, 2);
+        assert_eq!(
+            value_index.count_active_entries(batch_id).await,
+            num_entries
+        );
     }
 
     #[async_test]
     async fn delete_entry() {
-        let (_tmp_dir, freelist) = test_init().await;
+        let (_tmp_dir, value_index) = test_init().await;
 
         let batch_id = 1;
         let num_entries = 100;
 
-        freelist.add_batch(batch_id, num_entries).await.unwrap();
-        freelist.mark_value_as_deleted((batch_id, 2)).await.unwrap();
-        freelist
+        value_index.add_batch(batch_id, num_entries).await.unwrap();
+        value_index
+            .mark_value_as_deleted((batch_id, 2))
+            .await
+            .unwrap();
+        value_index
             .mark_value_as_deleted((batch_id, 32))
             .await
             .unwrap();
-        freelist
+        value_index
             .mark_value_as_deleted((batch_id, 59))
             .await
             .unwrap();
 
-        assert_eq!(freelist.num_pages().await, 1);
+        assert_eq!(value_index.num_pages().await, 1);
         assert_eq!(
-            freelist.count_active_entries(batch_id).await,
+            value_index.count_active_entries(batch_id).await,
             num_entries - 3
         );
     }
 
     #[async_test]
     async fn remove_page() {
-        let (_tmp_dir, freelist) = test_init().await;
+        let (_tmp_dir, value_index) = test_init().await;
 
         let batch_id = 1;
         let num_entries = 4000;
 
-        freelist.add_batch(batch_id, num_entries).await.unwrap();
-        freelist.add_batch(batch_id + 1, num_entries).await.unwrap();
+        value_index.add_batch(batch_id, num_entries).await.unwrap();
+        value_index
+            .add_batch(batch_id + 1, num_entries)
+            .await
+            .unwrap();
 
         for idx in 0..num_entries {
-            freelist
+            value_index
                 .mark_value_as_deleted((batch_id, idx as u32))
                 .await
                 .unwrap();
         }
 
-        assert_eq!(freelist.num_pages().await, 1);
-        assert_eq!(freelist.count_active_entries(batch_id).await, 0);
+        assert_eq!(value_index.num_pages().await, 1);
+        assert_eq!(value_index.count_active_entries(batch_id).await, 0);
         assert_eq!(
-            freelist.count_active_entries(batch_id + 1).await,
+            value_index.count_active_entries(batch_id + 1).await,
             num_entries
         );
     }

@@ -169,7 +169,7 @@ impl DbLogic {
             #[cfg(feature = "wisckey")]
             {
                 value_log =
-                    Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await);
+                    Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await?);
             }
         } else {
             log::info!(
