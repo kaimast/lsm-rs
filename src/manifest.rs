@@ -17,7 +17,7 @@ use crate::sorted_table::TableId;
 use crate::{Error, Params};
 
 #[cfg(feature = "wisckey")]
-use crate::values::{IndexPageId, MIN_VALUE_BATCH_ID, MIN_VALUE_INDEX_PAGE_ID, ValueBatchId};
+use crate::values::{MIN_VALUE_BATCH_ID, MIN_VALUE_INDEX_PAGE_ID, ValueBatchId, ValueIndexPageId};
 
 pub type SeqNumber = u64;
 pub type LevelId = u32;
@@ -50,8 +50,8 @@ struct DatabaseMetadata {
 struct ValueLogMetadata {
     next_batch: ValueBatchId,
     minimum_batch: ValueBatchId,
-    next_index_page: IndexPageId,
-    minimum_index_page: IndexPageId,
+    next_index_page: ValueIndexPageId,
+    minimum_index_page: ValueIndexPageId,
 }
 
 /// For each level there is a file containing
@@ -176,10 +176,10 @@ impl Manifest {
             next_data_block_id: MIN_DATA_BLOCK_ID,
             #[cfg(feature = "wisckey")]
             value_log: ValueLogMetadata {
-                next_batch_id: MIN_VALUE_BATCH_ID,
+                next_batch: MIN_VALUE_BATCH_ID,
                 minimum_batch: 0,
-                next_index_page_id: MIN_VALUE_INDEX_PAGE_ID,
-                minimum_index_page_id: 0,
+                next_index_page: MIN_VALUE_INDEX_PAGE_ID,
+                minimum_index_page: 0,
             },
         };
 
@@ -334,7 +334,7 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn get_minimum_value_batch(&self) -> u64 {
+    pub async fn get_minimum_value_batch(&self) -> ValueBatchId {
         let mmap = self.metadata.read().await;
         let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
@@ -342,7 +342,7 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn set_minimum_value_batch(&self, offset: ValueBatchId) {
+    pub async fn set_minimum_value_batch_id(&self, offset: ValueBatchId) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
@@ -353,7 +353,7 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn set_minimum_value_index_page(&self, offset: IndexPageId) {
+    pub async fn set_minimum_value_index_page_id(&self, offset: ValueIndexPageId) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
@@ -364,10 +364,10 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn get_minimum_value_index_page_id(&self) {
+    pub async fn get_minimum_value_index_page_id(&self) -> ValueIndexPageId {
         let mmap = self.metadata.read().await;
         let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
-        meta.value_log.minimum_index_page;
+        meta.value_log.minimum_index_page
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
@@ -395,7 +395,7 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn generate_next_value_index_id(&self) -> IndexPageId {
+    pub async fn generate_next_value_index_id(&self) -> ValueIndexPageId {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 

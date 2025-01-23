@@ -13,15 +13,15 @@ use crate::manifest::Manifest;
 use crate::values::ValueId;
 use crate::{Error, Params, disk};
 
-pub type IndexPageId = u64;
+pub type ValueIndexPageId = u64;
 
 /// The minimum valid data block identifier
-pub const MIN_VALUE_INDEX_PAGE_ID: IndexPageId = 1;
+pub const MIN_VALUE_INDEX_PAGE_ID: ValueIndexPageId = 1;
 
 #[derive(KnownLayout, Immutable, IntoBytes, FromBytes)]
 #[repr(C, align(8))]
 struct IndexPageHeader {
-    identifier: IndexPageId,
+    identifier: ValueIndexPageId,
     start_batch: ValueBatchId,
     num_batches: u64,
     num_entries: u64,
@@ -73,7 +73,7 @@ struct IndexPage {
 }
 
 impl IndexPage {
-    pub fn new(identifier: IndexPageId, start_batch: ValueBatchId) -> Self {
+    pub fn new(identifier: ValueIndexPageId, start_batch: ValueBatchId) -> Self {
         log::trace!("Creating new freelist page with id={identifier}");
 
         Self {
@@ -125,7 +125,7 @@ impl IndexPage {
         })
     }
 
-    pub fn get_identifier(&self) -> IndexPageId {
+    pub fn get_identifier(&self) -> ValueIndexPageId {
         self.header.identifier
     }
 
@@ -383,7 +383,7 @@ impl ValueIndex {
     }
 
     #[inline]
-    fn get_page_file_path(&self, page_id: &IndexPageId) -> std::path::PathBuf {
+    fn get_page_file_path(&self, page_id: &ValueIndexPageId) -> std::path::PathBuf {
         self.params.db_path.join(format!("vindex{page_id:08}.data"))
     }
 
@@ -456,7 +456,7 @@ impl ValueIndex {
     pub async fn mark_batch_as_deleted(
         &self,
         batch_id: ValueBatchId,
-    ) -> Result<(IndexPageId, u16), Error> {
+    ) -> Result<(ValueIndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
 
@@ -471,7 +471,7 @@ impl ValueIndex {
     /// Only used during recovery
     pub async fn mark_batch_as_deleted_at(
         &self,
-        page_id: IndexPageId,
+        page_id: ValueIndexPageId,
         index: u16,
     ) -> Result<(), Error> {
         let mut pages = self.pages.write().await;
@@ -485,7 +485,7 @@ impl ValueIndex {
     pub async fn mark_batch_as_compacted(
         &self,
         batch_id: ValueBatchId,
-    ) -> Result<(IndexPageId, u16), Error> {
+    ) -> Result<(ValueIndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
 
@@ -494,7 +494,10 @@ impl ValueIndex {
         Ok((page.get_identifier(), offset))
     }
 
-    pub async fn mark_value_as_deleted(&self, vid: ValueId) -> Result<(IndexPageId, u16), Error> {
+    pub async fn mark_value_as_deleted(
+        &self,
+        vid: ValueId,
+    ) -> Result<(ValueIndexPageId, u16), Error> {
         let mut pages = self.pages.write().await;
         let page_idx = Self::find_page_idx(&pages, vid.0).expect("Outdated batch?");
 
@@ -522,7 +525,7 @@ impl ValueIndex {
         Ok((page_id, offset))
     }
 
-    pub async fn mark_value_as_deleted_at(&self, page_id: IndexPageId, offset: u16) {
+    pub async fn mark_value_as_deleted_at(&self, page_id: ValueIndexPageId, offset: u16) {
         let mut pages = self.pages.write().await;
 
         match pages.binary_search_by_key(&page_id, |(_, p)| p.get_identifier()) {

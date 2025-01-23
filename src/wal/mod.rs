@@ -8,7 +8,7 @@ use tokio::sync::{Notify, oneshot};
 use zerocopy::IntoBytes;
 
 #[cfg(feature = "wisckey")]
-use crate::values::{IndexPageId, ValueIndex};
+use crate::values::{ValueIndex, ValueIndexPageId};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, WriteOp};
@@ -30,9 +30,9 @@ mod tests;
 pub enum LogEntry<'a> {
     Write(&'a WriteOp),
     #[cfg(feature = "wisckey")]
-    DeleteBatch(IndexPageId, u16),
+    DeleteBatch(ValueIndexPageId, u16),
     #[cfg(feature = "wisckey")]
-    DeleteValue(IndexPageId, u16),
+    DeleteValue(ValueIndexPageId, u16),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]

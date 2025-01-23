@@ -28,7 +28,7 @@ type BatchShard = LruCache<ValueBatchId, Arc<ValueBatch>>;
 mod tests;
 
 mod index;
-pub use index::{IndexPageId, MIN_VALUE_INDEX_PAGE_ID, ValueIndex};
+pub use index::{MIN_VALUE_INDEX_PAGE_ID, ValueIndex, ValueIndexPageId};
 
 mod batch;
 use batch::ValueBatch;
@@ -190,7 +190,7 @@ impl ValueLog {
         }
 
         log::debug!("Full removed {} value batches", new_minimum - batch_id + 1);
-        self.manifest.set_minimum_value_batch(new_minimum).await;
+        self.manifest.set_minimum_value_batch_id(new_minimum).await;
 
         Ok(())
     }
