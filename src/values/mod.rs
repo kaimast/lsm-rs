@@ -101,15 +101,22 @@ impl ValueLog {
         params: Arc<Params>,
         manifest: Arc<Manifest>,
         freelist: ValueFreelist,
+        to_delete: Vec<ValueBatchId>,
     ) -> Result<Self, Error> {
         let batch_caches = Self::init_caches(&params);
-        Ok(Self {
+        let obj = Self {
             wal,
             freelist,
             params,
             manifest,
             batch_caches,
-        })
+        };
+
+        for batch_id in to_delete.into_iter() {
+            obj.remove_batch_from_disk(batch_id).await?;
+        }
+
+        Ok(obj)
     }
 
     /// Marks a value as unused and, potentially, removes old value batches
@@ -146,6 +153,11 @@ impl ValueLog {
         self.freelist.mark_batch_as_deleted(batch_id).await?;
 
         // Hold lock so nobody else messes with the file while we do this
+        self.remove_batch_from_disk(batch_id).await?;
+        Ok(true)
+    }
+
+    async fn remove_batch_from_disk(&self, batch_id: ValueBatchId) -> Result<(), Error> {
         let shard_id = Self::batch_to_shard_id(batch_id);
         let mut cache = self.batch_caches[shard_id].lock().await;
         let fpath = self.get_batch_file_path(&batch_id);
@@ -164,25 +176,23 @@ impl ValueLog {
         // We can only completely remove batches starting from the oldest one
         // Instead, we "empty" the batch, reducing its size to a single on-disk page
         if batch_id > min_batch {
-            return Ok(true);
+            return Ok(());
         }
 
-        {
-            let most_recent = self.manifest.most_recent_value_batch_id().await;
-            let mut new_minimum = batch_id;
+        let most_recent = self.manifest.most_recent_value_batch_id().await;
+        let mut new_minimum = batch_id;
 
-            while new_minimum < most_recent {
-                if self.freelist.count_active_entries(batch_id).await > 0 {
-                    break;
-                }
-                new_minimum += 1;
+        while new_minimum < most_recent {
+            if self.freelist.count_active_entries(batch_id).await > 0 {
+                break;
             }
-
-            log::debug!("Full removed {} value batches", new_minimum - batch_id + 1);
-            self.manifest.set_minimum_value_batch(new_minimum).await;
+            new_minimum += 1;
         }
 
-        Ok(true)
+        log::debug!("Full removed {} value batches", new_minimum - batch_id + 1);
+        self.manifest.set_minimum_value_batch(new_minimum).await;
+
+        Ok(())
     }
 
     /// Check if we should reinsert entries from this batch

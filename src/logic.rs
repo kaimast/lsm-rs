@@ -184,16 +184,15 @@ impl DbLogic {
             cfg_if! {
                 if #[cfg(feature="wisckey")] {
                     let mut freelist = ValueFreelist::open(params.clone(), manifest.clone()).await?;
-                    wal = Arc::new(
+                    let (w, recovery_result) =
                         WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable, &mut freelist)
-                            .await?,
-                    );
-                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), freelist).await?);
+                            .await?;
+                    wal = Arc::new(w);
+                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), freelist, recovery_result.value_batches_to_delete).await?);
                 } else {
-                    wal = Arc::new(
-                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                            .await?,
-                    );
+                    let (w, _) = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?;
+
+                    wal = Arc::new(w);
                 }
             }
 

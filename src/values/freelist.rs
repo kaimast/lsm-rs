@@ -239,7 +239,7 @@ impl FreelistPage {
         (start_pos, end_pos)
     }
 
-    /// Mark a value as deleted
+    /// Mark a value as deleted (using its id)
     ///
     /// - Returns the offset within the page that got changed
     /// - Changes will not be persisted until we sync()
@@ -260,16 +260,33 @@ impl FreelistPage {
         (start_pos as u16) + (vid.1 as u16)
     }
 
+    /// Mark a value as deleted (using its offset within the page)
+    pub fn mark_value_as_deleted_at(&mut self, offset: u16) {
+        let mut marker = self
+            .entries
+            .get_mut(offset as usize)
+            .expect("Offset out of range");
+
+        if *marker {
+            *marker = false;
+            self.dirty = true;
+        }
+    }
+
     pub fn mark_batch_as_deleted(&mut self, batch_id: ValueBatchId) -> u16 {
-        let idx = batch_id - self.header.start_batch;
-        let marker = self.batches.get_mut(idx as usize).expect("Out of range?");
+        let idx = (batch_id - self.header.start_batch) as u16;
+        self.mark_batch_as_deleted_at(idx);
+        idx
+    }
+
+    pub fn mark_batch_as_deleted_at(&mut self, index: u16) {
+        let marker = self.batches.get_mut(index as usize).expect("Out of range?");
 
         if *marker == ValueBatchState::Deleted {
             panic!("Batch already deleted?");
         }
 
         *marker = ValueBatchState::Deleted;
-        idx as u16
     }
 
     pub fn mark_batch_as_compacted(&mut self, batch_id: ValueBatchId) -> u16 {
@@ -286,18 +303,6 @@ impl FreelistPage {
 
         *marker = ValueBatchState::Deleted;
         idx as u16
-    }
-
-    pub fn unset_entry(&mut self, offset: u16) {
-        let mut marker = self
-            .entries
-            .get_mut(offset as usize)
-            .expect("Offset out of range");
-
-        if *marker {
-            *marker = false;
-            self.dirty = true;
-        }
     }
 }
 
@@ -458,6 +463,23 @@ impl ValueFreelist {
         Ok((page.get_identifier(), offset))
     }
 
+    /// Mark a batch at the specififed page and offset as
+    /// deleted
+    ///
+    /// Only used during recovery
+    pub async fn mark_batch_as_deleted_at(
+        &self,
+        page_id: FreelistPageId,
+        index: u16,
+    ) -> Result<(), Error> {
+        let mut pages = self.pages.write().await;
+        match pages.binary_search_by_key(&page_id, |(_, p)| p.get_identifier()) {
+            Ok(idx) => pages[idx].1.mark_batch_as_deleted_at(index),
+            Err(_) => panic!("No page with id={page_id}"),
+        }
+        Ok(())
+    }
+
     pub async fn mark_batch_as_compacted(
         &self,
         batch_id: ValueBatchId,
@@ -501,11 +523,11 @@ impl ValueFreelist {
         Ok((page_id, offset))
     }
 
-    pub async fn unset_entry(&self, page_id: FreelistPageId, offset: u16) {
+    pub async fn mark_value_as_deleted_at(&self, page_id: FreelistPageId, offset: u16) {
         let mut pages = self.pages.write().await;
 
         match pages.binary_search_by_key(&page_id, |(_, p)| p.get_identifier()) {
-            Ok(idx) => pages[idx].1.unset_entry(offset),
+            Ok(idx) => pages[idx].1.mark_value_as_deleted_at(offset),
             Err(_) => panic!("No page with id={page_id}"),
         }
     }

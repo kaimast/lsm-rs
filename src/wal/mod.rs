@@ -5,6 +5,8 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, oneshot};
 
+use zerocopy::IntoBytes;
+
 #[cfg(feature = "wisckey")]
 use crate::values::{FreelistPageId, ValueFreelist};
 
@@ -15,6 +17,7 @@ mod writer;
 use writer::WalWriter;
 
 mod reader;
+pub use reader::RecoveryResult;
 use reader::WalReader;
 
 #[cfg(test)]
@@ -44,11 +47,7 @@ impl TryFrom<u8> for LogEntryType {
     type Error = ();
 
     fn try_from(val: u8) -> Result<Self, ()> {
-        for option in [
-            Self::Write,
-            Self::DeleteValue,
-            Self::DeleteBatch,
-        ] {
+        for option in [Self::Write, Self::DeleteValue, Self::DeleteBatch] {
             if val == (option as u8) {
                 return Ok(option);
             }
@@ -184,24 +183,27 @@ impl WriteAheadLog {
         start_position: u64,
         memtable: &mut Memtable,
         freelist: &mut ValueFreelist,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, RecoveryResult), Error> {
         // This reads the file(s) in the current thread
-        // because we cannot send stuff between threads easily
+        // because we cannot send it between threads easily
 
         let start_position = start_position as usize;
 
         let mut reader = WalReader::new(params.clone(), start_position).await?;
 
-        let position = reader.run(memtable, freelist).await?;
+        let result = reader.run(memtable, freelist).await?;
 
-        let status = LogStatus::new(position, start_position);
+        let status = LogStatus::new(result.new_position, start_position);
         let inner = Arc::new(LogInner::new(status));
-        let finish_receiver = Self::continue_writer(inner.clone(), position, params);
+        let finish_receiver = Self::continue_writer(inner.clone(), result.new_position, params);
 
-        Ok(Self {
-            inner,
-            finish_receiver: Mutex::new(Some(finish_receiver)),
-        })
+        Ok((
+            Self {
+                inner,
+                finish_receiver: Mutex::new(Some(finish_receiver)),
+            },
+            result,
+        ))
     }
 
     #[cfg(not(feature = "wisckey"))]
@@ -209,7 +211,7 @@ impl WriteAheadLog {
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, RecoveryResult), Error> {
         // This reads the file(s) in the current thread
         // because we cannot send stuff between threads easily
 
@@ -217,16 +219,19 @@ impl WriteAheadLog {
 
         let mut reader = WalReader::new(params.clone(), start_position).await?;
 
-        let position = reader.run(memtable).await?;
+        let result = reader.run(memtable).await?;
 
-        let status = LogStatus::new(position, start_position);
+        let status = LogStatus::new(result.new_position, start_position);
         let inner = Arc::new(LogInner::new(status));
-        let finish_receiver = Self::continue_writer(inner.clone(), position, params);
+        let finish_receiver = Self::continue_writer(inner.clone(), result.new_position, params);
 
-        Ok(Self {
-            inner,
-            finish_receiver: Mutex::new(Some(finish_receiver)),
-        })
+        Ok((
+            Self {
+                inner,
+                finish_receiver: Mutex::new(Some(finish_receiver)),
+            },
+            result,
+        ))
     }
 
     /// Spawns the background task that will actually write
@@ -315,19 +320,18 @@ impl WriteAheadLog {
 
             match entry {
                 LogEntry::Write(op) => {
-                    let op_type = op.get_type().to_le_bytes();
-
+                    let op_type = op.get_type();
                     let key = op.get_key();
-                    let klen = op.get_key_length().to_le_bytes();
-                    let vlen = op.get_value_length().to_le_bytes();
+                    let klen = op.get_key_length();
+                    let vlen = op.get_value_length();
 
-                    data.extend_from_slice(op_type.as_slice());
-                    data.extend_from_slice(klen.as_slice());
+                    data.extend_from_slice(op_type.as_bytes());
+                    data.extend_from_slice(klen.as_bytes());
                     data.extend_from_slice(key);
 
                     match op {
                         WriteOp::Put(_, value) => {
-                            data.extend_from_slice(vlen.as_slice());
+                            data.extend_from_slice(vlen.as_bytes());
                             data.extend_from_slice(value);
                         }
                         WriteOp::Delete(_) => {}
@@ -336,14 +340,9 @@ impl WriteAheadLog {
                     writes.push(data);
                 }
                 #[cfg(feature = "wisckey")]
-                LogEntry::DeleteValue(page_id, offset)
-                | LogEntry::DeleteBatch(page_id, offset) => {
-                    let page_id = page_id.to_le_bytes();
-                    let offset = offset.to_le_bytes();
-
-                    data.extend_from_slice(page_id.as_slice());
-                    data.extend_from_slice(offset.as_slice());
-
+                LogEntry::DeleteValue(page_id, offset) | LogEntry::DeleteBatch(page_id, offset) => {
+                    data.extend_from_slice(page_id.as_bytes());
+                    data.extend_from_slice(offset.as_bytes());
                     writes.push(data);
                 }
             }

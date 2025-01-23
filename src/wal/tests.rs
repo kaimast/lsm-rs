@@ -51,7 +51,7 @@ async fn reopen_wal(params: Arc<Params>, offset: u64) -> (Memtable, WriteAheadLo
 
     let manifest = Arc::new(Manifest::new(params.clone()).await);
     let mut freelist = ValueFreelist::new(params.clone(), manifest);
-    let wal = WriteAheadLog::open(params, offset, &mut memtable, &mut freelist)
+    let (wal, _) = WriteAheadLog::open(params, offset, &mut memtable, &mut freelist)
         .await
         .unwrap();
 
@@ -62,7 +62,7 @@ async fn reopen_wal(params: Arc<Params>, offset: u64) -> (Memtable, WriteAheadLo
 async fn reopen_wal(params: Arc<Params>, offset: u64) -> (Memtable, WriteAheadLog) {
     let mut memtable = Memtable::new(0);
 
-    let wal = WriteAheadLog::open(params, offset, &mut memtable)
+    let (wal, _) = WriteAheadLog::open(params, offset, &mut memtable)
         .await
         .unwrap();
 

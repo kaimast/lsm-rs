@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use zerocopy::FromBytes;
+
 #[cfg(feature = "wisckey")]
-use crate::values::ValueFreelist;
+use crate::values::{ValueBatchId, ValueFreelist};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, disk};
@@ -13,6 +15,14 @@ pub struct WalReader {
     params: Arc<Params>,
     position: usize,
     current_page: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct RecoveryResult {
+    pub new_position: usize,
+    pub entries_recovered: usize,
+    #[cfg(feature = "wisckey")]
+    pub value_batches_to_delete: Vec<ValueBatchId>,
 }
 
 impl WalReader {
@@ -39,10 +49,10 @@ impl WalReader {
         &mut self,
         memtable: &mut Memtable,
         freelist: &mut ValueFreelist,
-    ) -> Result<usize, Error> {
-        // Re-insert ops into memtable
-        let mut count = 0;
+    ) -> Result<RecoveryResult, Error> {
+        let mut result = RecoveryResult::default();
 
+        // Re-insert ops into memtable
         loop {
             let mut log_type = [0u8; 1];
             let success = self.read_from_log(&mut log_type[..], true).await?;
@@ -61,18 +71,22 @@ impl WalReader {
                 panic!("Unexpected log entry type! {}", log_type[0]);
             }
 
-            count += 1;
+            result.entries_recovered += 1;
         }
 
-        log::debug!("Found {count} entries in write-ahead log");
-        Ok(self.position)
+        log::debug!(
+            "Found {} entries in write-ahead log",
+            result.entries_recovered
+        );
+        result.new_position = self.position;
+        Ok(result)
     }
 
     #[cfg(not(feature = "wisckey"))]
-    pub async fn run(&mut self, memtable: &mut Memtable) -> Result<usize, Error> {
-        // Re-insert ops into memtable
-        let mut count = 0;
+    pub async fn run(&mut self, memtable: &mut Memtable) -> Result<RecoveryResult, Error> {
+        let mut result = RecoveryResult::default();
 
+        // Re-insert ops into memtable
         loop {
             let mut log_type = [0u8; 1];
             let success = self.read_from_log(&mut log_type[..], true).await?;
@@ -87,11 +101,15 @@ impl WalReader {
                 panic!("Unexpected log entry type!");
             }
 
-            count += 1;
+            result.entries_recovered += 1;
         }
 
-        log::debug!("Found {count} entries in write-ahead log");
-        Ok(self.position)
+        log::debug!(
+            "Found {} entries in write-ahead log",
+            result.entries_recovered
+        );
+        result.new_position = self.position;
+        Ok(result)
     }
 
     async fn parse_write_entry(&mut self, memtable: &mut Memtable) -> Result<(), Error> {
@@ -127,20 +145,21 @@ impl WalReader {
         Ok(())
     }
 
+    async fn read_value<T: Sized + FromBytes>(&mut self) -> Result<T, Error> {
+        let mut data = vec![0u8; std::mem::size_of::<T>()];
+        self.read_from_log(&mut data, false).await?;
+        Ok(T::read_from_bytes(&data).unwrap())
+    }
+
     #[cfg(feature = "wisckey")]
     async fn parse_value_deletion_entry(
         &mut self,
         freelist: &mut ValueFreelist,
     ) -> Result<(), Error> {
-        let mut page_id = [0u8; std::mem::size_of::<u64>()];
-        self.read_from_log(&mut page_id, false).await?;
-        let page_id = u64::from_le_bytes(page_id);
+        let page_id = self.read_value().await?;
+        let offset = self.read_value().await?;
+        freelist.mark_value_as_deleted_at(page_id, offset).await;
 
-        let mut offset = [0u8; std::mem::size_of::<u16>()];
-        self.read_from_log(&mut offset, false).await?;
-        let offset = u16::from_le_bytes(offset);
-
-        freelist.unset_entry(page_id, offset).await;
         Ok(())
     }
 
@@ -149,15 +168,9 @@ impl WalReader {
         &mut self,
         freelist: &mut ValueFreelist,
     ) -> Result<(), Error> {
-        let mut page_id = [0u8; std::mem::size_of::<u64>()];
-        self.read_from_log(&mut page_id, false).await?;
-        let page_id = u64::from_le_bytes(page_id);
-
-        let mut offset = [0u8; std::mem::size_of::<u16>()];
-        self.read_from_log(&mut offset, false).await?;
-        let offset = u16::from_le_bytes(offset);
-
-        freelist.delete_batch(page_id, offset).await;
+        let page_id = self.read_value().await?;
+        let offset = self.read_value().await?;
+        freelist.mark_batch_as_deleted_at(page_id, offset).await?;
         Ok(())
     }
 
