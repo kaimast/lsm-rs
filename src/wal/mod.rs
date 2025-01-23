@@ -27,25 +27,45 @@ mod tests;
 pub enum LogEntry<'a> {
     Write(&'a WriteOp),
     #[cfg(feature = "wisckey")]
-    CompactBatch(FreelistPageId, u16),
+    DeleteBatch(FreelistPageId, u16),
     #[cfg(feature = "wisckey")]
-    ValueDeletion(FreelistPageId, u16),
+    DeleteValue(FreelistPageId, u16),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+enum LogEntryType {
+    Write,
+    DeleteValue,
+    DeleteBatch,
+}
+
+impl TryFrom<u8> for LogEntryType {
+    type Error = ();
+
+    fn try_from(val: u8) -> Result<Self, ()> {
+        for option in [
+            Self::Write,
+            Self::DeleteValue,
+            Self::DeleteBatch,
+        ] {
+            if val == (option as u8) {
+                return Ok(option);
+            }
+        }
+
+        Err(())
+    }
 }
 
 impl LogEntry<'_> {
-    const WRITE: u8 = 0;
-    #[cfg(feature = "wisckey")]
-    const VALUE_DELETION: u8 = 1;
-    #[cfg(feature = "wisckey")]
-    const COMPACT_BATCH: u8 = 2;
-
-    pub fn get_type(&self) -> u8 {
+    fn get_type(&self) -> LogEntryType {
         match self {
-            Self::Write(_) => Self::WRITE,
+            Self::Write(_) => LogEntryType::Write,
             #[cfg(feature = "wisckey")]
-            Self::ValueDeletion(_, _) => Self::VALUE_DELETION,
+            Self::DeleteValue(_, _) => LogEntryType::DeleteValue,
             #[cfg(feature = "wisckey")]
-            Self::CompactBatch(_, _) => Self::COMPACT_BATCH,
+            Self::DeleteBatch(_, _) => LogEntryType::DeleteBatch,
         }
     }
 }
@@ -291,7 +311,7 @@ impl WriteAheadLog {
         let mut writes = vec![];
 
         for entry in batch {
-            let mut data = vec![entry.get_type()];
+            let mut data = vec![entry.get_type() as u8];
 
             match entry {
                 LogEntry::Write(op) => {
@@ -316,17 +336,8 @@ impl WriteAheadLog {
                     writes.push(data);
                 }
                 #[cfg(feature = "wisckey")]
-                LogEntry::ValueDeletion(page_id, offset) => {
-                    let page_id = page_id.to_le_bytes();
-                    let offset = offset.to_le_bytes();
-
-                    data.extend_from_slice(page_id.as_slice());
-                    data.extend_from_slice(offset.as_slice());
-
-                    writes.push(data);
-                }
-                #[cfg(feature = "wisckey")]
-                LogEntry::CompactBatch(page_id, offset) => {
+                LogEntry::DeleteValue(page_id, offset)
+                | LogEntry::DeleteBatch(page_id, offset) => {
                     let page_id = page_id.to_le_bytes();
                     let offset = offset.to_le_bytes();
 

@@ -118,7 +118,7 @@ impl ValueLog {
     pub async fn mark_value_deleted(&self, vid: ValueId) -> Result<EntryList, Error> {
         let (page_id, page_offset) = self.freelist.mark_value_as_deleted(vid).await?;
         self.wal
-            .store(&[LogEntry::ValueDeletion(page_id, page_offset)])
+            .store(&[LogEntry::DeleteValue(page_id, page_offset)])
             .await?;
 
         let res = if self.try_to_remove(page_id).await? {

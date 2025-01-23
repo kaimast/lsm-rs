@@ -27,9 +27,27 @@ struct FreelistPageHeader {
     num_entries: u64,
 }
 
-const STATE_ACTIVE: u8 = 0;
-const STATE_COMPACTED: u8 = 0;
-const STATE_DELETED: u8 = 0;
+#[derive(KnownLayout, Immutable, IntoBytes, PartialEq, Eq, Copy, Clone)]
+#[repr(u8)]
+enum ValueBatchState {
+    Active = 0,
+    Compacted = 1,
+    Deleted = 2,
+}
+
+impl TryFrom<u8> for ValueBatchState {
+    type Error = ();
+
+    fn try_from(val: u8) -> Result<Self, ()> {
+        for option in [Self::Active, Self::Compacted, Self::Deleted] {
+            if val == option as u8 {
+                return Ok(option);
+            }
+        }
+
+        Err(())
+    }
+}
 
 /// An (up to) 4kb chunk of the freelist
 ///
@@ -48,7 +66,7 @@ struct FreelistPage {
 
     /// Tracks which batches in this freelist have already
     /// been garbage collected
-    batches: Vec<u8>,
+    batches: Vec<ValueBatchState>,
 
     /// The actual bitmap
     entries: BitVec<u8>,
@@ -92,7 +110,10 @@ impl FreelistPage {
         }
 
         let len = header.num_batches as usize;
-        let batches = data[..len].to_vec();
+        let batches: Vec<ValueBatchState> = data[..len]
+            .iter()
+            .map(|s| (*s).try_into().expect("Invalid state"))
+            .collect();
         let entries = BitVec::from_slice(&data[len..]);
 
         Ok(Self {
@@ -130,7 +151,7 @@ impl FreelistPage {
             self.header.num_batches += 1;
 
             self.offsets.push(current_entries as u16);
-            self.batches.push(STATE_ACTIVE);
+            self.batches.push(ValueBatchState::Active);
 
             // We assume all entries are in use for a new batch
             self.entries.resize(current_entries + num_entries, true);
@@ -243,11 +264,11 @@ impl FreelistPage {
         let idx = batch_id - self.header.start_batch;
         let marker = self.batches.get_mut(idx as usize).expect("Out of range?");
 
-        if *marker == STATE_DELETED {
+        if *marker == ValueBatchState::Deleted {
             panic!("Batch already deleted?");
         }
 
-        *marker = STATE_DELETED;
+        *marker = ValueBatchState::Deleted;
         idx as u16
     }
 
@@ -255,15 +276,15 @@ impl FreelistPage {
         let idx = batch_id - self.header.start_batch;
         let marker = self.batches.get_mut(idx as usize).expect("Out of range?");
 
-        if *marker == STATE_COMPACTED {
+        if *marker == ValueBatchState::Compacted {
             panic!("Batch already compacted?");
         }
 
-        if *marker == STATE_DELETED {
+        if *marker == ValueBatchState::Deleted {
             panic!("Batch already deleted?");
         }
 
-        *marker = STATE_COMPACTED;
+        *marker = ValueBatchState::Deleted;
         idx as u16
     }
 

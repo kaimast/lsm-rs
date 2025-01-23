@@ -6,7 +6,7 @@ use crate::values::ValueFreelist;
 use crate::memtable::Memtable;
 use crate::{Error, Params, disk};
 
-use super::{LogEntry, PAGE_SIZE, WalWriter, WriteOp};
+use super::{LogEntryType, PAGE_SIZE, WalWriter, WriteOp};
 
 /// WAL reader used during recovery
 pub struct WalReader {
@@ -51,10 +51,12 @@ impl WalReader {
                 break;
             }
 
-            if log_type[0] == LogEntry::WRITE {
+            if log_type[0] == LogEntryType::Write as u8 {
                 self.parse_write_entry(memtable).await?
-            } else if log_type[0] == LogEntry::VALUE_DELETION {
+            } else if log_type[0] == LogEntryType::DeleteValue as u8 {
                 self.parse_value_deletion_entry(freelist).await?
+            } else if log_type[0] == LogEntryType::DeleteBatch as u8 {
+                self.parse_batch_deletion_entry(freelist).await?
             } else {
                 panic!("Unexpected log entry type! {}", log_type[0]);
             }
@@ -79,7 +81,7 @@ impl WalReader {
                 break;
             }
 
-            if log_type[0] == LogEntry::WRITE {
+            if log_type[0] == LogEntryType::Write as u8 {
                 self.parse_write_entry(memtable).await?
             } else {
                 panic!("Unexpected log entry type!");
@@ -139,6 +141,23 @@ impl WalReader {
         let offset = u16::from_le_bytes(offset);
 
         freelist.unset_entry(page_id, offset).await;
+        Ok(())
+    }
+
+    #[cfg(feature = "wisckey")]
+    async fn parse_batch_deletion_entry(
+        &mut self,
+        freelist: &mut ValueFreelist,
+    ) -> Result<(), Error> {
+        let mut page_id = [0u8; std::mem::size_of::<u64>()];
+        self.read_from_log(&mut page_id, false).await?;
+        let page_id = u64::from_le_bytes(page_id);
+
+        let mut offset = [0u8; std::mem::size_of::<u16>()];
+        self.read_from_log(&mut offset, false).await?;
+        let offset = u16::from_le_bytes(offset);
+
+        freelist.delete_batch(page_id, offset).await;
         Ok(())
     }
 
