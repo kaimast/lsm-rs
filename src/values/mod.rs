@@ -121,11 +121,13 @@ impl ValueLog {
             .store(&[LogEntry::ValueDeletion(page_id, page_offset)])
             .await?;
 
-        if try_to_remove(page_id).await? {
-            return Ok(vec![]);
-        }
+        let res = if self.try_to_remove(page_id).await? {
+            vec![]
+        } else {
+            self.try_to_compact(page_id).await?.unwrap_or_else(Vec::new)
+        };
 
-        try_to_compact(page_id).await
+        Ok(res)
     }
 
     /// Attempts to delete empty batches
@@ -141,7 +143,7 @@ impl ValueLog {
         }
 
         log::trace!("Deleting empty batch #{batch_id}");
-        self.freelist.mark_value_batch_deleted(batch);
+        self.freelist.mark_batch_as_deleted(batch_id).await?;
 
         // Hold lock so nobody else messes with the file while we do this
         let shard_id = Self::batch_to_shard_id(batch_id);
@@ -170,14 +172,14 @@ impl ValueLog {
             let mut new_minimum = batch_id;
 
             while new_minimum < most_recent {
-                if self.freelist.count_active_entries(batch_id) > 0 {
+                if self.freelist.count_active_entries(batch_id).await > 0 {
                     break;
                 }
                 new_minimum += 1;
             }
 
             log::debug!("Full removed {} value batches", new_minimum - batch_id + 1);
-            self.manifest.set_minimum_value_batch_id(new_minimum);
+            self.manifest.set_minimum_value_batch(new_minimum).await;
         }
 
         Ok(true)
@@ -196,6 +198,8 @@ impl ValueLog {
         if active_ratio < 25 {
             log::trace!("Re-inserting sparse value batch #{batch_id}");
             let offsets = self.freelist.get_active_entries(batch_id).await;
+            self.freelist.mark_batch_as_compacted(batch_id).await?;
+
             Ok(Some(batch.get_entries(&offsets)))
         } else {
             Ok(None)

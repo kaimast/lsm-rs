@@ -27,13 +27,9 @@ struct FreelistPageHeader {
     num_entries: u64,
 }
 
-#[derive(KnownLayout, Immutable, IntoBytes, FromBytes)]
-#[repr(C)]
-enum ValueBatchState {
-    Active,
-    Compacted,
-    Deleted,
-}
+const STATE_ACTIVE: u8 = 0;
+const STATE_COMPACTED: u8 = 0;
+const STATE_DELETED: u8 = 0;
 
 /// An (up to) 4kb chunk of the freelist
 ///
@@ -52,7 +48,7 @@ struct FreelistPage {
 
     /// Tracks which batches in this freelist have already
     /// been garbage collected
-    state: Vec<ValueBatchState>,
+    batches: Vec<u8>,
 
     /// The actual bitmap
     entries: BitVec<u8>,
@@ -71,7 +67,7 @@ impl FreelistPage {
             },
             dirty: true,
             offsets: Default::default(),
-            compacted: Default::default(),
+            batches: Default::default(),
             entries: Default::default(),
         }
     }
@@ -95,15 +91,15 @@ impl FreelistPage {
             *data = next;
         }
 
-        let len = (header.num_batches as usize).div_ceil(8);
-        let compacted = BitVec::from_slice(&data[..len]);
+        let len = header.num_batches as usize;
+        let batches = data[..len].to_vec();
         let entries = BitVec::from_slice(&data[len..]);
 
         Ok(Self {
             header,
             offsets,
             entries,
-            compacted,
+            batches,
             dirty: false,
         })
     }
@@ -134,7 +130,7 @@ impl FreelistPage {
             self.header.num_batches += 1;
 
             self.offsets.push(current_entries as u16);
-            self.batches.push(ValueBatchState::Active);
+            self.batches.push(STATE_ACTIVE);
 
             // We assume all entries are in use for a new batch
             self.entries.resize(current_entries + num_entries, true);
@@ -241,6 +237,34 @@ impl FreelistPage {
         self.dirty = true;
 
         (start_pos as u16) + (vid.1 as u16)
+    }
+
+    pub fn mark_batch_as_deleted(&mut self, batch_id: ValueBatchId) -> u16 {
+        let idx = batch_id - self.header.start_batch;
+        let marker = self.batches.get_mut(idx as usize).expect("Out of range?");
+
+        if *marker == STATE_DELETED {
+            panic!("Batch already deleted?");
+        }
+
+        *marker = STATE_DELETED;
+        idx as u16
+    }
+
+    pub fn mark_batch_as_compacted(&mut self, batch_id: ValueBatchId) -> u16 {
+        let idx = batch_id - self.header.start_batch;
+        let marker = self.batches.get_mut(idx as usize).expect("Out of range?");
+
+        if *marker == STATE_COMPACTED {
+            panic!("Batch already compacted?");
+        }
+
+        if *marker == STATE_DELETED {
+            panic!("Batch already deleted?");
+        }
+
+        *marker = STATE_COMPACTED;
+        idx as u16
     }
 
     pub fn unset_entry(&mut self, offset: u16) {
@@ -399,6 +423,30 @@ impl ValueFreelist {
         let path = self.get_page_file_path(&p.get_identifier());
         p.sync(&path).await?;
         Ok(())
+    }
+
+    pub async fn mark_batch_as_deleted(
+        &self,
+        batch_id: ValueBatchId,
+    ) -> Result<(FreelistPageId, u16), Error> {
+        let mut pages = self.pages.write().await;
+        let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
+
+        let page = &mut pages[page_idx].1;
+        let offset = page.mark_batch_as_deleted(batch_id);
+        Ok((page.get_identifier(), offset))
+    }
+
+    pub async fn mark_batch_as_compacted(
+        &self,
+        batch_id: ValueBatchId,
+    ) -> Result<(FreelistPageId, u16), Error> {
+        let mut pages = self.pages.write().await;
+        let page_idx = Self::find_page_idx(&pages, batch_id).expect("Outdated batch?");
+
+        let page = &mut pages[page_idx].1;
+        let offset = page.mark_batch_as_compacted(batch_id);
+        Ok((page.get_identifier(), offset))
     }
 
     pub async fn mark_value_as_deleted(
