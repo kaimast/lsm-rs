@@ -16,12 +16,12 @@ use crate::manifest::{LevelId, Manifest};
 use crate::memtable::{
     ImmMemtableRef, Memtable, MemtableEntry, MemtableEntryRef, MemtableIterator, MemtableRef,
 };
-use crate::sorted_table::{InternalIterator, Key, TableId, TableIterator};
-use crate::wal::WriteAheadLog;
-use crate::{Error, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
+use crate::sorted_table::{InternalIterator, TableId, TableIterator};
+use crate::wal::{LogEntry, WriteAheadLog};
+use crate::{Error, Key, Params, StartMode, WriteBatch, WriteOp, WriteOptions};
 
 #[cfg(feature = "wisckey")]
-use crate::values::{ValueLog, ValueRef};
+use crate::values::{ValueIndex, ValueLog, ValueRef};
 
 use crate::data_blocks::DataEntry;
 
@@ -70,7 +70,7 @@ pub struct DbLogic {
     imm_memtables: RwLock<VecDeque<(u64, ImmMemtableRef)>>,
     imm_cond: Condvar,
     levels: Vec<Level>,
-    wal: WriteAheadLog,
+    wal: Arc<WriteAheadLog>,
     level_logger: Option<LevelLogger>,
 
     #[cfg(feature = "wisckey")]
@@ -134,6 +134,9 @@ impl DbLogic {
         let memtable;
         let wal;
 
+        #[cfg(feature = "wisckey")]
+        let value_log;
+
         if create {
             cfg_if! {
                 if #[ cfg(feature="_async-io") ] {
@@ -143,7 +146,7 @@ impl DbLogic {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(err) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
+                            return Err(Error::from_io_error(format!("Failed to create DB folder: {err}"), err));
                         }
                     }
                 } else {
@@ -153,7 +156,7 @@ impl DbLogic {
                             log::info!("Created database folder at \"{}\"", params.db_path.to_str().unwrap())
                         }
                         Err(err) => {
-                            return Err(Error::Io(format!("Failed to create DB folder: {err}")));
+                            return Err(Error::from_io_error(format!("Failed to create DB folder: {err}"), err));
                         }
                     }
                 }
@@ -161,7 +164,13 @@ impl DbLogic {
 
             manifest = Arc::new(Manifest::new(params.clone()).await);
             memtable = RwLock::new(MemtableRef::wrap(Memtable::new(1)));
-            wal = WriteAheadLog::new(params.clone()).await?;
+            wal = Arc::new(WriteAheadLog::new(params.clone()).await?);
+
+            #[cfg(feature = "wisckey")]
+            {
+                value_log =
+                    Arc::new(ValueLog::new(wal.clone(), params.clone(), manifest.clone()).await?);
+            }
         } else {
             log::info!(
                 "Opening database folder at \"{}\"",
@@ -171,14 +180,24 @@ impl DbLogic {
             manifest = Arc::new(Manifest::open(params.clone()).await?);
 
             let mut mtable = Memtable::new(manifest.get_seq_number_offset().await);
-            wal = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable)
-                .await?;
+
+            cfg_if! {
+                if #[cfg(feature="wisckey")] {
+                    let mut value_index = ValueIndex::open(params.clone(), manifest.clone()).await?;
+                    let (w, recovery_result) =
+                        WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable, &mut value_index)
+                            .await?;
+                    wal = Arc::new(w);
+                    value_log = Arc::new(ValueLog::open(wal.clone(), params.clone(), manifest.clone(), value_index, recovery_result.value_batches_to_delete).await?);
+                } else {
+                    let (w, _) = WriteAheadLog::open(params.clone(), manifest.get_log_offset().await, &mut mtable).await?;
+
+                    wal = Arc::new(w);
+                }
+            }
 
             memtable = RwLock::new(MemtableRef::wrap(mtable));
         }
-
-        #[cfg(feature = "wisckey")]
-        let value_log = Arc::new(ValueLog::new(params.clone(), manifest.clone()).await);
 
         let data_blocks = Arc::new(DataBlocks::new(params.clone(), manifest.clone()));
 
@@ -496,7 +515,9 @@ impl DbLogic {
         let mem_inner = unsafe { memtable.get_mut() };
 
         let wal_offset = {
-            let log_pos = self.wal.store(&write_batch.writes).await?;
+            let writes: Vec<_> = write_batch.writes.iter().map(LogEntry::Write).collect();
+
+            let log_pos = self.wal.store(&writes).await?;
 
             if opt.sync {
                 self.wal.sync().await?;
@@ -549,7 +570,7 @@ impl DbLogic {
             // First create table
             let (min_key, max_key) = mem.get().get_min_max_key();
             let l0 = self.levels.first().unwrap();
-            let table_id = self.manifest.next_table_id().await;
+            let table_id = self.manifest.generate_next_table_id().await;
             let mut table_builder = l0.build_table(table_id, min_key.to_vec(), max_key.to_vec());
 
             let memtable_entries = mem.get().get_entries();
@@ -561,7 +582,7 @@ impl DbLogic {
                     for (key, mem_entry) in memtable_entries.into_iter() {
                         match mem_entry {
                             MemtableEntry::Value{seq_number, value} => {
-                                let value_ref = vbuilder.add_value(value).await;
+                                let value_ref = vbuilder.add_entry(&key, &value).await;
                                 table_builder.add_value(&key, seq_number, value_ref).await?;
                             }
                             MemtableEntry::Deletion{seq_number} => {
@@ -592,6 +613,10 @@ impl DbLogic {
             if let Some(logger) = &self.level_logger {
                 logger.l0_table_added();
             }
+
+            // Sync all value index changes to disk
+            #[cfg(feature = "wisckey")]
+            self.value_log.sync().await?;
 
             // Then update manifest and flush WAL
             let seq_offset = mem.get().get_next_seq_number();
@@ -893,8 +918,21 @@ impl DbLogic {
         }
 
         #[cfg(feature = "wisckey")]
-        for vid in deleted_values.into_iter() {
-            self.value_log.mark_value_deleted(vid).await?;
+        {
+            let mut reinsert = WriteBatch::new();
+            for vid in deleted_values.into_iter() {
+                let entries = self.value_log.mark_value_deleted(vid).await?;
+                for (k, v) in entries.into_iter() {
+                    reinsert.put(k, v);
+                }
+            }
+
+            // Reinsert values, if needed to defragment
+            // Old batches will eventually be removed as a result
+            if !reinsert.writes.is_empty() {
+                let opts = WriteOptions { sync: true };
+                self.write_opts(reinsert, &opts).await?;
+            }
         }
 
         if let Some(logger) = &self.level_logger {
@@ -1032,7 +1070,7 @@ mod tests {
                 &logic.levels[1]
             };
 
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1099,7 +1137,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for _ in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1160,7 +1198,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for idx in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let pos = idx * 100;
             let next_pos = (idx + 1) * 100 - 1;
@@ -1240,7 +1278,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for _ in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let min_key = "000".to_string().into_bytes();
             let max_key = "100".to_string().into_bytes();
@@ -1297,7 +1335,7 @@ mod tests {
         // Create five tables with the exact same key entries
         for idx in 0..num_tables {
             let l0 = logic.levels.first().unwrap();
-            let table_id = logic.manifest.next_table_id().await;
+            let table_id = logic.manifest.generate_next_table_id().await;
 
             let pos = idx * 100;
             let next_pos = (idx + 1) * 100 - 1;

@@ -3,9 +3,8 @@ use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use lsm::logic::DbLogic;
-use lsm::sorted_table::{Key, Value};
 use lsm::tasks::{TaskManager, TaskType};
-use lsm::{EntryRef, Error, Params, StartMode, WriteBatch, WriteOptions};
+use lsm::{EntryRef, Error, Key, Params, StartMode, Value, WriteBatch, WriteOptions};
 
 use crate::iterate::DbIterator;
 

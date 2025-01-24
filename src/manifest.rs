@@ -12,12 +12,12 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use tokio::sync::RwLock;
 
-use crate::data_blocks::DataBlockId;
+use crate::data_blocks::{DataBlockId, MIN_DATA_BLOCK_ID};
 use crate::sorted_table::TableId;
 use crate::{Error, Params};
 
 #[cfg(feature = "wisckey")]
-use crate::values::ValueBatchId;
+use crate::values::{MIN_VALUE_BATCH_ID, MIN_VALUE_INDEX_PAGE_ID, ValueBatchId, ValueIndexPageId};
 
 pub type SeqNumber = u64;
 pub type LevelId = u32;
@@ -36,9 +36,22 @@ struct DatabaseMetadata {
     log_offset: u64,
     next_data_block_id: DataBlockId,
     #[cfg(feature = "wisckey")]
-    next_value_batch_id: ValueBatchId,
-    #[cfg(feature = "wisckey")]
-    value_log_offset: ValueBatchId,
+    value_log: ValueLogMetadata,
+}
+
+#[cfg(feature = "wisckey")]
+#[derive(Default, KnownLayout, Immutable, IntoBytes, FromBytes)]
+#[repr(C, align(8))]
+/// Metadata for the Wisckey value log
+///
+/// Invariants
+/// * minimum_batch < next_batch_id
+/// * minimum_freelist_pag < next_freelist_page
+struct ValueLogMetadata {
+    next_batch: ValueBatchId,
+    minimum_batch: ValueBatchId,
+    next_index_page: ValueIndexPageId,
+    minimum_index_page: ValueIndexPageId,
 }
 
 /// For each level there is a file containing
@@ -160,11 +173,14 @@ impl Manifest {
             _padding: 0,
             seq_number_offset: 1,
             log_offset: 0,
-            next_data_block_id: 1,
+            next_data_block_id: MIN_DATA_BLOCK_ID,
             #[cfg(feature = "wisckey")]
-            next_value_batch_id: 1,
-            #[cfg(feature = "wisckey")]
-            value_log_offset: 0,
+            value_log: ValueLogMetadata {
+                next_batch: MIN_VALUE_BATCH_ID,
+                minimum_batch: 0,
+                next_index_page: MIN_VALUE_INDEX_PAGE_ID,
+                minimum_index_page: MIN_VALUE_INDEX_PAGE_ID,
+            },
         };
 
         let mut meta_mmap = {
@@ -229,7 +245,8 @@ impl Manifest {
             .truncate(false)
             .read(true)
             .write(true)
-            .open(manifest_path)?;
+            .open(manifest_path)
+            .map_err(|err| Error::from_io_error("Failed to open manifest", err))?;
 
         let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
@@ -251,7 +268,8 @@ impl Manifest {
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(fname)?;
+                .open(fname)
+                .map_err(|err| Error::from_io_error("Failed to open manifest", err))?;
 
             let data = unsafe { MmapMut::map_mut(&file) }.unwrap();
 
@@ -274,7 +292,7 @@ impl Manifest {
         })
     }
 
-    pub async fn next_data_block_id(&self) -> DataBlockId {
+    pub async fn generate_next_data_block_id(&self) -> DataBlockId {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
@@ -286,7 +304,7 @@ impl Manifest {
         id
     }
 
-    pub async fn next_table_id(&self) -> TableId {
+    pub async fn generate_next_table_id(&self) -> TableId {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
@@ -316,22 +334,40 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn get_value_log_offset(&self) -> u64 {
+    pub async fn get_minimum_value_batch(&self) -> ValueBatchId {
         let mmap = self.metadata.read().await;
         let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
-        meta.value_log_offset
+        meta.value_log.minimum_batch
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn set_value_log_offset(&self, offset: u64) {
+    pub async fn set_minimum_value_batch_id(&self, offset: ValueBatchId) {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
-        assert!(meta.value_log_offset < offset);
-        meta.value_log_offset = offset;
+        assert!(meta.value_log.minimum_batch < offset);
+        meta.value_log.minimum_batch = offset;
 
         mmap.flush().unwrap();
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub async fn set_minimum_value_index_page_id(&self, offset: ValueIndexPageId) {
+        let mut mmap = self.metadata.write().await;
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
+
+        assert!(meta.value_log.minimum_index_page < offset);
+        meta.value_log.minimum_batch = offset;
+
+        mmap.flush().unwrap();
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub async fn get_minimum_value_index_page_id(&self) -> ValueIndexPageId {
+        let mmap = self.metadata.read().await;
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
+        meta.value_log.minimum_index_page
     }
 
     pub async fn get_seq_number_offset(&self) -> SeqNumber {
@@ -359,12 +395,12 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn next_value_batch_id(&self) -> ValueBatchId {
+    pub async fn generate_next_value_index_id(&self) -> ValueIndexPageId {
         let mut mmap = self.metadata.write().await;
         let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
 
-        let id = meta.next_value_batch_id;
-        meta.next_value_batch_id += 1;
+        let id = meta.value_log.next_index_page;
+        meta.value_log.next_index_page += 1;
 
         mmap.flush().unwrap();
 
@@ -372,11 +408,32 @@ impl Manifest {
     }
 
     #[cfg(feature = "wisckey")]
-    pub async fn most_recent_value_batch_id(&self) -> ValueBatchId {
+    pub async fn generate_next_value_batch_id(&self) -> ValueBatchId {
+        let mut mmap = self.metadata.write().await;
+        let meta = DatabaseMetadata::mut_from_bytes(&mut mmap[..]).unwrap();
+
+        let id = meta.value_log.next_batch;
+        meta.value_log.next_batch += 1;
+
+        mmap.flush().unwrap();
+
+        id
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub async fn get_most_recent_value_index_page_id(&self) -> ValueBatchId {
         let mmap = self.metadata.read().await;
         let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
 
-        meta.next_value_batch_id - 1
+        meta.value_log.next_index_page - 1
+    }
+
+    #[cfg(feature = "wisckey")]
+    pub async fn get_most_recent_value_batch_id(&self) -> ValueBatchId {
+        let mmap = self.metadata.read().await;
+        let meta = DatabaseMetadata::ref_from_bytes(&mmap[..]).unwrap();
+
+        meta.value_log.next_batch - 1
     }
 
     /// Get the identifier of all tables on all levels

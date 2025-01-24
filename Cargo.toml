@@ -27,6 +27,7 @@ tokio-uring = { version="0.5", optional=true }
 bloomfilter = { version="3", optional=true }
 monoio = { version="0.2", optional=true, features=["sync"] }
 kioto-uring-executor = { version="0.2", optional=true }
+bitvec = { version="1", optional=true }
 
 [dependencies.tokio]
 version="1"
@@ -49,7 +50,7 @@ path = "src/lib.rs"
 default = ["snappy-compression", "bloom-filters"]
 monoio = ["dep:monoio", "_async-io"]
 snappy-compression = ["dep:snap"]
-wisckey = []
+wisckey = ["dep:bitvec"]
 bloom-filters = ["dep:bloomfilter"]
 tokio-uring = ["dep:tokio-uring", "dep:kioto-uring-executor", "_async-io"]
 _async-io = []

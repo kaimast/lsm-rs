@@ -15,9 +15,13 @@ use std::path::Path;
 use cfg_if::cfg_if;
 
 /// Read from the offset to the end of the file
-/// Not supported by tokio-uring yet, so added as a helper function here
+///
+/// - This is not supported by tokio-uring yet, so it is added as a helper function here
 #[cfg(feature = "_async-io")]
-async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+#[inline(always)]
+#[tracing::instrument]
+pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+    let file = fs::File::open(fpath).await?;
     let mut buffer = vec![0u8; 4096];
     let mut result = vec![];
     let mut pos = offset;
@@ -37,29 +41,24 @@ async fn read_to_end(file: &fs::File, offset: u64) -> Result<Vec<u8>, std::io::E
     }
 }
 
+#[cfg(not(feature = "_async-io"))]
 #[inline(always)]
 #[tracing::instrument]
 pub async fn read_uncompressed(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
-    cfg_if! {
-        if #[ cfg(feature="_async-io") ] {
-            let file = fs::File::open(fpath).await?;
-            let buf = read_to_end(&file, offset).await?;
-        } else {
-            let mut file = fs::File::open(fpath)?;
+    let mut file = fs::File::open(fpath)?;
 
-            if offset > 0 {
-                file.seek(std::io::SeekFrom::Start(offset))?;
-            }
-
-            let mut buf = vec![];
-            file.read_to_end(&mut buf)?;
-
-        }
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))?;
     }
+
+    let mut buf = vec![];
+    file.read_to_end(&mut buf)?;
 
     Ok(buf)
 }
 
+/// Read the contents of the file from the given offset to
+/// its end.
 #[inline(always)]
 #[tracing::instrument]
 pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> {
@@ -75,6 +74,10 @@ pub async fn read(fpath: &Path, offset: u64) -> Result<Vec<u8>, std::io::Error> 
     }
 }
 
+/// Writes the data to the specified file path
+///
+/// This will create the file if it does not exist yet.
+/// It will also compress the data, if enabled.
 #[tracing::instrument(skip(data))]
 #[inline(always)]
 pub async fn write(fpath: &Path, data: &[u8]) -> Result<(), std::io::Error> {
@@ -95,6 +98,10 @@ pub async fn write(fpath: &Path, data: &[u8]) -> Result<(), std::io::Error> {
     write_uncompressed(fpath, compressed).await
 }
 
+/// Writes the uncompressed (even if the feature is enabled)
+/// to the specified file path
+///
+/// This will create the file if it does not exist yet.
 #[tracing::instrument(skip(data))]
 #[inline(always)]
 pub async fn write_uncompressed(fpath: &Path, data: Vec<u8>) -> Result<(), std::io::Error> {
@@ -118,4 +125,15 @@ pub async fn write_uncompressed(fpath: &Path, data: Vec<u8>) -> Result<(), std::
     }
 
     Ok(())
+}
+
+pub async fn remove_file(fpath: &Path) -> Result<(), std::io::Error> {
+    cfg_if! {
+        if #[ cfg(feature="tokio-uring") ] {
+            tokio_uring::fs::remove_file(fpath).await
+        } else {
+            std::fs::remove_file(fpath)?;
+            Ok(())
+        }
+    }
 }

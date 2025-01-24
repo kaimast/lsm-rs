@@ -1,23 +1,14 @@
 #![allow(clippy::await_holding_lock)]
 
-#[cfg(not(feature = "_async-io"))]
-use std::fs::{File, OpenOptions};
-
-#[cfg(not(feature = "_async-io"))]
-use std::io::{Read, Seek};
-
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, oneshot};
 
-#[cfg(feature = "tokio-uring")]
-use tokio_uring::fs::{File, OpenOptions};
+use zerocopy::IntoBytes;
 
-#[cfg(feature = "monoio")]
-use monoio::fs::{File, OpenOptions};
-
-use cfg_if::cfg_if;
+#[cfg(feature = "wisckey")]
+use crate::values::{ValueIndex, ValueIndexPageId};
 
 use crate::memtable::Memtable;
 use crate::{Error, Params, WriteOp};
@@ -25,25 +16,78 @@ use crate::{Error, Params, WriteOp};
 mod writer;
 use writer::WalWriter;
 
+mod reader;
+pub use reader::RecoveryResult;
+use reader::WalReader;
+
 #[cfg(test)]
 mod tests;
 
+/// In the vanilla configuration, the log only stores
+/// write operations.
+/// For Wisckey, it also stores changes to the value_index
+/// to reduce write amplification.
+pub enum LogEntry<'a> {
+    Write(&'a WriteOp),
+    #[cfg(feature = "wisckey")]
+    DeleteBatch(ValueIndexPageId, u16),
+    #[cfg(feature = "wisckey")]
+    DeleteValue(ValueIndexPageId, u16),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+enum LogEntryType {
+    Write,
+    DeleteValue,
+    DeleteBatch,
+}
+
+impl TryFrom<u8> for LogEntryType {
+    type Error = ();
+
+    fn try_from(val: u8) -> Result<Self, ()> {
+        for option in [Self::Write, Self::DeleteValue, Self::DeleteBatch] {
+            if val == (option as u8) {
+                return Ok(option);
+            }
+        }
+
+        Err(())
+    }
+}
+
+impl LogEntry<'_> {
+    fn get_type(&self) -> LogEntryType {
+        match self {
+            Self::Write(_) => LogEntryType::Write,
+            #[cfg(feature = "wisckey")]
+            Self::DeleteValue(_, _) => LogEntryType::DeleteValue,
+            #[cfg(feature = "wisckey")]
+            Self::DeleteBatch(_, _) => LogEntryType::DeleteBatch,
+        }
+    }
+}
+
 /// The log is split individual files (pages) that can be
 /// garbage collected once the logged data is not needed anymore
-const PAGE_SIZE: u64 = 4 * 1024;
+const PAGE_SIZE: usize = 4 * 1024;
 
+/// The state of the log (internal DS shared between writer
+/// task and WAL object)
+///
 /// Invariants:
 ///  - sync_pos <= write_pos <= queue_pos
 ///  - flush_pos <= offset_pos
 struct LogStatus {
     /// Absolute count of queued write operations
-    queue_pos: u64,
+    queue_pos: usize,
 
     /// Absolute count of fulfilled write operations
-    write_pos: u64,
+    write_pos: usize,
 
     /// At what write count did we last invoke sync?
-    sync_pos: u64,
+    sync_pos: usize,
 
     /// Pending data to be written
     queue: Vec<Vec<u8>>,
@@ -53,13 +97,28 @@ struct LogStatus {
 
     /// Where the current flush offset is
     /// (anything below this is not needed anymore)
-    offset_pos: u64,
+    offset_pos: usize,
 
     /// How much has actually been flushed? (cleaned up)
-    flush_pos: u64,
+    flush_pos: usize,
 
     /// Indicates the log should shut down
     stop_flag: bool,
+}
+
+impl LogStatus {
+    fn new(position: usize, start_position: usize) -> Self {
+        Self {
+            queue_pos: position,
+            write_pos: position,
+            sync_pos: position,
+            flush_pos: start_position,
+            offset_pos: start_position,
+            queue: vec![],
+            sync_flag: false,
+            stop_flag: false,
+        }
+    }
 }
 
 struct LogInner {
@@ -68,16 +127,28 @@ struct LogInner {
     write_cond: Notify,
 }
 
+impl LogInner {
+    fn new(status: LogStatus) -> Self {
+        Self {
+            status: RwLock::new(status),
+            queue_cond: Default::default(),
+            write_cond: Default::default(),
+        }
+    }
+}
+
 /// The write-ahead log keeps track of the most recent changes
 /// It can be used to recover from crashes
 pub struct WriteAheadLog {
     inner: Arc<LogInner>,
-    // Allows to wait for the write to shut down
-    finish_receiver: parking_lot::Mutex<Option<oneshot::Receiver<()>>>,
+
+    /// Allows waiting for the background write task to shut down
+    finish_receiver: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl WriteAheadLog {
-    pub async fn new(params: Arc<Params>) -> Result<Self, std::io::Error> {
+    /// Creates a new and empty write-ahead log
+    pub async fn new(params: Arc<Params>) -> Result<Self, Error> {
         let status = LogStatus {
             queue_pos: 0,
             write_pos: 0,
@@ -99,319 +170,182 @@ impl WriteAheadLog {
 
         Ok(Self {
             inner,
-            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
+            finish_receiver: Mutex::new(Some(finish_receiver)),
         })
     }
 
-    fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
-        let (finish_sender, finish_receiver) = oneshot::channel();
-
-        cfg_if::cfg_if! {
-            if #[cfg(feature="monoio")] {
-                {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
-                }
-            } else if #[cfg(feature = "_async-io")] {
-                unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
-                }
-            } else {
-                {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::new(params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-
-                        let _ = finish_sender.send(());
-                    });
-                }
-            }
-        }
-
-        finish_receiver
-    }
-
-    /// Open an existing log
+    /// Open an existing log and insert entries into memtable
+    ///
+    /// This is similar to `new` but fetches state from disk first.
+    #[cfg(feature = "wisckey")]
     pub async fn open(
         params: Arc<Params>,
         start_position: u64,
         memtable: &mut Memtable,
-    ) -> Result<Self, std::io::Error> {
-        // This reads the file(s) in the current thread because we cannot
-        // send stuff between threads easily
+        value_index: &mut ValueIndex,
+    ) -> Result<(Self, RecoveryResult), Error> {
+        // This reads the file(s) in the current thread
+        // because we cannot send it between threads easily
 
-        let mut position = start_position;
-        let mut count: usize = 0;
+        let start_position = start_position as usize;
 
-        let fpos = position / PAGE_SIZE;
+        let mut reader = WalReader::new(params.clone(), start_position).await?;
 
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
-            } else {
-                let file_offset = position % PAGE_SIZE;
-                let mut log_file = WalWriter::open_file(&params, fpos).await?;
-                log_file.seek(std::io::SeekFrom::Start(file_offset)).unwrap();
-            }
-        }
+        let result = reader.run(memtable, value_index).await?;
 
-        // Re-insert ops into memtable
-        loop {
-            const KEY_LEN_SIZE: usize = std::mem::size_of::<u64>();
-            const HEADER_SIZE: usize = std::mem::size_of::<u8>() + KEY_LEN_SIZE;
+        let status = LogStatus::new(result.new_position, start_position);
+        let inner = Arc::new(LogInner::new(status));
+        let finish_receiver = Self::continue_writer(inner.clone(), result.new_position, params);
 
-            let mut op_header = [0u8; HEADER_SIZE];
-            let success = Self::read_from_log(
-                &mut log_file,
-                &mut position,
-                &mut op_header[..],
-                &params,
-                true,
-            )
-            .await?;
-
-            if !success {
-                break;
-            }
-
-            let op_type = op_header[0];
-
-            let key_len_data: &[u8; KEY_LEN_SIZE] = &op_header[1..].try_into().unwrap();
-            let key_len = u64::from_le_bytes(*key_len_data);
-
-            let mut key = vec![0; key_len as usize];
-            Self::read_from_log(&mut log_file, &mut position, &mut key, &params, false)
-                .await
-                .unwrap();
-
-            if op_type == WriteOp::PUT_OP {
-                let mut val_len = [0u8; 8];
-                Self::read_from_log(&mut log_file, &mut position, &mut val_len, &params, false)
-                    .await
-                    .unwrap();
-
-                let val_len = u64::from_le_bytes(val_len);
-                let mut value = vec![0; val_len as usize];
-
-                Self::read_from_log(&mut log_file, &mut position, &mut value, &params, false)
-                    .await
-                    .unwrap();
-                memtable.put(key, value);
-            } else if op_type == WriteOp::DELETE_OP {
-                memtable.delete(key);
-            } else {
-                panic!("Unexpected op type!");
-            }
-
-            count += 1;
-        }
-
-        log::debug!("Found {count} entries in write-ahead log");
-
-        let status = LogStatus {
-            queue_pos: position,
-            write_pos: position,
-            sync_pos: position,
-            flush_pos: start_position,
-            offset_pos: start_position,
-            queue: vec![],
-            sync_flag: false,
-            stop_flag: false,
-        };
-
-        let inner = Arc::new(LogInner {
-            status: RwLock::new(status),
-            queue_cond: Default::default(),
-            write_cond: Default::default(),
-        });
-
-        let finish_receiver = Self::continue_writer(inner.clone(), position, params);
-
-        Ok(Self {
-            inner,
-            finish_receiver: parking_lot::Mutex::new(Some(finish_receiver)),
-        })
+        Ok((
+            Self {
+                inner,
+                finish_receiver: Mutex::new(Some(finish_receiver)),
+            },
+            result,
+        ))
     }
 
-    fn continue_writer(
-        inner: Arc<LogInner>,
-        position: u64,
+    #[cfg(not(feature = "wisckey"))]
+    pub async fn open(
         params: Arc<Params>,
-    ) -> oneshot::Receiver<()> {
+        start_position: u64,
+        memtable: &mut Memtable,
+    ) -> Result<(Self, RecoveryResult), Error> {
+        // This reads the file(s) in the current thread
+        // because we cannot send stuff between threads easily
+
+        let start_position = start_position as usize;
+
+        let mut reader = WalReader::new(params.clone(), start_position).await?;
+
+        let result = reader.run(memtable).await?;
+
+        let status = LogStatus::new(result.new_position, start_position);
+        let inner = Arc::new(LogInner::new(status));
+        let finish_receiver = Self::continue_writer(inner.clone(), result.new_position, params);
+
+        Ok((
+            Self {
+                inner,
+                finish_receiver: Mutex::new(Some(finish_receiver)),
+            },
+            result,
+        ))
+    }
+
+    /// Spawns the background task that will actually write
+    /// to the WAL.
+    ///
+    /// There is exactly one task that writes to the log
+    /// so that we have to worry about ordering less.
+    fn start_writer(inner: Arc<LogInner>, params: Arc<Params>) -> oneshot::Receiver<()> {
         let (finish_sender, finish_receiver) = oneshot::channel();
 
+        let run_writer = async move {
+            let mut writer = WalWriter::new(params).await;
+            let mut done = false;
+
+            while !done {
+                done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
+            }
+            let _ = finish_sender.send(());
+        };
+
         cfg_if::cfg_if! {
-            if #[cfg(feature = "tokio-uring")] {
+            if #[cfg(feature="monoio")] {
+                monoio::spawn(run_writer);
+            } else if #[cfg(feature="tokio-uring")] {
                 unsafe {
-                    kioto_uring_executor::unsafe_spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
-                }
-            } else if #[cfg(feature="monoio")] {
-                {
-                    monoio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
             } else {
-                {
-                    tokio::spawn(async move {
-                        let mut writer = WalWriter::continue_from(position, params).await;
-                        loop {
-                            let done = writer.update_log(&inner).await;
-                            if done {
-                                break;
-                            }
-                        }
-                        let _ = finish_sender.send(());
-                    });
-                }
+                tokio::spawn(run_writer);
             }
         }
 
         finish_receiver
     }
 
-    async fn read_from_log(
-        log_file: &mut File,
-        position: &mut u64,
-        out: &mut [u8],
-        params: &Params,
-        maybe: bool,
-    ) -> Result<bool, std::io::Error> {
-        let start_pos = *position;
-        let buffer_len = out.len() as u64;
-        let mut buffer_pos = 0;
+    /// Start the background task that writes to the log
+    ///
+    /// This is similar to `start_writer`, but when we open
+    /// an existing log.
+    fn continue_writer(
+        inner: Arc<LogInner>,
+        position: usize,
+        params: Arc<Params>,
+    ) -> oneshot::Receiver<()> {
+        let (finish_sender, finish_receiver) = oneshot::channel();
 
-        assert!(buffer_len > 0);
+        let run_writer = async move {
+            let mut writer = WalWriter::continue_from(position, params).await;
+            let mut done = false;
 
-        while buffer_pos < buffer_len {
-            let mut file_offset = *position % PAGE_SIZE;
-            let file_remaining = PAGE_SIZE - file_offset;
-
-            assert!(file_remaining > 0);
-
-            let read_len = file_remaining.min(buffer_len - buffer_pos);
-
-            let read_start = buffer_pos as usize;
-            let read_end = (read_len + buffer_pos) as usize;
-
-            let read_slice = &mut out[read_start..read_end];
-
-            cfg_if! {
-                if #[cfg(feature="_async-io")] {
-                    let buf = vec![0u8; read_slice.len()];
-                    let (read_result, buf) = log_file.read_exact_at(buf, file_offset).await;
-                    if read_result.is_ok() {
-                        read_slice.copy_from_slice(&buf);
-                    }
-                } else {
-                    let read_result = log_file.read_exact(read_slice);
-                }
+            while !done {
+                done = writer
+                    .update_log(&inner)
+                    .await
+                    .expect("Write-ahead logging task failed");
             }
+            let _ = finish_sender.send(());
+        };
 
-            match read_result {
-                Ok(_) => {
-                    *position += read_len;
-                    file_offset += read_len;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "tokio-uring")] {
+                unsafe {
+                    kioto_uring_executor::unsafe_spawn(run_writer);
                 }
-                Err(err) => {
-                    if maybe {
-                        return Ok(false);
-                    } else {
-                        return Err(err);
-                    }
-                }
-            }
-
-            assert!(file_offset <= PAGE_SIZE);
-            buffer_pos = *position - start_pos;
-
-            if file_offset == PAGE_SIZE {
-                // Try to open next file
-                let fpos = *position / PAGE_SIZE;
-
-                *log_file = match WalWriter::open_file(params, fpos).await {
-                    Ok(file) => file,
-                    Err(err) => {
-                        if maybe {
-                            *log_file = WalWriter::create_file(params, fpos).await?;
-                            return Ok(buffer_pos == buffer_len);
-                        } else {
-                            return Err(err);
-                        }
-                    }
-                }
+            } else if #[cfg(feature="monoio")] {
+                monoio::spawn(run_writer);
+            } else {
+                tokio::spawn(run_writer);
             }
         }
 
-        Ok(true)
+        finish_receiver
     }
 
-    /// Stores an operation and returns the new position in the logfile
+    /// Stores an operation and returns the new position in
+    /// the logfile
     #[tracing::instrument(skip(self, batch))]
-    pub async fn store(&self, batch: &[WriteOp]) -> Result<u64, std::io::Error> {
+    pub async fn store(&self, batch: &[LogEntry<'_>]) -> Result<u64, Error> {
         let mut writes = vec![];
 
-        for op in batch {
-            let op_type = op.get_type().to_le_bytes();
+        for entry in batch {
+            let mut data = vec![entry.get_type() as u8];
 
-            let key = op.get_key();
-            let klen = op.get_key_length().to_le_bytes();
-            let vlen = op.get_value_length().to_le_bytes();
+            match entry {
+                LogEntry::Write(op) => {
+                    let op_type = op.get_type();
+                    let key = op.get_key();
+                    let klen = op.get_key_length();
+                    let vlen = op.get_value_length();
 
-            let mut data = vec![];
-            data.extend_from_slice(op_type.as_slice());
-            data.extend_from_slice(klen.as_slice());
-            data.extend_from_slice(key);
+                    data.extend_from_slice(op_type.as_bytes());
+                    data.extend_from_slice(klen.as_bytes());
+                    data.extend_from_slice(key);
 
-            match op {
-                WriteOp::Put(_, value) => {
-                    data.extend_from_slice(vlen.as_slice());
-                    data.extend_from_slice(value);
+                    match op {
+                        WriteOp::Put(_, value) => {
+                            data.extend_from_slice(vlen.as_bytes());
+                            data.extend_from_slice(value);
+                        }
+                        WriteOp::Delete(_) => {}
+                    }
+
+                    writes.push(data);
                 }
-                WriteOp::Delete(_) => {}
+                #[cfg(feature = "wisckey")]
+                LogEntry::DeleteValue(page_id, offset) | LogEntry::DeleteBatch(page_id, offset) => {
+                    data.extend_from_slice(page_id.as_bytes());
+                    data.extend_from_slice(offset.as_bytes());
+                    writes.push(data);
+                }
             }
-
-            writes.push(data);
         }
 
         // Queue write
@@ -420,7 +354,7 @@ impl WriteAheadLog {
             let mut end_pos = lock.queue_pos;
 
             for data in writes.into_iter() {
-                let write_len = data.len() as u64;
+                let write_len = data.len();
                 lock.queue.push(data);
                 lock.queue_pos += write_len;
                 end_pos += write_len;
@@ -430,13 +364,7 @@ impl WriteAheadLog {
             end_pos
         };
 
-        /*
         // Wait until write has been processed
-        let mut status = self.inner.status.read();
-        while status.write_pos < end_pos {
-            status = self.inner.write_cond.rw_read_wait(status).await;
-        }*/
-
         loop {
             let fut = self.inner.write_cond.notified();
             tokio::pin!(fut);
@@ -453,9 +381,13 @@ impl WriteAheadLog {
             fut.await;
         }
 
-        Ok(end_pos)
+        Ok(end_pos as u64)
     }
 
+    /// Gracefully stop the write-ahead log
+    ///
+    /// This is intended to only be called during shutdown
+    /// and shall be called exactly once.
     pub async fn stop(&self) -> Result<(), Error> {
         log::trace!("Shutting down write-ahead log. Waiting for writer to terminate.");
 
@@ -474,7 +406,7 @@ impl WriteAheadLog {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn sync(&self) -> Result<(), std::io::Error> {
+    pub async fn sync(&self) -> Result<(), Error> {
         let last_pos = {
             let mut lock = self.inner.status.write();
 
@@ -511,6 +443,8 @@ impl WriteAheadLog {
     /// Once the memtable has been flushed we can remove old log entries
     #[tracing::instrument(skip(self))]
     pub async fn set_offset(&self, new_offset: u64) {
+        let new_offset = new_offset as usize;
+
         {
             let mut lock = self.inner.status.write();
 

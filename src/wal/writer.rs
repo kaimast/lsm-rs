@@ -1,33 +1,33 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-#[cfg(not(feature = "_async-io"))]
-use std::fs::{File, remove_file};
 
 #[cfg(not(feature = "_async-io"))]
 use std::io::Write;
 
 #[cfg(feature = "tokio-uring")]
-use tokio_uring::{
-    buf::BoundedBuf,
-    fs::{File, remove_file},
-};
+use tokio_uring::fs::{File, OpenOptions};
+
+#[cfg(feature = "tokio-uring")]
+use tokio_uring::buf::BoundedBuf;
 
 #[cfg(feature = "monoio")]
-use monoio::{buf::IoBuf, fs::File};
+use monoio::fs::{File, OpenOptions};
+
+#[cfg(not(feature = "_async-io"))]
+use std::fs::{File, OpenOptions};
 
 #[cfg(feature = "monoio")]
-use std::fs::remove_file;
+use monoio::buf::IoBuf;
 
 use cfg_if::cfg_if;
 
-use crate::Params;
-use crate::wal::{LogInner, OpenOptions, PAGE_SIZE};
+use crate::wal::{LogInner, PAGE_SIZE};
+use crate::{Error, Params, disk};
 
 /// The task that actually writes the log to disk
 pub struct WalWriter {
     log_file: File,
-    position: u64,
+    position: usize,
     params: Arc<Params>,
 }
 
@@ -48,7 +48,7 @@ impl WalWriter {
     }
 
     /// Start the writer at a specific position after opening a log
-    pub async fn continue_from(position: u64, params: Arc<Params>) -> Self {
+    pub async fn continue_from(position: usize, params: Arc<Params>) -> Self {
         let fpos = position / PAGE_SIZE;
 
         let log_file = if position % PAGE_SIZE == 0 {
@@ -77,8 +77,34 @@ impl WalWriter {
         }
     }
 
+    pub fn get_file_path(params: &Params, fpos: usize) -> PathBuf {
+        params
+            .db_path
+            .join(Path::new(&format!("log{:08}.data", fpos + 1)))
+    }
+
+    /// Open an existing log file (used during recovery/restart)
+    pub async fn open_file(params: &Params, fpos: usize) -> Result<File, std::io::Error> {
+        let fpath = Self::get_file_path(params, fpos);
+        log::trace!("Opening file at {fpath:?}");
+
+        cfg_if! {
+            if #[cfg(feature="_async-io")] {
+                let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath).await?;
+            } else {
+                 let log_file = OpenOptions::new()
+                    .read(true).write(true).create(false).truncate(false)
+                    .open(fpath)?;
+            }
+        }
+
+        Ok(log_file)
+    }
+
     /// Returns true if the writer is done and the associated task should terminate
-    pub async fn update_log(&mut self, inner: &LogInner) -> bool {
+    pub async fn update_log(&mut self, inner: &LogInner) -> Result<bool, Error> {
         let (to_write, sync_flag, sync_pos, new_offset, stop_flag) = loop {
             // This works around the following bug:
             // https://github.com/rust-lang/rust/issues/63768
@@ -117,7 +143,9 @@ impl WalWriter {
 
         // Don't hold lock while write
         for buf in to_write.into_iter() {
-            self.write_all(buf).await.expect("Write failed");
+            self.write_all(buf)
+                .await
+                .map_err(|err| Error::from_io_error("Failed to writ write-ahead log", err))?;
         }
 
         // Only sync if necessary
@@ -129,7 +157,7 @@ impl WalWriter {
         }
 
         if let Some((new_offset, old_offset)) = new_offset {
-            self.set_offset(new_offset, old_offset).await;
+            self.set_offset(new_offset, old_offset).await?;
         }
 
         // Notify about finished write(s)
@@ -149,10 +177,10 @@ impl WalWriter {
             log::debug!("WAL writer finished");
         }
 
-        stop_flag
+        Ok(stop_flag)
     }
 
-    async fn set_offset(&mut self, new_offset: u64, old_offset: u64) {
+    async fn set_offset(&mut self, new_offset: usize, old_offset: usize) -> Result<(), Error> {
         let old_file_pos = old_offset / PAGE_SIZE;
         let new_file_pos = new_offset / PAGE_SIZE;
 
@@ -163,20 +191,12 @@ impl WalWriter {
                 .join(Path::new(&format!("log{:08}.data", fpos + 1)));
             log::trace!("Removing file {fpath:?}");
 
-            cfg_if! {
-                if #[cfg(feature="tokio-uring")] {
-                    remove_file(&fpath).await
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                } else {
-                    remove_file(&fpath)
-                        .unwrap_or_else(|err| {
-                            panic!("Failed to remove log file {fpath:?}: {err}");
-                        });
-                }
-            }
+            disk::remove_file(&fpath).await.map_err(|err| {
+                Error::from_io_error(format!("Failed to remove log file {fpath:?}"), err)
+            })?;
         }
+
+        Ok(())
     }
 
     async fn sync(&mut self) {
@@ -202,19 +222,19 @@ impl WalWriter {
 
             let page_remaining = PAGE_SIZE - file_offset;
             let buffer_remaining = data.len() - buf_pos;
-            let write_len = (buffer_remaining).min(page_remaining as usize);
+            let write_len = (buffer_remaining).min(page_remaining);
 
             assert!(write_len > 0);
             cfg_if! {
                 if #[cfg(feature="tokio-uring")] {
                     let to_write = data.slice(buf_pos..buf_pos + write_len);
-                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset as u64).await;
                     res.expect("Failed to write to log file");
 
                     data = buf.into_inner();
                 } else if #[cfg(feature="monoio")] {
                     let to_write = data.slice(buf_pos..buf_pos + write_len);
-                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset).await;
+                    let (res, buf) = self.log_file.write_all_at(to_write, file_offset as u64).await;
                     res.expect("Failed to write to log file");
 
                     data = buf.into_inner();
@@ -227,8 +247,8 @@ impl WalWriter {
             }
 
             buf_pos += write_len;
-            self.position += write_len as u64;
-            file_offset += write_len as u64;
+            self.position += write_len;
+            file_offset += write_len;
 
             assert!(file_offset <= PAGE_SIZE);
 
@@ -243,10 +263,8 @@ impl WalWriter {
     }
 
     /// Create a new file that is part of the log
-    pub async fn create_file(params: &Params, file_pos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", file_pos + 1)));
+    pub async fn create_file(params: &Params, file_pos: usize) -> Result<File, std::io::Error> {
+        let fpath = Self::get_file_path(params, file_pos);
         log::trace!("Creating new log file at {fpath:?}");
 
         cfg_if! {
@@ -256,27 +274,5 @@ impl WalWriter {
                 File::create(fpath)
             }
         }
-    }
-
-    /// Open an existing log file (used during recovery)
-    pub async fn open_file(params: &Params, fpos: u64) -> Result<File, std::io::Error> {
-        let fpath = params
-            .db_path
-            .join(Path::new(&format!("log{:08}.data", fpos + 1)));
-        log::trace!("Opening file at {fpath:?}");
-
-        cfg_if! {
-            if #[cfg(feature="_async-io")] {
-                let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath).await?;
-            } else {
-                 let log_file = OpenOptions::new()
-                    .read(true).write(true).create(false).truncate(false)
-                    .open(fpath)?;
-            }
-        }
-
-        Ok(log_file)
     }
 }
