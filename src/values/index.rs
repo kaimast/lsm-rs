@@ -355,9 +355,14 @@ impl ValueIndex {
             pages: Default::default(),
         };
 
+        // Create initial page and write it to disk
         {
             let mut pages = obj.pages.write().await;
             obj.create_new_page(&mut pages, MIN_VALUE_BATCH_ID).await;
+
+            let (_, page) = pages.back_mut().unwrap();
+            let fpath = obj.get_page_file_path(&page.get_identifier());
+            page.sync(&fpath).await?;
         }
 
         Ok(obj)
@@ -552,14 +557,14 @@ impl ValueIndex {
         if page_idx == 0 && !page.is_in_use() && page.is_sealed() {
             loop {
                 let id = {
-                let (_, page) = pages.front().unwrap();
-                let id = page.get_identifier();
+                    let (_, page) = pages.front().unwrap();
+                    let id = page.get_identifier();
 
-                // There is always one unsealed page
-                if !page.is_sealed() || page.is_in_use() {
-                    self.manifest.set_minimum_value_index_page_id(id).await;
-                    break;
-                }
+                    // There is always one unsealed page
+                    if !page.is_sealed() || page.is_in_use() {
+                        self.manifest.set_minimum_value_index_page_id(id).await;
+                        break;
+                    }
 
                     id
                 };
