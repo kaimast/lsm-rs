@@ -42,7 +42,8 @@ wisckey-sync-tests:
 
 lint: sync-lint async-lint wisckey-lint \
       wisckey-no-compression-lint tokio-uring-lint \
-      tokio-uring-wisckey-lint monoio-lint monoio-wisckey-lint
+      tokio-uring-wisckey-lint monoio-lint monoio-wisckey-lint \
+      bigtest-lint
 
 fix-formatting:
     cargo fmt
@@ -87,5 +88,8 @@ wisckey-no-compression-lint:
 tokio-uring-wisckey-lint:
     {{CLIPPY}} --features=tokio-uring,snappy-compression,wisckey -- -D warnings
 
+bigtest-lint:
+    {{CLIPPY}} --package=lsm-bigtest
+
 bigtest:
-    cargo run --package=lsm-bigtest
+    cargo run --release --package=lsm-bigtest

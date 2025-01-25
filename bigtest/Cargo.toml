@@ -4,11 +4,15 @@ version = "0.5.0-dev"
 edition = "2024"
 authors = ["Kai Mast <kai@kaimast.com>"]
 license = "MIT"
-about = "Runs a longer test with lots of data"
+description = "Runs a longer test with lots of data"
 readme = "../README.md"
 
 [dependencies]
 kioto-uring-executor = "0.2"
+clap = { version="4", features=["derive"] }
+env_logger = "0.11"
+tempfile = "3"
+rand = "0.8"
 
 [dependencies.lsm]
 path = ".."
