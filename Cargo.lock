@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "lsm"
-version = "0.4.1"
+version = "0.5.0-dev"
 dependencies = [
  "async-trait",
  "bitvec",
@@ -638,8 +638,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsm-bigtest"
+version = "0.5.0-dev"
+dependencies = [
+ "kioto-uring-executor",
+ "lsm",
+]
+
+[[package]]
 name = "lsm-sync"
-version = "0.4.1"
+version = "0.5.0-dev"
 dependencies = [
  "cfg-if",
  "env_logger",

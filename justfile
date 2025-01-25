@@ -86,3 +86,6 @@ wisckey-no-compression-lint:
 
 tokio-uring-wisckey-lint:
     {{CLIPPY}} --features=tokio-uring,snappy-compression,wisckey -- -D warnings
+
+bigtest:
+    cargo run --package=lsm-bigtest

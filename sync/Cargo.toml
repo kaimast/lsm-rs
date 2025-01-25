@@ -1,6 +1,6 @@
 [package]
 name = "lsm-sync"
-version = "0.4.1"
+version = "0.5.0-dev"
 authors = ["Kai Mast <kai@kaimast.com>"]
 edition = "2024"
 repository = "https://github.com/kaimast/lsm-rs"
@@ -10,7 +10,7 @@ readme = "../README.md"
 keywords = ["storage", "database", "async"]
 
 [dependencies]
-lsm = { path=".." }
+lsm = { path="..", version="0.5.0-dev" }
 cfg-if = "1"
 
 [dependencies.tokio]
