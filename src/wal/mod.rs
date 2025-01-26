@@ -259,9 +259,9 @@ impl WriteAheadLog {
             if #[cfg(feature="monoio")] {
                 monoio::spawn(run_writer);
             } else if #[cfg(feature="tokio-uring")] {
-                unsafe {
-                    kioto_uring_executor::unsafe_spawn(run_writer);
-                }
+                kioto_uring_executor::spawn_with(move || {
+                    Box::pin(run_writer)
+                });
             } else {
                 tokio::spawn(run_writer);
             }
@@ -296,9 +296,9 @@ impl WriteAheadLog {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "tokio-uring")] {
-                unsafe {
-                    kioto_uring_executor::unsafe_spawn(run_writer);
-                }
+                kioto_uring_executor::spawn_with(move || {
+                    Box::pin(run_writer)
+                });
             } else if #[cfg(feature="monoio")] {
                 monoio::spawn(run_writer);
             } else {

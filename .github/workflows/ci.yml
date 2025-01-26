@@ -48,6 +48,23 @@ jobs:
     - name: "Test: Wisckey and Monoio"
       run: just monoio-wisckey-tests
       timeout-minutes: 10
+  big-test:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install rustc and clippy nightly
+      uses: dtolnay/rust-toolchain@stable
+      with:
+         toolchain: nightly
+         components: cargo, rustc, clippy, rustfmt
+    - name: Install Just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just
+    - name: Insert many entries 
+      run: just bigtest-many
+    - name: Insert large entries 
+      run: just bigtest-large
   lint:
     runs-on: ubuntu-24.04
     steps:
@@ -61,7 +78,6 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: just
- 
     - name: "Lint Checks: Tokio (with sync FS)"
       run: just async-lint
     - name: "Lint Checks: Tokio-Uring"
