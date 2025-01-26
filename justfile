@@ -48,6 +48,7 @@ lint: sync-lint async-lint wisckey-lint \
 fix-formatting:
     cargo fmt
     cd sync && just fix-formatting
+    cd bigtest && cargo fmt
 
 check-formatting:
     cargo fmt --check

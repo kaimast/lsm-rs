@@ -26,7 +26,7 @@ tokio-condvar = { version="0.3", features=["parking_lot"] }
 tokio-uring = { version="0.5", optional=true }
 bloomfilter = { version="3", optional=true }
 monoio = { version="0.2", optional=true, features=["sync"] }
-kioto-uring-executor = { version="0.2", optional=true }
+kioto-uring-executor = { version="0.3.0-dev", optional=true }
 bitvec = { version="1", optional=true }
 
 [dependencies.tokio]
@@ -69,3 +69,6 @@ path = "benchmarks/async.rs"
 
 [workspace]
 members = ["sync", "bigtest"]
+
+[patch.crates-io]
+kioto-uring-executor = { path="../kioto-uring-executor" }
