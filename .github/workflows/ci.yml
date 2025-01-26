@@ -61,8 +61,10 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: just
-    - name: Rung bigtest
-      run: just bigtest 
+    - name: Insert many entries 
+      run: just bigtest-many
+    - name: Insert large entries 
+      run: just bigtest-large
   lint:
     runs-on: ubuntu-24.04
     steps:
@@ -76,7 +78,6 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: just
- 
     - name: "Lint Checks: Tokio (with sync FS)"
       run: just async-lint
     - name: "Lint Checks: Tokio-Uring"

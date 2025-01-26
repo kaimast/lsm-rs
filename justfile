@@ -92,5 +92,9 @@ tokio-uring-wisckey-lint:
 bigtest-lint:
     {{CLIPPY}} --package=lsm-bigtest
 
-bigtest:
-    cargo run --release --package=lsm-bigtest
+bigtest-many:
+    cargo run --release --package=lsm-bigtest -- -n100000 --entry-size=1024
+
+bigtest-large:
+    cargo run --release --package=lsm-bigtest -- -n100 --entry-size=100000
+

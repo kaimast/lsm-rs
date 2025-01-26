@@ -63,32 +63,33 @@ async fn main() {
     );
 
     println!(
-        "Inserting {} entries of size {}",
-        args.num_insertions, args.entry_size
+        "Inserting a total of {} entries of size {} across {} threads",
+        args.num_insertions*args.num_threads, args.entry_size, args.num_threads
     );
 
-    let tasks: Vec<_> = (0..args.num_threads)
-        .map(|_| {
+    let tasks: Vec<_> = (1..=args.num_threads)
+        .map(|idx| {
             let database = database.clone();
             kioto_uring_executor::spawn_with(move || {
                 let mut rng = rand::thread_rng();
                 Box::pin(async move {
                     for count in 1..=args.num_insertions {
-                        let idx = rng.gen_range(0..args.key_range);
-                        let key = format!("key{idx}").as_bytes().to_vec();
+                        let key_idx = rng.gen_range(0..args.key_range);
+                        let key = format!("key{key_idx}").as_bytes().to_vec();
 
                         let mut value = vec![0; args.entry_size];
                         rng.fill(value.as_mut_slice());
 
                         database.put(key, value).await.expect("Insert failed");
 
-                        if count % 100_000 == 0 {
+                        if count % 10_000 == 0 {
                             println!(
-                                "Inserted {count} entries so far ({}%)",
+                                "Thread #{idx} inserted {count} entries so far ({}%)",
                                 (count as f64) * 100.0 / (args.num_insertions as f64)
                             );
                         }
                     }
+                    println!("Thread #{idx} is done");
                 })
             })
         })
