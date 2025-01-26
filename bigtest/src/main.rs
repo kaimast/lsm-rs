@@ -64,7 +64,9 @@ async fn main() {
 
     println!(
         "Inserting a total of {} entries of size {} across {} threads",
-        args.num_insertions*args.num_threads, args.entry_size, args.num_threads
+        args.num_insertions * args.num_threads,
+        args.entry_size,
+        args.num_threads
     );
 
     let tasks: Vec<_> = (1..=args.num_threads)
