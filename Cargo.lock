@@ -528,6 +528,7 @@ dependencies = [
 [[package]]
 name = "kioto-uring-executor"
 version = "0.3.0-dev"
+source = "git+https://github.com/kaimast/kioto-uring-executor#66db7fa413b0107a84d5b790c7801e1aaa204835"
 dependencies = [
  "kioto-uring-executor-macros",
  "log",
@@ -540,6 +541,7 @@ dependencies = [
 [[package]]
 name = "kioto-uring-executor-macros"
 version = "0.3.0-dev"
+source = "git+https://github.com/kaimast/kioto-uring-executor#66db7fa413b0107a84d5b790c7801e1aaa204835"
 dependencies = [
  "proc-macro2",
  "quote",

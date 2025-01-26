@@ -71,4 +71,4 @@ path = "benchmarks/async.rs"
 members = ["sync", "bigtest"]
 
 [patch.crates-io]
-kioto-uring-executor = { path="../kioto-uring-executor" }
+kioto-uring-executor = { git = "https://github.com/kaimast/kioto-uring-executor" }
