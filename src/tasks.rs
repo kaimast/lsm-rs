@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 use tokio::sync::Notify;
 
@@ -181,74 +181,91 @@ impl TaskManager {
         let mut tasks = HashMap::default();
         let stop_flag = Arc::new(AtomicBool::new(false));
 
+        let memtable_update_cond = Arc::new(UpdateCond::new());
         let level_update_cond = Arc::new(UpdateCond::new());
 
         #[cfg(feature = "tokio-uring")]
         let mut sring = kioto_uring_executor::new_spawn_ring();
 
         {
-            let memtable_update_cond = Arc::new(UpdateCond::new());
+            let stop_flag = stop_flag.clone();
+            let memtable_update_cond = memtable_update_cond.clone();
+            let datastore = datastore.clone();
+            let level_update_cond = level_update_cond.clone();
 
-            let hdl = Arc::new(TaskHandle::new(
-                stop_flag.clone(),
-                memtable_update_cond.clone(),
-                MemtableCompactionTask::new_boxed(datastore.clone(), level_update_cond.clone()),
-            ));
+            #[cfg(feature = "tokio-uring")]
             {
-                let hdl = hdl.clone();
-                let task = async move { hdl.work_loop().await };
+                kioto_uring_executor::spawn_with(move || {
+                    let hdl = TaskHandle::new(
+                        stop_flag,
+                        memtable_update_cond,
+                        MemtableCompactionTask::new_boxed(datastore, level_update_cond),
+                    );
+                    Box::pin(async move { hdl.work_loop().await })
+                });
+            }
+
+            #[cfg(not(feature = "tokio-uring"))]
+            {
+                let hdl = TaskHandle::new(
+                    stop_flag,
+                    memtable_update_cond,
+                    MemtableCompactionTask::new_boxed(datastore, level_update_cond),
+                );
 
                 cfg_if::cfg_if! {
-                    if #[cfg(feature="tokio-uring")] {
-                        sring.spawn_with(move || {
-                            Box::pin(task)
-                        });
-                    } else if #[cfg(feature="monoio")] {
-                        monoio::spawn(task);
+                    if #[cfg(feature="monoio")] {
+                        monoio::spawn(async move { hdl.work_loop().await });
                     } else {
-                        tokio::spawn(task);
+                        tokio::spawn(async move { hdl.work_loop().await });
                     }
                 }
             }
-
-            let task_group = TaskGroup {
-                condition: memtable_update_cond,
-            };
-
-            tasks.insert(TaskType::MemtableCompaction, task_group);
         }
 
-        {
-            let mut compaction_tasks = vec![];
+        let task_group = TaskGroup {
+            condition: memtable_update_cond,
+        };
 
+        tasks.insert(TaskType::MemtableCompaction, task_group);
+
+        {
             for _ in 0..num_compaction_tasks {
-                let hdl = Arc::new(TaskHandle::new(
-                    stop_flag.clone(),
-                    level_update_cond.clone(),
-                    LevelCompactionTask::new_boxed(datastore.clone()),
-                ));
+                let stop_flag = stop_flag.clone();
+                let level_update_cond = level_update_cond.clone();
+                let datastore = datastore.clone();
+
+                #[cfg(feature = "tokio-uring")]
                 {
-                    let hdl = hdl.clone();
-                    let task = async move { hdl.work_loop().await };
+                    sring.spawn_with(move || {
+                        let hdl = TaskHandle::new(
+                            stop_flag,
+                            level_update_cond,
+                            LevelCompactionTask::new_boxed(datastore),
+                        );
+                        Box::pin(async move { hdl.work_loop().await })
+                    });
+                }
+
+                #[cfg(not(feature = "tokio-uring"))]
+                {
+                    let hdl = TaskHandle::new(
+                        stop_flag,
+                        level_update_cond,
+                        LevelCompactionTask::new_boxed(datastore),
+                    );
 
                     cfg_if::cfg_if! {
-                        if #[cfg(feature="tokio-uring")] {
-                                sring.spawn_with(move || {
-                                    Box::pin(task)
-                                });
-                        } else if #[cfg(feature="monoio")] {
-                            monoio::spawn(task);
+                        if #[cfg(feature="monoio")] {
+                            monoio::spawn(async move { hdl.work_loop().await });
                         } else {
-                            tokio::spawn(task);
+                            tokio::spawn(async move { hdl.work_loop().await });
                         }
                     }
                 }
-
-                compaction_tasks.push(Mutex::new(hdl));
             }
 
             let task_group = TaskGroup {
-                //tasks: compaction_tasks,
                 condition: level_update_cond,
             };
 
