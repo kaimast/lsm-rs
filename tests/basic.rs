@@ -161,9 +161,9 @@ async fn range_iterate_random() {
     }
 
     // Generate random start and end values for iteration within range
-    let mut rng = rand::thread_rng();
-    let range_start: u64 = rng.gen_range(0..COUNT);
-    let range_end: u64 = rng.gen_range(range_start..COUNT);
+    let mut rng = rand::rng();
+    let range_start: u64 = rng.random_range(0..COUNT);
+    let range_end: u64 = rng.random_range(range_start..COUNT);
 
     let mut pos = range_start;
     let start = format!("key_{range_start:05}").into_bytes();
@@ -390,8 +390,8 @@ async fn get_put_many() {
 #[async_test]
 async fn get_put_many_random() {
     // Generate a random count between 1 and 1000
-    let mut rng = rand::thread_rng();
-    let count: u64 = rng.gen_range(1..=1000);
+    let mut rng = rand::rng();
+    let count: u64 = rng.random_range(1..=1000);
 
     let (_tmpdir, database) = test_init().await;
 
@@ -599,8 +599,8 @@ async fn override_one_random() {
     }
 
     // Modify the value of one specific random key
-    let mut rng = rand::thread_rng();
-    let random_pos: u64 = rng.gen_range(0..1000);
+    let mut rng = rand::rng();
+    let random_pos: u64 = rng.random_range(0..1000);
     let modify_key = format!("key_{random_pos}").into_bytes();
     let new_value = format!("some_other_string_{random_pos}").into_bytes();
     database
@@ -676,8 +676,8 @@ async fn override_many() {
 async fn override_many_random() {
     const NCOUNT: u64 = 2_000;
 
-    let mut rng = rand::thread_rng();
-    let random_count: u64 = rng.gen_range(0..2000);
+    let mut rng = rand::rng();
+    let random_count: u64 = rng.random_range(0..2000);
 
     let (_tmpdir, database) = test_init().await;
 
