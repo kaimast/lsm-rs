@@ -8,10 +8,10 @@ description = "An implementation of log-structured merge trees in pure Rust"
 license = "MIT"
 readme = "README.md"
 keywords = ["storage", "database", "async"]
-rust-version = "1.87"
+rust-version = "1.88"
 
 [dependencies]
-lru = "0.13"
+lru = "0.14"
 parking_lot = "0.12"
 memmap2 = "0.9"
 byte-slice-cast = "1"

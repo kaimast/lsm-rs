@@ -108,7 +108,7 @@ impl IndexBlock {
     /// where is this index block located on disk?
     #[inline]
     fn get_file_path(params: &Params, block_id: &TableId) -> std::path::PathBuf {
-        let fname = format!("idx{:08}.data", block_id);
+        let fname = format!("idx{block_id:08}.data");
         params.db_path.join(Path::new(&fname))
     }
 

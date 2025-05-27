@@ -161,10 +161,10 @@ impl DbIteratorInner {
             let key = iter.get_key();
 
             // Don't pick a key that is less or equal to the minimum
-            if let Some(min_key) = &self.min_key {
-                if iter.get_key() <= min_key.as_slice() {
-                    return (false, next_kv);
-                }
+            if let Some(min_key) = &self.min_key
+                && iter.get_key() <= min_key.as_slice()
+            {
+                return (false, next_kv);
             }
 
             let seq_number = iter.get_seq_number();
@@ -214,10 +214,10 @@ impl DbIteratorInner {
             let key = iter.get_key();
 
             // Don't pick a key that is greater or equal to the maximum
-            if let Some(max_key) = &self.max_key {
-                if iter.get_key() >= max_key.as_slice() {
-                    return (false, next_kv);
-                }
+            if let Some(max_key) = &self.max_key
+                && iter.get_key() >= max_key.as_slice()
+            {
+                return (false, next_kv);
             }
 
             let seq_number = iter.get_seq_number();

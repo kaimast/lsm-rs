@@ -280,16 +280,16 @@ impl DbLogic {
             for table in tables.iter() {
                 let mut skip = false;
 
-                if let Some(min_key) = min_key {
-                    if table.get_max() < min_key {
-                        skip = true;
-                    }
+                if let Some(min_key) = min_key
+                    && table.get_max() < min_key
+                {
+                    skip = true;
                 }
 
-                if let Some(max_key) = max_key {
-                    if table.get_min() > max_key {
-                        skip = true;
-                    }
+                if let Some(max_key) = max_key
+                    && table.get_min() > max_key
+                {
+                    skip = true;
                 }
 
                 if !skip {
@@ -345,16 +345,16 @@ impl DbLogic {
             for table in tables.iter() {
                 let mut skip = false;
 
-                if let Some(min_key) = min_key {
-                    if table.get_max() < min_key {
-                        skip = true;
-                    }
+                if let Some(min_key) = min_key
+                    && table.get_max() < min_key
+                {
+                    skip = true;
                 }
 
-                if let Some(max_key) = max_key {
-                    if table.get_min() > max_key {
-                        skip = true;
-                    }
+                if let Some(max_key) = max_key
+                    && table.get_min() > max_key
+                {
+                    skip = true;
                 }
 
                 if !skip {
