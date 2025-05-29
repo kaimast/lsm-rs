@@ -293,10 +293,13 @@ impl Memtable {
 
         self.entries.insert(
             pos,
-            (key, MemtableEntry::Value {
-                value,
-                seq_number: self.next_seq_number,
-            }),
+            (
+                key,
+                MemtableEntry::Value {
+                    value,
+                    seq_number: self.next_seq_number,
+                },
+            ),
         );
 
         self.size += entry_len;
@@ -310,9 +313,12 @@ impl Memtable {
 
         self.entries.insert(
             pos,
-            (key, MemtableEntry::Deletion {
-                seq_number: self.next_seq_number,
-            }),
+            (
+                key,
+                MemtableEntry::Deletion {
+                    seq_number: self.next_seq_number,
+                },
+            ),
         );
 
         self.size += entry_len;

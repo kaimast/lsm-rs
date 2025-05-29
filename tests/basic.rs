@@ -495,7 +495,7 @@ async fn get_put_delete_variable_entry() {
     // Test with variable sizes ranging from small to large
     let sizes = vec![1, 500, 1000, 2000];
     for size in sizes {
-        let key = format!("key_size_{}", size).into_bytes();
+        let key = format!("key_size_{size}").into_bytes();
         let mut value = Vec::new();
         value.resize(size, b'a');
 

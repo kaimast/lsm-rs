@@ -1,7 +1,4 @@
-#![feature(trait_alias)]
 #![feature(get_mut_unchecked)]
-#![feature(let_chains)]
-#![feature(trivial_bounds)]
 // Temporary workaround for the io_uring code
 #![allow(clippy::arc_with_non_send_sync)]
 

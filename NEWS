@@ -1,4 +1,5 @@
 UNRELEASED (0.5):
+    - Bump MSRV to 1.88
     - More extensive testing
     - Add support for monoio
     - Codebase moved from Rust 2021 to 2024
