@@ -36,6 +36,7 @@ default-features=false
 features=["io-util", "sync", "macros", "tracing", "time"]
 
 [dev-dependencies]
+rust-hooks = { version="0.12", package="rusty-hooks-integration" }
 clap = { version="4", features=["derive"] }
 env_logger = "0.11"
 tempfile = "3"
