@@ -1,0 +1,5 @@
+[hooks]
+pre-commit = "just lint"
+
+[logging]
+verbose = true

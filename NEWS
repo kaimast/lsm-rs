@@ -4,6 +4,7 @@ UNRELEASED (0.5):
     - Add support for monoio
     - Codebase moved from Rust 2021 to 2024
     - Updated bloomfilter to 0.3
+    - Add rusty-hooks integration to git repository
 
 0.4.1:
     - Fix an error during compaction
